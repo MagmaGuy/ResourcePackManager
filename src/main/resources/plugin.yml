@@ -1,0 +1,7 @@
+  name: ResourcePackManager
+  main: com.magmaguy.resourcepackmanager.ResourcePackManager
+  version: 1.0.0-SNAPSHOT
+  softdepend:
+    - EliteMobs
+    - FreeMinecraftModels
+    - ModelEngine
