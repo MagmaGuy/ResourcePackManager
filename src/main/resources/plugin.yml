@@ -1,7 +1,17 @@
-  name: ResourcePackManager
-  main: com.magmaguy.resourcepackmanager.ResourcePackManager
-  version: 1.0.0-SNAPSHOT
-  softdepend:
-    - EliteMobs
-    - FreeMinecraftModels
-    - ModelEngine
+name: ResourcePackManager
+main: com.magmaguy.resourcepackmanager.ResourcePackManager
+version: 1.0.0-SNAPSHOT
+api-version: 1.14
+softdepend:
+- EliteMobs
+- FreeMinecraftModels
+- ModelEngine
+- Nova
+- Oraxen
+- ItemsAdder
+
+commands:
+  resourcepackmanager:
+    aliases:
+      - rspm
+    description: "Main command"

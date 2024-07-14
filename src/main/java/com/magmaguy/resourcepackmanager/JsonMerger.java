@@ -1,2 +1,4 @@
-package com.magmaguy.resourcepackmanager;public class JsonMerger {
+package com.magmaguy.resourcepackmanager;
+
+public class JsonMerger {
 }
