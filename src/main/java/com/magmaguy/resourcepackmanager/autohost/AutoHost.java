@@ -4,12 +4,18 @@ import com.magmaguy.resourcepackmanager.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
+import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.client5.http.entity.mime.MultipartEntityBuilder;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.http.io.entity.FileEntity;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 public class AutoHost {
@@ -40,99 +46,59 @@ public class AutoHost {
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, 3 * 24 * 60 * 60 * 20L);
     }
 
-    private static void uploadFile(File file, String urlString) throws IOException {
-        String boundary = Long.toHexString(System.currentTimeMillis());
-        String CRLF = "\r\n";
-        HttpURLConnection connection = createConnection(urlString, boundary);
+    public static void uploadFile(File file, String url) throws IOException {
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            HttpPost uploadFile = new HttpPost(url);
 
-        try (
-                OutputStream output = connection.getOutputStream();
-                PrintWriter writer = new PrintWriter(new OutputStreamWriter(output, StandardCharsets.UTF_8), true)
-        ) {
-            // Send file part
-            writer.append("--" + boundary).append(CRLF);
-            writer.append("Content-Disposition: form-data; name=\"file\"; filename=\"" + file.getName() + "\"").append(CRLF);
-            writer.append("Content-Type: " + HttpURLConnection.guessContentTypeFromName(file.getName())).append(CRLF);
-            writer.append("Content-Transfer-Encoding: binary").append(CRLF);
-            writer.append(CRLF).flush();
+            // Use FileEntity for streaming large files
+            FileEntity fileEntity = new FileEntity(file, ContentType.APPLICATION_OCTET_STREAM);
+            uploadFile.setEntity(fileEntity);
 
-            try (InputStream input = new FileInputStream(file)) {
-                byte[] buffer = new byte[1024];
-                for (int length; (length = input.read(buffer)) > 0; ) {
-                    output.write(buffer, 0, length);
-                }
-                output.flush();
+            try (CloseableHttpResponse response = httpClient.execute(uploadFile)) {
+                String responseString = EntityUtils.toString(response.getEntity());
+                System.out.println("Response from server: " + responseString);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
             }
-
-            writer.append(CRLF).flush();
-            writer.append("--" + boundary + "--").append(CRLF).flush(); // Closing boundary
         }
-
-        String response = getResponse(connection);
     }
 
+    private static Boolean sendSHA1(String stringData, String url) throws IOException {
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            HttpPost httpPost = new HttpPost(url);
 
-    private static Boolean sendSHA1(String stringData, String urlString) throws IOException {
-        String boundary = Long.toHexString(System.currentTimeMillis());
-        String CRLF = "\r\n";
-        HttpURLConnection connection = createConnection(urlString, boundary);
+            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+            builder.addTextBody("stringData", stringData, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+            httpPost.setEntity(builder.build());
 
-        try (
-                OutputStream output = connection.getOutputStream();
-                PrintWriter writer = new PrintWriter(new OutputStreamWriter(output, StandardCharsets.UTF_8), true)
-        ) {
-            // Send string data part
-            writer.append("--" + boundary).append(CRLF);
-            writer.append("Content-Disposition: form-data; name=\"stringData\"").append(CRLF);
-            writer.append("Content-Type: text/plain; charset=UTF-8").append(CRLF);
-            writer.append(CRLF).append(stringData).append(CRLF).flush();
-
-            // End of multipart/form-data
-            writer.append("--" + boundary + "--").append(CRLF).flush();
+            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+                String responseString = EntityUtils.toString(response.getEntity());
+                System.out.println("Response from server: " + responseString);
+                return Boolean.parseBoolean(responseString.trim());
+            } catch (Exception e) {
+                Logger.warn("Failed to communicate with remote server!");
+                e.printStackTrace();
+                return null;
+            }
         }
-
-        String response = getResponse(connection);
-        if (response != null) return Boolean.parseBoolean(response.trim());
-        return null;
     }
 
-    private static void sendStillAlive(String urlString) throws IOException {
-        String boundary = Long.toHexString(System.currentTimeMillis());
-        HttpURLConnection connection = createConnection(urlString, boundary);
-        String response = getResponse(connection);
-    }
+    private static void sendStillAlive(String url) throws IOException {
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            HttpPost httpPost = new HttpPost(url);
 
-    private static HttpURLConnection createConnection(String urlString, String boundary) throws IOException {
-        HttpURLConnection connection = (HttpURLConnection) new URL(urlString).openConnection();
-        connection.setDoOutput(true);
-        connection.setRequestMethod("POST");
-        connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-        return connection;
-    }
+            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+            builder.addTextBody("status", "alive", ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+            httpPost.setEntity(builder.build());
 
-    private static String getResponse(HttpURLConnection connection) throws IOException {
-        // Get response from server
-        int responseCode = connection.getResponseCode();
-        if (responseCode == HttpURLConnection.HTTP_OK) {
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
-                String responseLine;
-                StringBuilder response = new StringBuilder();
-
-                while ((responseLine = in.readLine()) != null) {
-                    response.append(responseLine);
-                }
-
-                System.out.println("Response from server: " + response);
-                return response.toString();
-
+            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+                String responseString = EntityUtils.toString(response.getEntity());
+                System.out.println("Response from server: " + responseString);
             } catch (Exception e) {
                 Logger.warn("Failed to communicate with remote server!");
                 e.printStackTrace();
             }
-        } else {
-            System.out.println("Server returned non-OK status: " + responseCode);
         }
-        return null;
     }
 
     public static void shutdown() {
