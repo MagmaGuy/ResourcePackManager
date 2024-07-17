@@ -13,6 +13,10 @@ public class DefaultConfig {
     private static List<String> priorityOrder;
     @Getter
     private static boolean autoHost;
+    @Getter
+    private static boolean forceResourcePack;
+    @Getter
+    private static String resourcePackPrompt;
 
     public static void initializeConfig() {
         file = ConfigurationEngine.fileCreator("config.yml");
@@ -30,6 +34,14 @@ public class DefaultConfig {
                 List.of("Automatically host the resource pack on MagmaGuy's servers",
                         "These servers cost money to keep running. There is no guarantee this will be an option forever."),
                 fileConfiguration, "autoHost", true);
+
+        forceResourcePack = ConfigurationEngine.setBoolean(
+                List.of("Sets whether the resource pack use will be forced to clients"),
+                fileConfiguration, "forceResourcePack", false);
+
+        resourcePackPrompt = ConfigurationEngine.setString(
+                List.of("Sets whether the resource pack use will be forced to clients"),
+                file, fileConfiguration, "resourcePackPrompt", "Use recommended resource pack?");
 
         ConfigurationEngine.fileSaverOnlyDefaults(fileConfiguration, file);
     }

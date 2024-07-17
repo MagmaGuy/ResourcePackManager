@@ -2,6 +2,7 @@ package com.magmaguy.resourcepackmanager.config;
 
 import com.magmaguy.resourcepackmanager.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
+import com.magmaguy.resourcepackmanager.utils.ChatColorConverter;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -134,6 +135,14 @@ public class ConfigurationEngine {
         setComments(fileConfiguration, key, comment);
         return value;
     }
+    public static String setString(File file, FileConfiguration fileConfiguration, String key, String defaultValue) {
+        return ChatColorConverter.convert(fileConfiguration.getString(key));
+    }
 
+    public static String setString(List<String> comments, File file, FileConfiguration fileConfiguration, String key, String defaultValue) {
+        String value = setString(file, fileConfiguration, key, defaultValue);
+        setComments(fileConfiguration, key, comments);
+        return value;
+    }
 
 }

@@ -1,6 +1,6 @@
 name: ResourcePackManager
 main: com.magmaguy.resourcepackmanager.ResourcePackManager
-version: 1.0.0-SNAPSHOT
+version: 0.0.1
 api-version: 1.14
 softdepend:
 - EliteMobs

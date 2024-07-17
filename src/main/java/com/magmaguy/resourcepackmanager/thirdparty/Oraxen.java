@@ -1,4 +1,13 @@
 package com.magmaguy.resourcepackmanager.thirdparty;
 
-public class Oraxen {
+import java.io.File;
+
+public class Oraxen extends ThirdPartyResourcePack {
+    public Oraxen() {
+        super("Oraxen",
+                "Oraxen" + File.separatorChar + "pack" + File.separatorChar + "pack.zip",
+                false,
+                false,
+                "");
+    }
 }
