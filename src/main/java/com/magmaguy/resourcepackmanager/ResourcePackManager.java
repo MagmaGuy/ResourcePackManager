@@ -2,8 +2,10 @@ package com.magmaguy.resourcepackmanager;
 
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.commands.CommandManager;
+import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
+import com.magmaguy.resourcepackmanager.playermanager.PlayerManager;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -20,12 +22,15 @@ public class ResourcePackManager extends JavaPlugin {
                 " |   /\\__ \\  _/ |\\/| / _` | ' \\/ _` / _` / -_) '_|\n" +
                 " |_|_\\|___/_| |_|  |_\\__,_|_||_\\__,_\\__, \\___|_|  \n" +
                 "                                    |___/         ");
-        Logger.info("Enabling ResourcePackManager v." + this.getDescription().getVersion());
+        Logger.info("ResourcePackManager v." + this.getDescription().getVersion());
         plugin = this;
         DefaultConfig.initializeConfig();
+        BlueprintFolder.initialize();
         Mix.initialize();
         AutoHost.initialize();
         new CommandManager(this);
+        if (DefaultConfig.isAutoHost())
+            Bukkit.getPluginManager().registerEvents(new PlayerManager(), this);
     }
 
     @Override

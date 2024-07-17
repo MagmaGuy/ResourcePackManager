@@ -14,10 +14,10 @@ import java.nio.file.StandardCopyOption;
 
 public class ThirdPartyResourcePack implements GeneratorInterface {
     @Getter
-    private final File file;
-    private final boolean encrypts;
-    private final boolean distributes;
-    private final String reloadCommand;
+    private File file;
+    private boolean encrypts;
+    private boolean distributes;
+    private String reloadCommand;
     @Getter
     private boolean isEnabled;
     private String SHA1;
@@ -31,6 +31,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         isEnabled = Bukkit.getPluginManager().isPluginEnabled(pluginName);
         if (isEnabled)
             Logger.info("Initializing " + pluginName + "'s resource pack");
+        else return;
         this.file = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().toPath().toString() + File.separatorChar + path);
         if (!file.exists()) {
             Logger.warn("Found " + pluginName + " but could not find resource pack at location " + file.getPath() + " ! ResourcePackManager will not be able to merge the resource pack from this plugin.");

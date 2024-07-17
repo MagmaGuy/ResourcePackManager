@@ -4,10 +4,7 @@ import com.google.gson.*;
 import com.google.gson.stream.JsonReader;
 import com.magmaguy.resourcepackmanager.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
-import com.magmaguy.resourcepackmanager.thirdparty.EliteMobs;
-import com.magmaguy.resourcepackmanager.thirdparty.FreeMinecraftModels;
-import com.magmaguy.resourcepackmanager.thirdparty.ModelEngine;
-import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
+import com.magmaguy.resourcepackmanager.thirdparty.*;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import com.magmaguy.resourcepackmanager.utils.ZipFile;
 import lombok.Getter;
@@ -32,6 +29,8 @@ public class Mix {
     private static File finalResourcePack;
     @Getter
     private static String finalSHA1;
+    @Getter
+    private static byte[] finalSHA1Bytes;
 
     private Mix() {
     }
@@ -60,6 +59,9 @@ public class Mix {
 
     private static void initializeThirdPartyResourcePacks() {
         ArrayList<ThirdPartyResourcePack> tempList = new ArrayList<>();
+        com.magmaguy.resourcepackmanager.thirdparty.ResourcePackManager resourcePackManager = new com.magmaguy.resourcepackmanager.thirdparty.ResourcePackManager();
+        if (resourcePackManager.isEnabled())
+            tempList.add(resourcePackManager);
         EliteMobs eliteMobs = new EliteMobs();
         if (eliteMobs.isEnabled())
             tempList.add(eliteMobs);
@@ -69,7 +71,15 @@ public class Mix {
         ModelEngine modelEngine = new ModelEngine();
         if (modelEngine.isEnabled())
             tempList.add(modelEngine);
-        //todo: add the rest
+        ItemsAdder itemsAdder = new ItemsAdder();
+        if (itemsAdder.isEnabled())
+            tempList.add(itemsAdder);
+        Nova nova = new Nova();
+        if (nova.isEnabled())
+            tempList.add(nova);
+        Oraxen oraxen = new Oraxen();
+        if (oraxen.isEnabled())
+            tempList.add(oraxen);
         thirdPartyResourcePacks = new ArrayList<>();
         for (int i = 0; i < tempList.size(); i++) {
             for (ThirdPartyResourcePack thirdPartyResourcePack : tempList) {
@@ -127,6 +137,7 @@ public class Mix {
                 finalResourcePack = file;
                 try {
                     finalSHA1 = SHA1Generator.sha1CodeString(finalResourcePack);
+                    finalSHA1Bytes = SHA1Generator.sha1CodeByteArray(finalResourcePack);
                 } catch (Exception e) {
                     Logger.warn("Failed to get SHA1 from zipped resource pack!");
                     finalResourcePack = null;

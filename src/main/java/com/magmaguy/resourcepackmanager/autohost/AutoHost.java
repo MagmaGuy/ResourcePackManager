@@ -4,99 +4,182 @@ import com.magmaguy.resourcepackmanager.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
+import lombok.Getter;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.entity.mime.MultipartEntityBuilder;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
-import org.apache.hc.core5.http.io.entity.FileEntity;
+import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.UUID;
 
 public class AutoHost {
-    private static final String hostURL = "http://localhost:3000/sha1";
-    private static final String stillAliveURL = "http://localhost:3000/still_alive";
-    private static final String rspURL = "http://localhost:3000/upload";
+    //    private static final String finalURL = "http://localhost:3000/";
+    private static final String finalURL = "http://magmaguy.com:50000/";
+    private static final UUID pluginRSPUUID = UUID.randomUUID();
     private static BukkitTask keepAlive = null;
+    @Getter
+    private static String rspUUID = null;
 
     private AutoHost() {
+    }
+
+    public static void sendResourcePack(Player player) {
+        if (rspUUID == null) return;
+        player.addResourcePack(pluginRSPUUID, finalURL + "rsp_" + rspUUID, Mix.getFinalSHA1Bytes(), DefaultConfig.getResourcePackPrompt(), DefaultConfig.isForceResourcePack());
     }
 
     public static void initialize() {
         if (!DefaultConfig.isAutoHost()) return;
         if (Mix.getFinalResourcePack() == null) return;
+        checkFileExistence();
         keepAlive = new BukkitRunnable() {
+            int counter = 0;
+
             @Override
             public void run() {
-                try {
-                    if (!sendSHA1(Mix.getFinalSHA1(), hostURL)) {
-                        uploadFile(Mix.getFinalResourcePack(), rspURL);
+                if (rspUUID != null) {
+                    counter = 0;
+                    try {
+                        sendStillAlive();
+                    } catch (Exception e) {
+                        rspUUID = null;
+                        Logger.warn("Failed to autohost resource pack!");
                     }
-                    sendStillAlive(stillAliveURL);
-                } catch (Exception e) {
-                    Logger.warn("Failed to autohost resource pack!");
-                    e.printStackTrace();
+                } else {
+                    checkFileExistence();
+                    if (rspUUID == null && counter % 10 == 0) {
+                        Logger.warn("Failed to connect to remote server to autohost the resource pack!");
+                    }
+                    counter++;
                 }
             }
-        }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, 3 * 24 * 60 * 60 * 20L);
+        }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, 60 * 20L);
     }
 
-    public static void uploadFile(File file, String url) throws IOException {
-        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
-            HttpPost uploadFile = new HttpPost(url);
+    private static void checkFileExistence() {
+        initializeLink();
+        if (rspUUID == null) return;
+        if (!sendSHA1()) uploadFile();
+    }
 
-            // Use FileEntity for streaming large files
-            FileEntity fileEntity = new FileEntity(file, ContentType.APPLICATION_OCTET_STREAM);
-            uploadFile.setEntity(fileEntity);
+    public static void initializeLink() {
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            HttpPost httpPost = new HttpPost(finalURL + "initialize");
+            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+                String responseString = EntityUtils.toString(response.getEntity());
+                rspUUID = responseString.trim();
+            } catch (Exception e) {
+                Logger.warn("Failed to communicate with remote server!");
+            }
+        } catch (Exception e) {
+            rspUUID = null;
+            Logger.warn("Failed remote server initialization.");
+        }
+    }
+
+    public static void uploadFile() {
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            Logger.warn("uploading file");
+            HttpPost uploadFile = new HttpPost(finalURL + "upload");
+
+            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+            builder.addTextBody("uuid", rspUUID, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+            builder.addBinaryBody("file", Mix.getFinalResourcePack(), ContentType.APPLICATION_OCTET_STREAM, Mix.getFinalResourcePack().getName());
+
+            uploadFile.setEntity(builder.build());
 
             try (CloseableHttpResponse response = httpClient.execute(uploadFile)) {
-                String responseString = EntityUtils.toString(response.getEntity());
-                System.out.println("Response from server: " + responseString);
             } catch (Exception e) {
-                throw new RuntimeException(e);
+                Logger.warn("Failed to communicate with remote server!");
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static boolean sendSHA1() {
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            HttpPost httpPost = new HttpPost(finalURL + "sha1");
+
+            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+            builder.addTextBody("uuid", rspUUID, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+            builder.addTextBody("sha1", Mix.getFinalSHA1(), ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+
+            HttpEntity entity = builder.build();
+            httpPost.setEntity(entity);
+
+            // Convert the entity to a string for logging
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            entity.writeTo(out);
+
+            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+                String responseString = EntityUtils.toString(response.getEntity());
+                return Boolean.valueOf(responseString);
+            } catch (Exception e) {
+                Logger.warn("Failed to communicate with remote server!");
+            }
+        } catch (Exception e) {
+
+        }
+        return false;
+    }
+
+    private static void sendStillAlive() throws IOException {
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            HttpPost httpPost = new HttpPost(finalURL + "still_alive");
+
+            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+            builder.addTextBody("uuid", rspUUID);
+            httpPost.setEntity(builder.build());
+
+            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+            } catch (Exception e) {
+                Logger.warn("Failed to communicate with remote server!");
             }
         }
     }
 
-    private static Boolean sendSHA1(String stringData, String url) throws IOException {
+    public static void dataComplianceRequest() throws IOException {
         try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
-            HttpPost httpPost = new HttpPost(url);
+            HttpPost httpPost = new HttpPost(finalURL + "data_compliance");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-            builder.addTextBody("stringData", stringData, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+            builder.addTextBody("uuid", rspUUID);
             httpPost.setEntity(builder.build());
 
             try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-                String responseString = EntityUtils.toString(response.getEntity());
-                System.out.println("Response from server: " + responseString);
-                return Boolean.parseBoolean(responseString.trim());
+                HttpEntity responseEntity = response.getEntity();
+
+                if (responseEntity != null) {
+                    // Save the response as a zip file
+                    File zipFile = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "data_compliance" + File.separatorChar + "data.zip");
+                    if (!zipFile.getParentFile().exists()) zipFile.mkdirs();
+                    if (zipFile.exists()) zipFile.delete();
+                    zipFile.createNewFile();
+                    try (FileOutputStream outStream = new FileOutputStream(zipFile)) {
+                        responseEntity.writeTo(outStream);
+                    }
+                    InputStream inputStream = ResourcePackManager.plugin.getResource("ReadMe.md");
+
+                    File readMe = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "data_compliance" + File.separatorChar + "ReadMe.md");
+                    if (!readMe.exists()) readMe.createNewFile();
+
+                    // Copy the InputStream to the file
+                    Files.copy(inputStream, readMe.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
             } catch (Exception e) {
                 Logger.warn("Failed to communicate with remote server!");
-                e.printStackTrace();
-                return null;
-            }
-        }
-    }
-
-    private static void sendStillAlive(String url) throws IOException {
-        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
-            HttpPost httpPost = new HttpPost(url);
-
-            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-            builder.addTextBody("status", "alive", ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
-            httpPost.setEntity(builder.build());
-
-            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-                String responseString = EntityUtils.toString(response.getEntity());
-                System.out.println("Response from server: " + responseString);
-            } catch (Exception e) {
-                Logger.warn("Failed to communicate with remote server!");
-                e.printStackTrace();
             }
         }
     }
