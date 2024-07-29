@@ -2,11 +2,11 @@ package com.magmaguy.resourcepackmanager.mixer;
 
 import com.google.gson.*;
 import com.google.gson.stream.JsonReader;
-import com.magmaguy.resourcepackmanager.Logger;
+import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.thirdparty.*;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
-import com.magmaguy.resourcepackmanager.utils.ZipFile;
 import lombok.Getter;
 
 import java.io.File;
@@ -15,12 +15,8 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.BasicFileAttributeView;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 public class Mix {
     private static final String resourcePackName = "ResourcePackManager_RSP";
@@ -80,6 +76,12 @@ public class Mix {
         Oraxen oraxen = new Oraxen();
         if (oraxen.isEnabled())
             tempList.add(oraxen);
+        BetterHUD betterHUD = new BetterHUD();
+        if (betterHUD.isEnabled())
+            tempList.add(betterHUD);
+        ValhallaMMO valhallaMMO = new ValhallaMMO();
+        if (valhallaMMO.isEnabled())
+            tempList.add(valhallaMMO);
         thirdPartyResourcePacks = new ArrayList<>();
         for (int i = 0; i < tempList.size(); i++) {
             for (ThirdPartyResourcePack thirdPartyResourcePack : tempList) {

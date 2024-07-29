@@ -8,6 +8,8 @@ public class Oraxen extends ThirdPartyResourcePack {
                 "Oraxen" + File.separatorChar + "pack" + File.separatorChar + "pack.zip",
                 false,
                 false,
+                true,
+                true,
                 "");
     }
 }
