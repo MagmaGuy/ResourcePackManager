@@ -8,6 +8,8 @@ public class ResourcePackManager  extends ThirdPartyResourcePack {
                 "ResourcePackManager" + File.separatorChar + "blueprint" + File.separatorChar + "blueprint.zip",
                 false,
                 false,
+                true,
+                true,
                 "elitemobs reload");
     }
 }

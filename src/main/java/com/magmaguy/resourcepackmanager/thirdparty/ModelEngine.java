@@ -8,6 +8,8 @@ public class ModelEngine extends ThirdPartyResourcePack {
                 "ModelEngine" + File.separatorChar + "resource pack.zip",
                 false,
                 false,
+                true,
+                true,
                 "meg reload");
     }
 }

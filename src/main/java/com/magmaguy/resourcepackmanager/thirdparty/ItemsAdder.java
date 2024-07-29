@@ -8,6 +8,8 @@ public class ItemsAdder extends ThirdPartyResourcePack {
                 "ItemsAdder" + File.separatorChar + "output" + File.separatorChar + "generated.zip",
                 false,
                 false,
+                true,
+                true,
                 "");
     }
 }

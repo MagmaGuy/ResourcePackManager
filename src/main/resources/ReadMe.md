@@ -10,7 +10,7 @@ This system complies with:
 
 For data hosting transparency and compliance with these and other European norms, it is possible to obtain all data related to a server via the `/resourcepackmanager data_compliance_request` command. This command packages a full copy of all files and data associated with the requesting server.
 
-To request the takedown of your server's data, contact MagmaGuy at `magmaguy/at\nightbreak.io` (replace `/at\ ` with `@`). However, due to the system's design, data is only retained for up to two minutes after a server using ResourcePackManager shuts down, making email requests largely unnecessary. Nonetheless, the option remains available to ensure full compliance with European norms.
+To request the takedown of your server's data, contact MagmaGuy at `magmaguy/at\nightbreak.io` (replace `/at\ ` with `@`). However, due to the system's design, data is only retained for up to 24h after a server using ResourcePackManager shuts down, making email requests largely unnecessary. Nonetheless, the option remains available to ensure full compliance with European norms.
 
 ### Data Handling by ResourcePackManager and Nightbreak Servers
 
@@ -27,8 +27,8 @@ To request the takedown of your server's data, contact MagmaGuy at `magmaguy/at\
     - The zipped resource pack file is sent to the remote server, assigned the same UUID as the `.txt` file. This file can be obtained through `/resourcepackmanager data_compliance_request` and verified to be identical to the original in your output folder, as it is not modified by the Nightbreak servers.
 
 5. **"Still Alive" Ping**
-    - ResourcePackManager sends a "still alive" ping every minute, transmitting the UUID to the server, which updates the timestamp in the `.txt` file.
-        - If no "still alive" ping is received for over two minutes, all data associated with that UUID (the `.txt` file and the resource pack) is deleted from the Nightbreak servers.
+    - ResourcePackManager sends a "still alive" ping every 12 hours, transmitting the UUID to the server, which updates the timestamp in the `.txt` file.
+        - If no "still alive" ping is received for over 24 hours, all data associated with that UUID (the `.txt` file and the resource pack) is deleted from the Nightbreak servers.
 
 ### Data Policy
 
@@ -36,4 +36,16 @@ To request the takedown of your server's data, contact MagmaGuy at `magmaguy/at\
 - **No Download Logging:** Nightbreak does not log any data related to download requests by Minecraft clients.
 - **No Data Sales:** Data uploaded to Nightbreak is not, has never been, and will never be sold.
 - **Compliance with Takedown Requests:** Nightbreak will comply with takedown requests from both server administrators and law enforcement agencies.
-- **Automatic Data Removal:** All data associated with your server is automatically removed two minutes after your server shuts down and is reuploaded on every restart for as long as ResourcePackManager is in use and using the auto-host feature.
+- **Automatic Data Removal:** All data associated with your server is automatically removed 24 hours after your server shuts down and is reuploaded on every restart for as long as ResourcePackManager is in use and using the auto-host feature.
+
+### Terms of service
+
+As of writing this, the hosting service is provided for free for all users of ResourcePackManager. 
+
+It is the user's responsibility to ensure that the data uploaded to servers is not illegal and complies with any Mojang TOS as defined in their EULA. 
+
+Abusing the service to host material other than resource packages may result in a permanent denial of service for the offending IP.
+
+The service may, at any time, cease or be modified in such a way that makes old versions unable to connect to it.
+
+We reserve the right to unilaterally terminate this service at any time and for any reason.

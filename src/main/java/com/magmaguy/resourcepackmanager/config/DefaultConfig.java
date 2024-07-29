@@ -1,14 +1,13 @@
 package com.magmaguy.resourcepackmanager.config;
 
+import com.magmaguy.magmacore.config.ConfigurationEngine;
+import com.magmaguy.magmacore.config.ConfigurationFile;
 import lombok.Getter;
-import org.bukkit.configuration.file.FileConfiguration;
 
-import java.io.File;
 import java.util.List;
 
-public class DefaultConfig {
-    private static File file = null;
-    private static FileConfiguration fileConfiguration = null;
+public class DefaultConfig extends ConfigurationFile {
+
     @Getter
     private static List<String> priorityOrder;
     @Getter
@@ -18,16 +17,18 @@ public class DefaultConfig {
     @Getter
     private static String resourcePackPrompt;
 
-    public static void initializeConfig() {
-        file = ConfigurationEngine.fileCreator("config.yml");
-        fileConfiguration = ConfigurationEngine.fileConfigurationCreator(file);
+    public DefaultConfig() {
+        super("config.yml");
+    }
 
+    @Override
+    public void initializeValues() {
         priorityOrder = ConfigurationEngine.setList(
                 List.of(
                         "Sets the list, from highest priority (top) to lowest priority (bottom), in which the resource" +
                                 " packs will automatically resolve merge conflicts.",
                         "The defaults use plugin names. If you manually added your own resource pack in the mixer folder to be merged in, add its exact filename, including .zip in the name"),
-                file, fileConfiguration, "priorityOrder",
+                fileConfiguration, "priorityOrder",
                 List.of("ResourcePackManager", "EliteMobs", "FreeMinecraftModels", "ModelEngine", "ItemsAdder", "Nova", "Oraxen"));
 
         autoHost = ConfigurationEngine.setBoolean(
@@ -41,10 +42,6 @@ public class DefaultConfig {
 
         resourcePackPrompt = ConfigurationEngine.setString(
                 List.of("Sets whether the resource pack use will be forced to clients"),
-                file, fileConfiguration, "resourcePackPrompt", "Use recommended resource pack?");
-
-        ConfigurationEngine.fileSaverOnlyDefaults(fileConfiguration, file);
+                fileConfiguration, "resourcePackPrompt", "Use recommended resource pack?");
     }
-
-
 }

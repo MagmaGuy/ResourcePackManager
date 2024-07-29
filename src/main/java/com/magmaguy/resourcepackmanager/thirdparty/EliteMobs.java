@@ -10,6 +10,8 @@ public class EliteMobs extends ThirdPartyResourcePack {
                 "EliteMobs" + File.separatorChar + "exports" + File.separatorChar + "elitemobs_resource_pack.zip",
                 false,
                 false,
+                true,
+                true,
                 "elitemobs reload");
     }
 }

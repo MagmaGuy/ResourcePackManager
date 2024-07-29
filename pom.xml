@@ -5,11 +5,11 @@
 
     <groupId>com.magmaguy</groupId>
     <artifactId>ResourcePackManager</artifactId>
-    <version>0.0.1</version>
+    <version>0.0.2</version>
 
     <properties>
-        <maven.compiler.source>22</maven.compiler.source>
-        <maven.compiler.target>22</maven.compiler.target>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
@@ -21,6 +21,11 @@
         <repository>
             <id>central</id>
             <url>https://repo1.maven.org/maven2/</url>
+        </repository>
+        <repository>
+            <id>magmaguy-repo-releases</id>
+            <name>MagmaGuy's Repository</name>
+            <url>http://magmaguy.com:50001/releases</url>
         </repository>
     </repositories>
 
@@ -47,12 +52,32 @@
             <artifactId>httpclient5</artifactId>
             <version>5.3.1</version>
         </dependency>
+        <dependency>
+            <groupId>com.magmaguy</groupId>
+            <artifactId>MagmaCore</artifactId>
+            <version>1.0</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.magmaguy</groupId>
+            <artifactId>FreeMinecraftModels</artifactId>
+            <version>1.4.0</version>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 
     <build>
         <finalName>ResourcePackManager</finalName>
 
         <plugins>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>17</source>
+                    <target>17</target>
+                </configuration>
+            </plugin>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -77,4 +102,15 @@
             </plugin>
         </plugins>
     </build>
+    <distributionManagement>
+        <snapshotRepository>
+            <id>magmaguy-repo-snapshots</id>
+            <url>http://magmaguy.com:50001/snapshots</url>
+        </snapshotRepository>
+        <repository>
+            <id>magmaguy-repo-snapshots</id>
+            <name>MagmaGuy's Repository</name>
+            <url>http://magmaguy.com:50001/releases</url>
+        </repository>
+    </distributionManagement>
 </project>

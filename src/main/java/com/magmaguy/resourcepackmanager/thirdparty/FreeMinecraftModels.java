@@ -8,6 +8,8 @@ public class FreeMinecraftModels extends ThirdPartyResourcePack {
                 "FreeMinecraftModels" + File.separatorChar + "output" + File.separatorChar + "FreeMinecraftModels.zip",
                 false,
                 false,
+                true,
+                true,
                 "freeminecraftmodels reload");
     }
 }

@@ -1,6 +1,6 @@
 package com.magmaguy.resourcepackmanager.utils;
 
-import com.magmaguy.resourcepackmanager.Logger;
+import com.magmaguy.magmacore.util.Logger;
 
 import java.io.File;
 import java.io.FileInputStream;
