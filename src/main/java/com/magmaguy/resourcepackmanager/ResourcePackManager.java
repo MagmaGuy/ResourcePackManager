@@ -13,7 +13,7 @@ import com.magmaguy.resourcepackmanager.listeners.ResourcePackGeneratedEvent;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.playermanager.PlayerManager;
 import org.bukkit.Bukkit;
-import org.bukkit.entity.Player;
+import org.bukkit.event.HandlerList;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public class ResourcePackManager extends JavaPlugin {
@@ -41,13 +41,15 @@ public class ResourcePackManager extends JavaPlugin {
         CommandManager commandManager = new CommandManager(this, "resourcepackmanager");
         commandManager.registerCommand(new ReloadCommand());
         commandManager.registerCommand(new DataComplianceRequestCommand());
-        Bukkit.getPluginManager().registerEvents(new ResourcePackGeneratedEvent(), this);
+        if (Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels"))
+            Bukkit.getPluginManager().registerEvents(new ResourcePackGeneratedEvent(), this);
         AutoHost.initialize();
     }
 
     @Override
     public void onDisable() {
         Logger.info("Disabling ResourcePackManager");
+        HandlerList.unregisterAll(this);
         AutoHost.shutdown();
     }
 }
