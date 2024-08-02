@@ -1,5 +1,6 @@
 package com.magmaguy.resourcepackmanager;
 
+import com.magmaguy.freeminecraftmodels.bukkit.Metrics;
 import com.magmaguy.magmacore.MagmaCore;
 import com.magmaguy.magmacore.command.CommandManager;
 import com.magmaguy.magmacore.util.Logger;
@@ -44,6 +45,8 @@ public class ResourcePackManager extends JavaPlugin {
         if (Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels"))
             Bukkit.getPluginManager().registerEvents(new ResourcePackGeneratedEvent(), this);
         AutoHost.initialize();
+
+        Metrics metrics = new Metrics(this, 22867);
     }
 
     @Override
