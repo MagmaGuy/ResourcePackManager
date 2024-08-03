@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
 public class ThirdPartyResourcePack implements GeneratorInterface {
+    @Getter
     private final String pluginName;
     @Getter
     private File file = null;
@@ -66,6 +67,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
             file = new File(getTarget().toUri());
             resourcePackUpdated = true;
             mixerFilename = file.getName();
+            mixerResourcePack = file;
         }
         if (isEnabled && local) SHA1 = getSHA1(file);
         process();
@@ -86,7 +88,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                 }
             }
         }
-//        } else if (local && mixerCloneExists()) getTarget().toFile().delete();
         if (encrypts) decrypt();
         if (distributes) unpublish();
         if (zips)
@@ -124,10 +125,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
             if (zips) {
                 Logger.info("Cloning resource pack from " + file.toPath());
                 mixerResourcePack = Files.copy(Path.of(file.getAbsolutePath()), Path.of(getTarget().toAbsolutePath().toString()), StandardCopyOption.REPLACE_EXISTING).toFile();
-            } else {
-                if (mixerCloneExists()) getTarget().toFile().delete();
-                Logger.info("Cloning resource pack from " + file.toPath());
-                ZipFile.zip(file, getTarget().toString());
             }
         } catch (Exception e) {
             Logger.warn("Failed to clone resource pack from " + file.getPath() + " to the mixer folder!");

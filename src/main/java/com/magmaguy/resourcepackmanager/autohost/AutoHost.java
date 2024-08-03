@@ -26,7 +26,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.UUID;
 
 public class AutoHost {
-//        private static final String finalURL = "http://localhost:50000/";
     private static final String finalURL = "http://magmaguy.com:50000/";
     private static final UUID pluginRSPUUID = UUID.randomUUID();
     private static BukkitTask keepAlive = null;
@@ -39,7 +38,6 @@ public class AutoHost {
 
     public static void sendResourcePack(Player player) {
         if (rspUUID == null) return;
-//        player.setResourcePack(pluginRSPUUID, finalURL + "rsp_" + rspUUID, Mix.getFinalSHA1Bytes(), DefaultConfig.getResourcePackPrompt(), DefaultConfig.isForceResourcePack());
         player.setResourcePack(finalURL + "rsp_" + rspUUID, Mix.getFinalSHA1Bytes(), DefaultConfig.getResourcePackPrompt(), DefaultConfig.isForceResourcePack());
 
     }

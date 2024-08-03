@@ -16,15 +16,13 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
 
 public class Mix {
     private static final String resourcePackName = "ResourcePackManager_RSP";
     private static final HashMap priorities = new HashMap<>();
     private static List<File> resourcePacks;
+    private static List<String> orderedResourcePacks = new ArrayList<>();
     @Getter
     private static File finalResourcePack;
     @Getter
@@ -59,93 +57,98 @@ public class Mix {
     }
 
     private static void initializeThirdPartyResourcePacks() {
-        ArrayList<ThirdPartyResourcePack> tempList = new ArrayList<>();
-        com.magmaguy.resourcepackmanager.thirdparty.ResourcePackManager resourcePackManager = new com.magmaguy.resourcepackmanager.thirdparty.ResourcePackManager();
-        if (resourcePackManager.isEnabled())
-            tempList.add(resourcePackManager);
-        EliteMobs eliteMobs = new EliteMobs();
-        if (eliteMobs.isEnabled())
-            tempList.add(eliteMobs);
-        FreeMinecraftModels freeMinecraftModels = new FreeMinecraftModels();
-        if (freeMinecraftModels.isEnabled())
-            tempList.add(freeMinecraftModels);
-        ModelEngine modelEngine = new ModelEngine();
-        if (modelEngine.isEnabled())
-            tempList.add(modelEngine);
-        ItemsAdder itemsAdder = new ItemsAdder();
-        if (itemsAdder.isEnabled())
-            tempList.add(itemsAdder);
-        Nova nova = new Nova();
-        if (nova.isEnabled())
-            tempList.add(nova);
-        Oraxen oraxen = new Oraxen();
-        if (oraxen.isEnabled())
-            tempList.add(oraxen);
-        BetterHUD betterHUD = new BetterHUD();
-        if (betterHUD.isEnabled())
-            tempList.add(betterHUD);
-        ValhallaMMO valhallaMMO = new ValhallaMMO();
-        if (valhallaMMO.isEnabled())
-            tempList.add(valhallaMMO);
-        VaneCore vaneCore = new VaneCore();
-        if (vaneCore.isEnabled())
-            tempList.add(vaneCore);
-        BackpackPlus backpackPlus = new BackpackPlus();
-        if (backpackPlus.isEnabled())
-            tempList.add(backpackPlus);
-        RealisticSurvival realisticSurvival = new RealisticSurvival();
-        if (realisticSurvival.isEnabled())
-            tempList.add(backpackPlus);
+        List<ThirdPartyResourcePack> tempList = new ArrayList<>();
+        List<ThirdPartyResourcePack> resourcePackManagers = Arrays.asList(
+                new com.magmaguy.resourcepackmanager.thirdparty.ResourcePackManager(),
+                new EliteMobs(),
+                new FreeMinecraftModels(),
+                new ModelEngine(),
+                new ItemsAdder(),
+                new Nova(),
+                new Oraxen(),
+                new BetterHUD(),
+                new ValhallaMMO(),
+                new VaneCore(),
+                new BackpackPlus(),
+                new RealisticSurvival()
+        );
+
+        resourcePackManagers.stream()
+                .filter(ThirdPartyResourcePack::isEnabled)
+                .forEach(tempList::add);
+
         resourcePacks = new ArrayList<>();
         List<File> customFiles = new ArrayList<>();
+        List<File> thirdPartyFiles = new ArrayList<>();
+
+        tempList.forEach(rsp -> {
+            if (rsp.getMixerResourcePack() != null) {
+                thirdPartyFiles.add(rsp.getMixerResourcePack());
+            }
+        });
+
         for (File file : mixerFolder.listFiles()) {
-            boolean isDefault = false;
-            for (File supportedRSP : resourcePacks) {
-                if (supportedRSP.equals(file)) {
-                    isDefault = true;
+            boolean isThirdParty = false;
+            for (File thirdPartyFile : thirdPartyFiles) {
+                if (file.getName().equals(thirdPartyFile.getName())) {
+                    isThirdParty = true;
                     break;
                 }
             }
-            if (!isDefault) customFiles.add(file);
+            if (!isThirdParty) {
+                customFiles.add(file);
+            }
         }
-        //Do resource packs with priority
-        for (int i = 0; i < tempList.size(); i++) {
+
+        for (int i = 0; i < DefaultConfig.getPriorityOrder().size(); i++) {
             boolean foundFileAtPriority = false;
-            for (ThirdPartyResourcePack thirdPartyResourcePack : tempList) {
+            Iterator<ThirdPartyResourcePack> iterator = tempList.iterator();
+
+            while (iterator.hasNext()) {
+                ThirdPartyResourcePack thirdPartyResourcePack = iterator.next();
                 if (thirdPartyResourcePack.getPriority() == i) {
-                    if (thirdPartyResourcePack.getMixerResourcePack() == null) continue;
-                    resourcePacks.add(thirdPartyResourcePack.getMixerResourcePack());
-                    tempList.remove(thirdPartyResourcePack);
-                    foundFileAtPriority = true;
-                    Logger.info("Added supported resource pack " + thirdPartyResourcePack.getFile().getName() + " at priority " + i);
-                    break;
+                    File resourcePackFile = thirdPartyResourcePack.getMixerResourcePack();
+                    if (resourcePackFile != null) {
+                        resourcePacks.add(resourcePackFile);
+                        orderedResourcePacks.add(resourcePackFile.getName().replace(".zip", ""));
+                        iterator.remove();
+                        foundFileAtPriority = true;
+                        break;
+                    }
                 }
             }
+
             if (!foundFileAtPriority) {
-                Iterator<File> iterator = customFiles.iterator();
-                while (iterator.hasNext()) {
-                    File file = iterator.next();
+                Iterator<File> fileIterator = customFiles.iterator();
+                while (fileIterator.hasNext()) {
+                    File file = fileIterator.next();
                     int priority = DefaultConfig.getPriorityOrder().indexOf(file.getName());
                     if (priority == i) {
                         resourcePacks.add(file);
-                        iterator.remove();  // Use iterator's remove method to avoid ConcurrentModificationException
+                        orderedResourcePacks.add(file.getName().replace(".zip", ""));
+                        fileIterator.remove();
                         Logger.info("Added custom resource pack " + file.getName() + " at priority " + i);
                     }
                 }
             }
         }
-        //Do resource packs with no priority
-        for (ThirdPartyResourcePack thirdPartyResourcePack : tempList) {
-            if (thirdPartyResourcePack.getMixerResourcePack() == null) continue;
-            resourcePacks.add(thirdPartyResourcePack.getMixerResourcePack());
-            Logger.info("Added supported resource pack " + thirdPartyResourcePack.getMixerFilename() + " without a priority!");
-        }
 
-        for (File customFile : customFiles) {
-            Logger.info("Added custom resource pack " + customFile.getName() + " without a priority!");
+        tempList.stream()
+                .map(ThirdPartyResourcePack::getMixerResourcePack)
+                .filter(Objects::nonNull)
+                .forEach(resourcePack -> {
+                    resourcePacks.add(resourcePack);
+                    orderedResourcePacks.add(resourcePack.getName().replace(".zip", ""));
+                    Logger.info("Added supported resource pack " + resourcePack.getName() + " without a priority!");
+                });
+
+        customFiles.forEach(customFile -> {
             resourcePacks.add(customFile);
-        }
+            orderedResourcePacks.add(customFile.getName().replace(".zip", ""));
+            Logger.info("Added custom resource pack " + customFile.getName() + " without a priority!");
+        });
     }
+
 
     private static void cloneToOutputAndUnzip() {
         resourcePacks.forEach(resourcePack -> {
@@ -178,8 +181,13 @@ public class Mix {
             throw new RuntimeException(e);
         }
 
-        for (File file : getOutputFolder().listFiles()) {
-            if (file.getName().equals(resourcePackName)) continue;
+        List<File> orderedFiles = new ArrayList<>();
+        for (String filename : orderedResourcePacks){
+            orderedFiles.add(new File(getOutputFolder().getPath() + File.separatorChar + filename));
+        }
+
+        for (File file : orderedFiles) {
+            if (file.getName().equals(resourcePackName + ".zip")) continue;
             if (!file.isDirectory()) {
                 if (file.getName().endsWith(".zip")) continue;
                 Logger.warn("Somehow a non-folder file made its way to the output folder! This isn't good. File: " + file.getAbsolutePath());
