@@ -26,7 +26,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.UUID;
 
 public class AutoHost {
-//        private static final String finalURL = "http://localhost:3000/";
+//        private static final String finalURL = "http://localhost:50000/";
     private static final String finalURL = "http://magmaguy.com:50000/";
     private static final UUID pluginRSPUUID = UUID.randomUUID();
     private static BukkitTask keepAlive = null;

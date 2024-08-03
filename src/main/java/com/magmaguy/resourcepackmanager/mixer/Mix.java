@@ -5,6 +5,7 @@ import com.google.gson.stream.JsonReader;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
+import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.*;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import lombok.Getter;
@@ -16,17 +17,21 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 
 public class Mix {
     private static final String resourcePackName = "ResourcePackManager_RSP";
-    private static List<ThirdPartyResourcePack> thirdPartyResourcePacks;
+    private static final HashMap priorities = new HashMap<>();
+    private static List<File> resourcePacks;
     @Getter
     private static File finalResourcePack;
     @Getter
     private static String finalSHA1;
     @Getter
     private static byte[] finalSHA1Bytes;
+    private static File mixerFolder;
 
     private Mix() {
     }
@@ -34,13 +39,13 @@ public class Mix {
     public static void initialize() {
         if (!initializeDefaultPluginFolders()) return;
         initializeThirdPartyResourcePacks();
-        cloneToOutPutAndUnzip();
+        cloneToOutputAndUnzip();
         createOutputDefaultElements();
     }
 
     private static boolean initializeDefaultPluginFolders() {
         try {
-            File mixerFolder = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "mixer");
+            mixerFolder = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "mixer");
             if (!mixerFolder.exists()) mixerFolder.mkdir();
 
             File outputFolder = getOutputFolder();
@@ -82,27 +87,81 @@ public class Mix {
         ValhallaMMO valhallaMMO = new ValhallaMMO();
         if (valhallaMMO.isEnabled())
             tempList.add(valhallaMMO);
-        thirdPartyResourcePacks = new ArrayList<>();
-        for (int i = 0; i < tempList.size(); i++) {
-            for (ThirdPartyResourcePack thirdPartyResourcePack : tempList) {
-                if (thirdPartyResourcePack.getPriority() == i) {
-                    thirdPartyResourcePacks.add(thirdPartyResourcePack);
-                    tempList.remove(thirdPartyResourcePack);
+        VaneCore vaneCore = new VaneCore();
+        if (vaneCore.isEnabled())
+            tempList.add(vaneCore);
+        BackpackPlus backpackPlus = new BackpackPlus();
+        if (backpackPlus.isEnabled())
+            tempList.add(backpackPlus);
+        RealisticSurvival realisticSurvival = new RealisticSurvival();
+        if (realisticSurvival.isEnabled())
+            tempList.add(backpackPlus);
+        resourcePacks = new ArrayList<>();
+        List<File> customFiles = new ArrayList<>();
+        for (File file : mixerFolder.listFiles()) {
+            boolean isDefault = false;
+            for (File supportedRSP : resourcePacks) {
+                if (supportedRSP.equals(file)) {
+                    isDefault = true;
                     break;
                 }
             }
+            if (!isDefault) customFiles.add(file);
         }
-        thirdPartyResourcePacks.addAll(tempList);
+        //Do resource packs with priority
+        for (int i = 0; i < tempList.size(); i++) {
+            boolean foundFileAtPriority = false;
+            for (ThirdPartyResourcePack thirdPartyResourcePack : tempList) {
+                if (thirdPartyResourcePack.getPriority() == i) {
+                    if (thirdPartyResourcePack.getMixerResourcePack() == null) continue;
+                    resourcePacks.add(thirdPartyResourcePack.getMixerResourcePack());
+                    tempList.remove(thirdPartyResourcePack);
+                    foundFileAtPriority = true;
+                    Logger.info("Added supported resource pack " + thirdPartyResourcePack.getFile().getName() + " at priority " + i);
+                    break;
+                }
+            }
+            if (!foundFileAtPriority) {
+                Iterator<File> iterator = customFiles.iterator();
+                while (iterator.hasNext()) {
+                    File file = iterator.next();
+                    int priority = DefaultConfig.getPriorityOrder().indexOf(file.getName());
+                    if (priority == i) {
+                        resourcePacks.add(file);
+                        iterator.remove();  // Use iterator's remove method to avoid ConcurrentModificationException
+                        Logger.info("Added custom resource pack " + file.getName() + " at priority " + i);
+                    }
+                }
+            }
+        }
+        //Do resource packs with no priority
+        for (ThirdPartyResourcePack thirdPartyResourcePack : tempList) {
+            if (thirdPartyResourcePack.getMixerResourcePack() == null) continue;
+            resourcePacks.add(thirdPartyResourcePack.getMixerResourcePack());
+            Logger.info("Added supported resource pack " + thirdPartyResourcePack.getMixerFilename() + " without a priority!");
+        }
+
+        for (File customFile : customFiles) {
+            Logger.info("Added custom resource pack " + customFile.getName() + " without a priority!");
+            resourcePacks.add(customFile);
+        }
     }
 
-    private static void cloneToOutPutAndUnzip() {
-        thirdPartyResourcePacks.forEach(thirdPartyResourcePack -> {
+    private static void cloneToOutputAndUnzip() {
+        resourcePacks.forEach(resourcePack -> {
             try {
-                File file = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "output" + File.separatorChar + thirdPartyResourcePack.getMixerResourcePack().getName().replace(".zip", ""));
-                ZipFile.unzip(thirdPartyResourcePack.getMixerResourcePack(), file);
+                if (resourcePack == null) {
+                    Logger.warn("A resource pack was null by the time it was meant to be unzipped!");
+                    return;
+                }
+                File file = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "output" + File.separatorChar + resourcePack.getName().replace(".zip", ""));
+                ZipFile.unzip(resourcePack, file);
                 stripDirectoryMetadata(file);
             } catch (Exception e) {
-                Logger.warn("Failed to extract file " + thirdPartyResourcePack.getMixerResourcePack().getAbsolutePath() + " ! The file might be encrypted.");
+                if (resourcePack == null)
+                    Logger.warn("Failed to extract resource pack! A file might be encrypted.");
+                 else
+                    Logger.warn("Failed to extract resource pack " + resourcePack.getName() + " ! The file might be encrypted.");
                 e.printStackTrace();
             }
         });
@@ -167,14 +226,12 @@ public class Mix {
                 Files.delete(directory.toPath());
             } catch (Exception e) {
                 Logger.warn("Failed to delete directory " + directory.getPath());
-//                e.printStackTrace();
             }
         } else {
             try {
                 Files.delete(directory.toPath());
             } catch (IOException e) {
                 Logger.warn("Failed to delete file " + directory.getPath());
-//                e.printStackTrace();
             }
         }
     }
