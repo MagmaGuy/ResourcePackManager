@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
 public class ThirdPartyResourcePack implements GeneratorInterface {
+    private final String pluginName;
     @Getter
     private File file = null;
     private String url;
@@ -35,8 +36,9 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     @Getter
     private File mixerResourcePack = null;
     @Getter
+    private String mixerFilename;
+    @Getter
     private int priority = -1;
-    private final String pluginName;
 
     public ThirdPartyResourcePack(String pluginName, String path, boolean encrypts, boolean distributes, boolean zips, boolean local, String reloadCommand) {
         this.pluginName = pluginName;
@@ -49,14 +51,22 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
             this.file = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().toPath().toString() + File.separatorChar + path);
         else
             this.url = path;
-        if (!file.exists()) {
+        if (file != null && !file.exists()) {
             Logger.warn("Found " + pluginName + " but could not find resource pack at location " + file.getPath() + " ! ResourcePackManager will not be able to merge the resource pack from this plugin.");
             isEnabled = false;
+            return;
         }
         this.encrypts = encrypts;
         this.distributes = distributes;
         this.reloadCommand = reloadCommand;
         this.zips = zips;
+        mixerFilename = pluginName + "_" + (file.getName().endsWith(".zip") ? file.getName() : file.getName() + ".zip");
+        if (!zips) {
+            ZipFile.zip(file, getTarget().toString());
+            file = new File(getTarget().toUri());
+            resourcePackUpdated = true;
+            mixerFilename = file.getName();
+        }
         if (isEnabled && local) SHA1 = getSHA1(file);
         process();
         if (DefaultConfig.getPriorityOrder().contains(pluginName))
@@ -75,10 +85,12 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                     getTarget().toFile().delete();
                 }
             }
-        } else if (local && mixerCloneExists()) getTarget().toFile().delete();
+        }
+//        } else if (local && mixerCloneExists()) getTarget().toFile().delete();
         if (encrypts) decrypt();
         if (distributes) unpublish();
-        cloneResourcePackFile();
+        if (zips)
+            cloneResourcePackFile();
     }
 
     private String getSHA1(File file) {
@@ -124,6 +136,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     }
 
     private void cloneRemoteRSP() {
+        Logger.info("Getting resource pack from remote URL! This is not ideal but not optional for some plugins. URL: " + url);
         try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
             HttpPost httpPost = new HttpPost(url);
             try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
@@ -136,6 +149,8 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                     zipFile.createNewFile();
                     try (FileOutputStream outStream = new FileOutputStream(zipFile)) {
                         responseEntity.writeTo(outStream);
+                    } catch (Exception e) {
+                        Logger.warn("Failed to write resource pack from remote!");
                     }
                 }
             } catch (Exception e) {
@@ -156,6 +171,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     }
 
     private Path getTarget() {
-        return Path.of(ResourcePackManager.plugin.getDataFolder().toString(), "mixer", file.getName().endsWith(".zip") ? file.getName() : file.getName() + ".zip");
+        return Path.of(ResourcePackManager.plugin.getDataFolder().toString(), "mixer", mixerFilename);
     }
 }

@@ -29,7 +29,19 @@ public class DefaultConfig extends ConfigurationFile {
                                 " packs will automatically resolve merge conflicts.",
                         "The defaults use plugin names. If you manually added your own resource pack in the mixer folder to be merged in, add its exact filename, including .zip in the name"),
                 fileConfiguration, "priorityOrder",
-                List.of("ResourcePackManager", "EliteMobs", "FreeMinecraftModels", "ModelEngine", "ItemsAdder", "Nova", "Oraxen", "BetterHUD", "ValhallaMMO", "MMOInventory"));
+                List.of(
+                        "ResourcePackManager",
+                        "EliteMobs",
+                        "FreeMinecraftModels",
+                        "ModelEngine",
+                        "ItemsAdder",
+                        "Nova",
+                        "Oraxen",
+                        "BetterHUD",
+                        "ValhallaMMO",
+                        "MMOInventory",
+                        "vane-core",
+                        "RealisticSurvival"));
 
         autoHost = ConfigurationEngine.setBoolean(
                 List.of("Automatically host the resource pack on MagmaGuy's servers",

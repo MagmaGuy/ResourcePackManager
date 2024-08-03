@@ -13,6 +13,7 @@ import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.listeners.ResourcePackGeneratedEvent;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.playermanager.PlayerManager;
+import com.magmaguy.resourcepackmanager.utils.VersionChecker;
 import org.bukkit.Bukkit;
 import org.bukkit.event.HandlerList;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -44,9 +45,11 @@ public class ResourcePackManager extends JavaPlugin {
         commandManager.registerCommand(new DataComplianceRequestCommand());
         if (Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels"))
             Bukkit.getPluginManager().registerEvents(new ResourcePackGeneratedEvent(), this);
+        Bukkit.getPluginManager().registerEvents(new VersionChecker.VersionCheckerEvents(), this);
         AutoHost.initialize();
 
         Metrics metrics = new Metrics(this, 22867);
+        VersionChecker.checkPluginVersion();
     }
 
     @Override
