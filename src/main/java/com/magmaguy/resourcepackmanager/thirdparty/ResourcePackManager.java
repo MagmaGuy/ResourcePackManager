@@ -10,6 +10,6 @@ public class ResourcePackManager  extends ThirdPartyResourcePack {
                 false,
                 true,
                 true,
-                "elitemobs reload");
+                "");
     }
 }
