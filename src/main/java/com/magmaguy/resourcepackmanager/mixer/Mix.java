@@ -5,6 +5,7 @@ import com.google.gson.stream.JsonReader;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
+import com.magmaguy.resourcepackmanager.api.ResourcePackManagerAPI;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.*;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
@@ -20,9 +21,9 @@ import java.util.*;
 
 public class Mix {
     private static final String resourcePackName = "ResourcePackManager_RSP";
-    private static final HashMap priorities = new HashMap<>();
+    private static HashMap priorities;
     private static List<File> resourcePacks;
-    private static List<String> orderedResourcePacks = new ArrayList<>();
+    private static List<String> orderedResourcePacks;
     @Getter
     private static File finalResourcePack;
     @Getter
@@ -57,6 +58,8 @@ public class Mix {
     }
 
     private static void initializeThirdPartyResourcePacks() {
+        orderedResourcePacks = new ArrayList<>();
+        priorities = new HashMap();
         List<ThirdPartyResourcePack> tempList = new ArrayList<>();
         List<ThirdPartyResourcePack> resourcePackManagers = Arrays.asList(
                 new com.magmaguy.resourcepackmanager.thirdparty.ResourcePackManager(),
@@ -72,6 +75,9 @@ public class Mix {
                 new BackpackPlus(),
                 new RealisticSurvival()
         );
+
+        //API resource packs
+        resourcePackManagers.addAll(ResourcePackManagerAPI.thirdPartyResourcePackHashMap.values());
 
         resourcePackManagers.stream()
                 .filter(ThirdPartyResourcePack::isEnabled)
