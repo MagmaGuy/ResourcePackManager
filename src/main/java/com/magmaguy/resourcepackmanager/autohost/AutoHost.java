@@ -72,7 +72,7 @@ public class AutoHost {
                             counter++;
                         }
                     }
-                }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, 12 * 60 * 60 * 20L);
+                }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, 6 * 60 * 60 * 20L);
             }
         }.runTaskAsynchronously(ResourcePackManager.plugin);
     }

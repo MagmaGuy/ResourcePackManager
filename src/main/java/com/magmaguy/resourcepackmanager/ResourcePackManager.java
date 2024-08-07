@@ -31,7 +31,6 @@ public class ResourcePackManager extends JavaPlugin {
                 " |_|_\\|___/_| |_|  |_\\__,_|_||_\\__,_\\__, \\___|_|  \n" +
                 "                                    |___/         ");
         Bukkit.getLogger().info("ResourcePackManager v." + this.getDescription().getVersion());
-        MagmaCore.createInstance(this);
 
         plugin = this;
         new DefaultConfig();
@@ -50,6 +49,11 @@ public class ResourcePackManager extends JavaPlugin {
 
         Metrics metrics = new Metrics(this, 22867);
         VersionChecker.checkPluginVersion();
+    }
+
+    @Override
+    public void onLoad(){
+        MagmaCore.createInstance(this);
     }
 
     @Override

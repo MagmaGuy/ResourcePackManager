@@ -27,7 +27,7 @@ To request the takedown of your server's data, contact MagmaGuy at `magmaguy/at\
     - The zipped resource pack file is sent to the remote server, assigned the same UUID as the `.txt` file. This file can be obtained through `/resourcepackmanager data_compliance_request` and verified to be identical to the original in your output folder, as it is not modified by the Nightbreak servers.
 
 5. **"Still Alive" Ping**
-    - ResourcePackManager sends a "still alive" ping every 12 hours, transmitting the UUID to the server, which updates the timestamp in the `.txt` file.
+    - ResourcePackManager sends a "still alive" ping every 6 hours, transmitting the UUID to the server, which updates the timestamp in the `.txt` file.
         - If no "still alive" ping is received for over 24 hours, all data associated with that UUID (the `.txt` file and the resource pack) is deleted from the Nightbreak servers.
 
 ### Data Policy

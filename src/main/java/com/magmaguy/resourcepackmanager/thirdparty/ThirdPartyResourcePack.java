@@ -6,6 +6,7 @@ import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import lombok.Getter;
+import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
@@ -13,8 +14,10 @@ import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.core5.http.HttpEntity;
 import org.bukkit.Bukkit;
 
+import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -43,6 +46,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
 
     public ThirdPartyResourcePack(String pluginName, String path, boolean encrypts, boolean distributes, boolean zips, boolean local, String reloadCommand) {
         this.pluginName = pluginName;
+        this.mixerFilename = pluginName + "_resource_pack.zip";
         isEnabled = Bukkit.getPluginManager().isPluginEnabled(pluginName);
         if (isEnabled)
             Logger.info("Initializing " + pluginName + "'s resource pack");
@@ -61,12 +65,10 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         this.distributes = distributes;
         this.reloadCommand = reloadCommand;
         this.zips = zips;
-        mixerFilename = pluginName + "_" + (file.getName().endsWith(".zip") ? file.getName() : file.getName() + ".zip");
         if (!zips) {
             ZipFile.zip(file, getTarget().toString());
             file = new File(getTarget().toUri());
             resourcePackUpdated = true;
-            mixerFilename = file.getName();
             mixerResourcePack = file;
         }
         if (isEnabled && local) SHA1 = getSHA1(file);
@@ -132,23 +134,43 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         }
     }
 
-    private void cloneRemoteRSP() {
+    public void cloneRemoteRSP() {
         Logger.info("Getting resource pack from remote URL! This is not ideal but not optional for some plugins. URL: " + url);
         try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
-            HttpPost httpPost = new HttpPost(url);
-            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-                HttpEntity responseEntity = response.getEntity();
+            HttpGet httpGet = new HttpGet(url);
+            try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
+                int statusCode = response.getCode();
+                Logger.info("Response status code: " + statusCode);
 
-                if (responseEntity != null) {
-                    // Save the response as a zip file
-                    File zipFile = getTarget().toFile();
-                    if (zipFile.exists()) zipFile.delete();
-                    zipFile.createNewFile();
-                    try (FileOutputStream outStream = new FileOutputStream(zipFile)) {
-                        responseEntity.writeTo(outStream);
-                    } catch (Exception e) {
-                        Logger.warn("Failed to write resource pack from remote!");
+                if (statusCode == 200) {
+                    HttpEntity responseEntity = response.getEntity();
+                    if (responseEntity != null) {
+                        // Save the response as a zip file
+                        File zipFile = getTarget().toFile();
+                        if (zipFile.exists()) {
+                            Logger.info("Target file exists, deleting it: " + zipFile.getAbsolutePath());
+                            zipFile.delete();
+                        }
+                        zipFile.createNewFile();
+
+                        try (InputStream inStream = new BufferedInputStream(responseEntity.getContent());
+                             FileOutputStream outStream = new FileOutputStream(zipFile)) {
+
+                            byte[] buffer = new byte[4096];
+                            int bytesRead;
+                            while ((bytesRead = inStream.read(buffer)) != -1) {
+                                outStream.write(buffer, 0, bytesRead);
+                            }
+
+                            Logger.info("Successfully downloaded the resource pack to " + zipFile.getAbsolutePath());
+                        } catch (Exception e) {
+                            Logger.warn("Failed to write resource pack from remote!");
+                        }
+                    } else {
+                        Logger.warn("Response entity is null");
                     }
+                } else {
+                    Logger.warn("Unexpected response status: " + statusCode);
                 }
             } catch (Exception e) {
                 Logger.warn("Failed to communicate with remote server when downloading resource pack for plugin " + pluginName + "!");
