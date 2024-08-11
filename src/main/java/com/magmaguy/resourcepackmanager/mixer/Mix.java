@@ -10,6 +10,7 @@ import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.*;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import lombok.Getter;
+import org.bukkit.Bukkit;
 
 import java.io.File;
 import java.io.FileReader;
@@ -206,6 +207,21 @@ public class Mix {
         if (!ZipFile.zip(getOutputResourcePackFolder(), getOutputResourcePackFolder().getPath() + ".zip")) {
             Logger.warn("Failed to zip merged resource pack!");
             return;
+        }
+        if (!DefaultConfig.getResourcePackRerouting().isEmpty() && !DefaultConfig.getResourcePackRerouting().isBlank()){
+            try{
+                File reroutFolder = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().getAbsolutePath() + File.separatorChar + DefaultConfig.getResourcePackRerouting());
+                if (!reroutFolder.exists()) {
+                    Logger.warn("Failed to reroute zipped file to " + reroutFolder.getAbsolutePath() + " because that folder does not exist!");
+                } else if (!reroutFolder.isDirectory()){
+                    Logger.warn("Failed to reroute zipped file to " + reroutFolder.getAbsolutePath() + " because that is a file and not a folder!");
+                } else if (!ZipFile.zip(getOutputResourcePackFolder(), reroutFolder.getPath() + ".zip")) {
+                    Logger.warn("Failed to zip merged resource pack into reroute directory!");
+                    return;
+                }
+            } catch (Exception e){
+                Logger.warn("Failed to reroute zipped file to " + DefaultConfig.getResourcePackRerouting());
+            }
         }
         for (File file : getOutputFolder().listFiles()) {
             if (file.getName().equals(resourcePackName + ".zip")) {

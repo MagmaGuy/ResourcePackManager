@@ -10,7 +10,6 @@ public class PlayerManager implements Listener {
 
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
-        Logger.info("event");
         AutoHost.sendResourcePack(event.getPlayer());
     }
 }

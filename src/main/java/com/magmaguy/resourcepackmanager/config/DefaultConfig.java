@@ -16,6 +16,9 @@ public class DefaultConfig extends ConfigurationFile {
     private static boolean forceResourcePack;
     @Getter
     private static String resourcePackPrompt;
+    @Getter
+    private static String resourcePackRerouting;
+
 
     public DefaultConfig() {
         super("config.yml");
@@ -51,9 +54,17 @@ public class DefaultConfig extends ConfigurationFile {
         forceResourcePack = ConfigurationEngine.setBoolean(
                 List.of("Sets whether the resource pack use will be forced to clients"),
                 fileConfiguration, "forceResourcePack", false);
-
         resourcePackPrompt = ConfigurationEngine.setString(
                 List.of("Sets whether the resource pack use will be forced to clients"),
                 fileConfiguration, "resourcePackPrompt", "Use recommended resource pack?");
+        resourcePackRerouting = ConfigurationEngine.setString(
+                List.of(
+                        "OPTIONAL: Copy the merged directory to a custom directory location. Useful for unusual setups, like people trying to host with a different plugin.",
+                        "If you are hosting with a different plugin make sure to disable Auto-hosting here!",
+                        "This will use the plugin directory as the base directory.",
+                        "As an example, if you wanted to target ResourcePackManager's output folder, you'd do:",
+                        "ResourcePackManage/output",
+                        "If you don't know what any of what is written here means, just don't touch this setting!"),
+                fileConfiguration, "resourcePackRerouting", "");
     }
 }
