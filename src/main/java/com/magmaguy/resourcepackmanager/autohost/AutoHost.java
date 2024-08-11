@@ -38,13 +38,14 @@ public class AutoHost {
 
     public static void sendResourcePack(Player player) {
         if (rspUUID == null) return;
+        Logger.info("Sending resource pack to " + player.getName());
         player.setResourcePack(finalURL + "rsp_" + rspUUID, Mix.getFinalSHA1Bytes(), DefaultConfig.getResourcePackPrompt(), DefaultConfig.isForceResourcePack());
-
     }
 
     public static void initialize() {
         if (!DefaultConfig.isAutoHost()) return;
         if (Mix.getFinalResourcePack() == null) return;
+        Logger.info("Starting autohost!");
         firstUpload = true;
         new BukkitRunnable() {
             @Override
@@ -106,6 +107,8 @@ public class AutoHost {
     }
 
     public static void uploadFile() {
+        Logger.info("Uploading resource!");
+
         try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
             HttpPost uploadFile = new HttpPost(finalURL + "upload");
 
