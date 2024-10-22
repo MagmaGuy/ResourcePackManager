@@ -15,7 +15,7 @@ public class ReloadCommand extends AdvancedCommand {
         super(List.of("reload"));
         setDescription("Reloads the plugin");
         setPermission("resourcepackmanager.*");
-        setUsage("/fmm reload");
+        setUsage("/rspm reload");
     }
 
     public static void reloadPlugin(CommandSender sender) {
