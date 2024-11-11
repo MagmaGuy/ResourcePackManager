@@ -210,12 +210,12 @@ public class Mix {
         }
         if (!DefaultConfig.getResourcePackRerouting().isEmpty() && !DefaultConfig.getResourcePackRerouting().isBlank()){
             try{
-                File reroutFolder = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().getAbsolutePath() + File.separatorChar + DefaultConfig.getResourcePackRerouting());
-                if (!reroutFolder.exists()) {
-                    Logger.warn("Failed to reroute zipped file to " + reroutFolder.getAbsolutePath() + " because that folder does not exist!");
-                } else if (!reroutFolder.isDirectory()){
-                    Logger.warn("Failed to reroute zipped file to " + reroutFolder.getAbsolutePath() + " because that is a file and not a folder!");
-                } else if (!ZipFile.zip(getOutputResourcePackFolder(), reroutFolder.getPath() + ".zip")) {
+                File rerouteFolder = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().getAbsolutePath() + File.separatorChar + DefaultConfig.getResourcePackRerouting());
+                if (!rerouteFolder.exists()) {
+                    Logger.warn("Failed to reroute zipped file to " + rerouteFolder.getAbsolutePath() + " because that folder does not exist!");
+                } else if (!rerouteFolder.isDirectory()){
+                    Logger.warn("Failed to reroute zipped file to " + rerouteFolder.getAbsolutePath() + " because that is a file and not a folder!");
+                } else if (!ZipFile.zip(getOutputResourcePackFolder(), rerouteFolder.getPath() + ".zip")) {
                     Logger.warn("Failed to zip merged resource pack into reroute directory!");
                     return;
                 }
