@@ -70,6 +70,7 @@ public class Mix {
                 new ItemsAdder(),
                 new Nova(),
                 new Oraxen(),
+                new Nexo(),
                 new BetterHUD(),
                 new ValhallaMMO(),
                 new VaneCore(),
