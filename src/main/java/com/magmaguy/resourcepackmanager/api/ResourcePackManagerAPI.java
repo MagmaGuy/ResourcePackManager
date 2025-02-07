@@ -1,10 +1,8 @@
 package com.magmaguy.resourcepackmanager.api;
 
-import com.magmaguy.magmacore.command.CommandManager;
 import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
 import org.bukkit.Bukkit;
-import org.bukkit.command.CommandSender;
 
 import java.util.HashMap;
 

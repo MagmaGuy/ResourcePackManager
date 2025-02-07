@@ -1,7 +1,5 @@
 package com.magmaguy.resourcepackmanager.thirdparty;
 
-import lombok.Getter;
-
 import java.io.File;
 
 public class EliteMobs extends ThirdPartyResourcePack {

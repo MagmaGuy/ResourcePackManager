@@ -1,8 +1,8 @@
 package com.magmaguy.resourcepackmanager.config;
 
+import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.ZipFile;
-import com.magmaguy.resourcepackmanager.ResourcePackManager;
 
 import java.io.File;
 import java.io.IOException;

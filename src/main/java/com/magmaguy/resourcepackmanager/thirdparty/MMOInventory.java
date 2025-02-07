@@ -1,7 +1,5 @@
 package com.magmaguy.resourcepackmanager.thirdparty;
 
-import java.io.File;
-
 public class MMOInventory extends ThirdPartyResourcePack {
     public MMOInventory() {
         super("MMOInventory",

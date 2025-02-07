@@ -1,13 +1,12 @@
 package com.magmaguy.resourcepackmanager.thirdparty;
 
+import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.ZipFile;
-import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import lombok.Getter;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
-import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
@@ -53,7 +52,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         else return;
         this.local = local;
         if (local)
-            this.file = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().toPath().toString() + File.separatorChar + path);
+            this.file = new File(com.magmaguy.resourcepackmanager.ResourcePackManager.plugin.getDataFolder().getParentFile().toPath().toString() + File.separatorChar + path);
         else
             this.url = path;
         if (file != null && !file.exists()) {

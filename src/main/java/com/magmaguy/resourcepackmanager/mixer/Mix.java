@@ -1,16 +1,15 @@
 package com.magmaguy.resourcepackmanager.mixer;
 
+import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.google.gson.*;
 import com.google.gson.stream.JsonReader;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.ZipFile;
-import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.api.ResourcePackManagerAPI;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.*;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import lombok.Getter;
-import org.bukkit.Bukkit;
 
 import java.io.File;
 import java.io.FileReader;

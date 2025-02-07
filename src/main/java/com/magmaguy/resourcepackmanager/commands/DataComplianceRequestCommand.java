@@ -5,8 +5,6 @@ import com.magmaguy.magmacore.command.CommandData;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
-import org.bukkit.command.Command;
-import org.bukkit.command.CommandSender;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.util.List;
