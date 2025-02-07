@@ -1,6 +1,5 @@
 package com.magmaguy.resourcepackmanager.playermanager;
 
-import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
