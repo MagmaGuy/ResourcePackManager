@@ -40,6 +40,7 @@ public class DefaultConfig extends ConfigurationFile {
                         "Nova",
                         "ItemsAdder",
                         "Oraxen",
+                        "Nexo",
                         "BetterHUD",
                         "ValhallaMMO",
                         "MMOInventory",
