@@ -1,19 +1,21 @@
 package com.magmaguy.resourcepackmanager;
 
-import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
-import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
-import com.magmaguy.resourcepackmanager.utils.VersionChecker;
 import com.magmaguy.freeminecraftmodels.bukkit.Metrics;
 import com.magmaguy.magmacore.MagmaCore;
 import com.magmaguy.magmacore.command.CommandManager;
 import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.listeners.ResourcePackGeneratedEvent;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
+import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
+import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
 import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
-import com.magmaguy.resourcepackmanager.Listeners.ResourcePackGeneratedEvent;
+import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.playermanager.PlayerManager;
+import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
+import com.magmaguy.resourcepackmanager.utils.VersionChecker;
 import org.bukkit.Bukkit;
 import org.bukkit.event.HandlerList;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -34,8 +36,9 @@ public class ResourcePackManager extends JavaPlugin {
         MagmaCore.onEnable();
 
         plugin = this;
-        new DefaultConfig();
         new DataConfig();
+        new DefaultConfig();
+        new CompatiblePluginConfig();
         BlueprintFolder.initialize();
         Mix.initialize();
         if (DefaultConfig.isAutoHost())
@@ -49,17 +52,18 @@ public class ResourcePackManager extends JavaPlugin {
         AutoHost.initialize();
 
         Metrics metrics = new Metrics(this, 22867);
-        VersionChecker.checkPluginVersion();
+        MagmaCore.checkVersionUpdate("118574", "https://www.spigotmc.org/resources/resource-pack-manager.118574/");
     }
 
     @Override
-    public void onLoad(){
+    public void onLoad() {
         MagmaCore.createInstance(this);
     }
 
     @Override
     public void onDisable() {
         Logger.info("Disabling ResourcePackManager");
+        ThirdPartyResourcePack.shutdown();
         HandlerList.unregisterAll(this);
         AutoHost.shutdown();
     }

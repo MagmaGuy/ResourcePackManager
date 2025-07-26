@@ -1,9 +1,10 @@
 package com.magmaguy.resourcepackmanager.thirdparty;
 
-import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.ZipFile;
+import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
+import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfigFields;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import lombok.Getter;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
@@ -20,79 +21,124 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.HashSet;
 
 public class ThirdPartyResourcePack implements GeneratorInterface {
+    public static HashSet<ThirdPartyResourcePack> thirdPartyResourcePacks = new HashSet<>();
+
     @Getter
     private final String pluginName;
     @Getter
+    private final String mixerFilename;
+    private final String localPath;
+    private final String url;
+    @Getter
     private File file = null;
-    private String url;
     private boolean encrypts;
     private boolean distributes;
     private boolean zips;
-    private boolean local;
     private String reloadCommand;
     @Getter
     private boolean isEnabled;
     private String SHA1;
-    private boolean resourcePackUpdated = false;
     @Getter
     private File mixerResourcePack = null;
     @Getter
-    private String mixerFilename;
-    @Getter
     private int priority = -1;
+    @Getter
+    private boolean done = false;
 
-    public ThirdPartyResourcePack(String pluginName, String path, boolean encrypts, boolean distributes, boolean zips, boolean local, String reloadCommand) {
+    public ThirdPartyResourcePack(String pluginName, String localPath, String url, boolean encrypts, boolean distributes, boolean zips, String reloadCommand) {
         this.pluginName = pluginName;
         this.mixerFilename = pluginName + "_resource_pack.zip";
+        this.url = url;
+        this.localPath = localPath;
+
         isEnabled = Bukkit.getPluginManager().isPluginEnabled(pluginName);
-        if (isEnabled)
-            Logger.info("Initializing " + pluginName + "'s resource pack");
-        else return;
-        this.local = local;
-        if (local)
-            this.file = new File(com.magmaguy.resourcepackmanager.ResourcePackManager.plugin.getDataFolder().getParentFile().toPath().toString() + File.separatorChar + path);
-        else
-            this.url = path;
-        if (file != null && !file.exists()) {
-            Logger.warn("Found " + pluginName + " but could not find resource pack at location " + file.getPath() + " ! ResourcePackManager will not be able to merge the resource pack from this plugin.");
-            isEnabled = false;
+        if (!isEnabled) {
+            done = true;
             return;
         }
+
+        if (localPath != null && !processLocal(localPath)) {
+            done = true;
+            return;
+        } else if (localPath == null && url == null) {
+            Logger.warn("Plugin " + pluginName + " has no resource pack path specified! ResourcePackManager will not be able to merge the resource pack from this plugin.");
+            isEnabled = false;
+            done = true;
+            return;
+        }
+
         this.encrypts = encrypts;
         this.distributes = distributes;
         this.reloadCommand = reloadCommand;
         this.zips = zips;
-        if (!zips) {
-            ZipFile.zip(file, getTarget().toString());
-            file = new File(getTarget().toUri());
-            resourcePackUpdated = true;
-            mixerResourcePack = file;
-        }
-        if (isEnabled && local) SHA1 = getSHA1(file);
+
+        if (!zips) zipThirdPartyPack();
+
+        if (localPath != null) SHA1 = getSHA1(file);
+
         process();
+
         if (DefaultConfig.getPriorityOrder().contains(pluginName))
             priority = DefaultConfig.getPriorityOrder().indexOf(pluginName);
+
+        thirdPartyResourcePacks.add(this);
+        done = true;
+    }
+
+    public static void shutdown() {
+        thirdPartyResourcePacks.clear();
+    }
+
+    public static void initializeThirdPartyResourcePack(CompatiblePluginConfigFields compatiblePluginConfigFields) {
+        new ThirdPartyResourcePack(
+                compatiblePluginConfigFields.getPluginName(),
+                compatiblePluginConfigFields.getLocalPath(),
+                compatiblePluginConfigFields.getUrl(),
+                compatiblePluginConfigFields.isEncrypts(),
+                compatiblePluginConfigFields.isDistributes(),
+                compatiblePluginConfigFields.isZips(),
+                compatiblePluginConfigFields.getReloadCommand());
+    }
+
+    private void zipThirdPartyPack() {
+        ZipFile.zip(file, getTarget().toString());
+        file = new File(getTarget().toUri());
+        mixerResourcePack = file;
+    }
+
+    private boolean processLocal(String localPath) {
+        this.file = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().toPath().toString() + File.separatorChar + localPath);
+
+        if (!file.exists()) {
+            Logger.warn("Found " + pluginName + " but could not find resource pack at location " + file.getPath() + " ! ResourcePackManager will not be able to merge the resource pack from this plugin.");
+            isEnabled = false;
+            return false;
+        }
+
+        return true;
     }
 
     public void process() {
         if (!isEnabled) return;
-        if (local && zips) {
-            if (mixerCloneExists()) {
-                if (getSHA1(new File(getTarget().toUri())).equals(SHA1)) {
-                    mixerResourcePack = getTarget().toFile();
-                    return;
-                } else {
-                    Logger.info("Clearing outdated resource pack in " + getTarget());
-                    getTarget().toFile().delete();
-                }
+
+        //Check if a copy already exists in the mixer folder and if it is up-to-date
+        if (localPath != null && mixerCloneExists()) {
+            if (getSHA1(new File(getTarget().toUri())).equals(SHA1)) {
+                mixerResourcePack = getTarget().toFile();
+                return;
+            } else {
+                Logger.info("Clearing outdated resource pack in " + getTarget());
+                getTarget().toFile().delete();
             }
         }
+
         if (encrypts) decrypt();
         if (distributes) unpublish();
-        if (zips)
-            cloneResourcePackFile();
+
+        cloneResourcePackFile();
     }
 
     private String getSHA1(File file) {
@@ -116,9 +162,8 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
 
     @Override
     public void cloneResourcePackFile() {
-        if (local) cloneLocalRSP();
+        if (localPath != null) cloneLocalRSP();
         else cloneRemoteRSP();
-        resourcePackUpdated = true;
     }
 
     private void cloneLocalRSP() {

@@ -1,7 +1,7 @@
-package com.magmaguy.resourcepackmanager.Listeners;
+package com.magmaguy.resourcepackmanager.listeners;
 
-import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
 import com.magmaguy.freeminecraftmodels.events.ResourcePackGenerationEvent;
+import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;

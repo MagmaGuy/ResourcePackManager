@@ -5,7 +5,7 @@
 
     <groupId>com.magmaguy</groupId>
     <artifactId>ResourcePackManager</artifactId>
-    <version>1.4.1</version>
+    <version>1.5.0</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -55,7 +55,7 @@
         <dependency>
             <groupId>com.magmaguy</groupId>
             <artifactId>MagmaCore</artifactId>
-            <version>1.15-SNAPSHOT</version>
+            <version>1.18-SNAPSHOT</version>
             <scope>compile</scope>
         </dependency>
         <dependency>
