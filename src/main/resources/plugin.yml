@@ -1,18 +1,18 @@
 name: ResourcePackManager
 main: com.magmaguy.resourcepackmanager.ResourcePackManager
-version: 1.4.1
+version: 1.5.0
 api-version: 1.14
 author: MagmaGuy
 softdepend:
-- EliteMobs
-- FreeMinecraftModels
-- ModelEngine
-- Nova
-- Oraxen
-- ItemsAdder
-- BackpackPlus
-- vane-core
-- RealisticSurvival
+  - EliteMobs
+  - FreeMinecraftModels
+  - ModelEngine
+  - Nova
+  - Oraxen
+  - ItemsAdder
+  - BackpackPlus
+  - vane-core
+  - RealisticSurvival
 
 commands:
   resourcepackmanager:
