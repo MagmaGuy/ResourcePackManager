@@ -13,6 +13,7 @@ softdepend:
   - BackpackPlus
   - vane-core
   - RealisticSurvival
+  - Nexo
 
 commands:
   resourcepackmanager:
