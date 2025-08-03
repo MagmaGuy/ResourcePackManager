@@ -6,6 +6,7 @@ import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.api.ResourcePackManagerAPI;
+import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
@@ -37,11 +38,12 @@ public class Mix {
     private Mix() {
     }
 
-    public static void initialize() {
+    public static void mixResourcePacks() {
         if (!initializeDefaultPluginFolders()) return;
         initializeThirdPartyResourcePacks();
         cloneToOutputAndUnzip();
         createOutputDefaultElements();
+        AutoHost.initialize();
     }
 
     private static boolean initializeDefaultPluginFolders() {
@@ -168,9 +170,11 @@ public class Mix {
     }
 
     private static void createOutputDefaultElements() {
+        //Clear old resource pack
         if (getOutputResourcePackFolder().exists()) {
             recursivelyDeleteDirectory(getOutputResourcePackFolder());
         }
+        //Make sure new resource pack exists
         try {
             getOutputResourcePackFolder().mkdir();
         } catch (Exception e) {

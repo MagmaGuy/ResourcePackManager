@@ -8,6 +8,7 @@ import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import lombok.Getter;
+import lombok.Setter;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.entity.mime.MultipartEntityBuilder;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
@@ -21,28 +22,34 @@ import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 
 public class AutoHost {
-        private static final String finalURL = "http://magmaguy.com:50000/";
-        private static boolean done = false;
-//    private static final String finalURL = "http://localhost:50000/";
+    private static final String finalURL = "https://magmaguy.com/rsp/";
+    @Setter
+    private static boolean done = false;
+//    private static final String finalURL = "https://localhost:50000/";
 
     private static BukkitTask keepAlive = null;
     @Getter
     private static String rspUUID = null;
+    @Setter
     private static boolean firstUpload = true;
 
     private AutoHost() {
     }
 
     public static void sendResourcePack(Player player) {
+        Logger.info("Sending resource pack to " + player.getName() + ". rspUUID is null: " + (rspUUID == null) + ". done: " + done + ". firstUpload: " + firstUpload + ".");
         if (rspUUID == null || !done) return;
         Logger.info("Sending resource pack to " + player.getName());
-        player.setResourcePack(finalURL + "rsp_" + rspUUID, Mix.getFinalSHA1Bytes(), DefaultConfig.getResourcePackPrompt(), DefaultConfig.isForceResourcePack());
+        player.setResourcePack(finalURL + rspUUID, Mix.getFinalSHA1Bytes(), DefaultConfig.getResourcePackPrompt(), DefaultConfig.isForceResourcePack());
     }
 
     public static void initialize() {
@@ -50,35 +57,33 @@ public class AutoHost {
         if (Mix.getFinalResourcePack() == null) return;
         Logger.info("Starting autohost!");
         firstUpload = true;
-        new BukkitRunnable() {
+        done = false;
+        rspUUID = null;
+        if (keepAlive != null) keepAlive.cancel();
+
+        keepAlive = new BukkitRunnable() {
+            int counter = 0;
+
             @Override
             public void run() {
-                checkFileExistence();
-                keepAlive = new BukkitRunnable() {
-                    int counter = 0;
-
-                    @Override
-                    public void run() {
-                        if (rspUUID != null) {
-                            counter = 0;
-                            try {
-                                sendStillAlive();
-                            } catch (Exception e) {
-                                rspUUID = null;
-                                Logger.warn("Failed to autohost resource pack!");
-                                e.printStackTrace();
-                            }
-                        } else {
-                            checkFileExistence();
-                            if (rspUUID == null && counter % 10 == 0) {
-                                Logger.warn("Failed to connect to remote server to autohost the resource pack!");
-                            }
-                            counter++;
-                        }
+                if (rspUUID != null) {
+                    counter = 0;
+                    try {
+                        sendStillAlive();
+                    } catch (Exception e) {
+                        rspUUID = null;
+                        Logger.warn("Failed to autohost resource pack!");
+                        e.printStackTrace();
                     }
-                }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, 6 * 60 * 60 * 20L);
+                } else {
+                    checkFileExistence();
+                    if (rspUUID == null && counter % 10 == 0) {
+                        Logger.warn("Failed to connect to remote server to autohost the resource pack!");
+                    }
+                    counter++;
+                }
             }
-        }.runTaskAsynchronously(ResourcePackManager.plugin);
+        }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, 6 * 60 * 60 * 20L);
     }
 
     private static void checkFileExistence() {
@@ -88,6 +93,16 @@ public class AutoHost {
             return;
         }
         if (!sendSHA1()) uploadFile();
+        else {
+            //Case if the remote server already has the resource pack
+            done = true;
+            if (firstUpload) {
+                //Recover from a reload by sending the pack to online players
+                for (Player player : Bukkit.getOnlinePlayers())
+                    AutoHost.sendResourcePack(player);
+            }
+            firstUpload = false;
+        }
     }
 
     public static void initializeLink() {
@@ -180,7 +195,7 @@ public class AutoHost {
                 int statusCode = response.getCode();
 
                 if (statusCode >= 200 && statusCode < 300) {
-                    Logger.info("Uploaded resource pack for automatic hosting! url: " + finalURL + "rsp_" + rspUUID);
+                    Logger.info("Uploaded resource pack for automatic hosting! url: " + finalURL + rspUUID);
                     done = true;
                     if (firstUpload) {
                         //Recover from a reload by sending the pack to online players
@@ -191,12 +206,10 @@ public class AutoHost {
                 } else {
                     // Handle detailed error messages from server
                     handleErrorResponse(responseString, statusCode, "upload");
-                    return;
                 }
             } catch (Exception e) {
                 Logger.warn("Failed to communicate with remote server during upload!");
                 e.printStackTrace();
-                return;
             }
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -339,6 +352,7 @@ public class AutoHost {
     public static void shutdown() {
         if (keepAlive != null) keepAlive.cancel();
         done = false;
+        rspUUID = null;
     }
 
     private static void handleErrorResponse(String responseString, int statusCode, String operation) {
