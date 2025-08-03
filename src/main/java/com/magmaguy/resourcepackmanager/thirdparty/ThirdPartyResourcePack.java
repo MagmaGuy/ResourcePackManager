@@ -5,14 +5,18 @@ import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfigFields;
+import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import lombok.Getter;
+import lombok.Setter;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.core5.http.HttpEntity;
 import org.bukkit.Bukkit;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.BufferedInputStream;
 import java.io.File;
@@ -22,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.HashSet;
+import java.util.Objects;
 
 public class ThirdPartyResourcePack implements GeneratorInterface {
     public static HashSet<ThirdPartyResourcePack> thirdPartyResourcePacks = new HashSet<>();
@@ -47,6 +52,11 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     private int priority = -1;
     @Getter
     private boolean done = false;
+
+    private int ticksWithoutChange = 0;
+    private boolean consideredStable = false;
+    @Setter
+    private boolean stableResourcePackSent = false;
 
     public ThirdPartyResourcePack(String pluginName, String localPath, String url, boolean encrypts, boolean distributes, boolean zips, String reloadCommand) {
         this.pluginName = pluginName;
@@ -88,8 +98,54 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         done = true;
     }
 
+    private static BukkitTask resourcePackChangeWatcher = null;
+
+    public static void startResourcePackChangeWatchdog() {
+        resourcePackChangeWatcher = new BukkitRunnable() {
+            @Override
+            public void run() {
+                boolean readyToSend = true;
+                boolean stableAlreadySent = true;
+                for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
+                    if (!thirdPartyResourcePack.isEnabled || thirdPartyResourcePack.file == null) continue;
+                    if (!Objects.equals(thirdPartyResourcePack.getSHA1(thirdPartyResourcePack.file), thirdPartyResourcePack.SHA1)) {
+                        thirdPartyResourcePack.ticksWithoutChange = 0;
+                        thirdPartyResourcePack.SHA1 = thirdPartyResourcePack.getSHA1(thirdPartyResourcePack.file);
+                        if (thirdPartyResourcePack.consideredStable) {
+                            thirdPartyResourcePack.consideredStable = false;
+                            thirdPartyResourcePack.stableResourcePackSent = false;
+                            Logger.info("Resource pack for " + thirdPartyResourcePack.pluginName + " has changed, considering it unstable.");
+                        }
+                    }
+                    if (!thirdPartyResourcePack.stableResourcePackSent) stableAlreadySent = false;
+                    if (!thirdPartyResourcePack.consideredStable) readyToSend = false;
+                    if (thirdPartyResourcePack.consideredStable) continue;
+                    thirdPartyResourcePack.ticksWithoutChange++;
+                    if (thirdPartyResourcePack.ticksWithoutChange == 3) {
+                        //Is nothing has changed for 1 second, then it should be considered to be stable
+                        thirdPartyResourcePack.consideredStable = true;
+                        Logger.info("Resource pack for " + thirdPartyResourcePack.pluginName + " has not changed for 3 seconds, considering it stable.");
+                    }
+                }
+
+                if (!stableAlreadySent && readyToSend) {
+                    Logger.info("All resource packs are stable, sending resource pack to players.");
+                    tagAsResourcePackSent();
+                    Mix.mixResourcePacks();
+                }
+            }
+        }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 20, 20);
+    }
+
+    public static void tagAsResourcePackSent(){
+        for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
+            thirdPartyResourcePack.stableResourcePackSent = true;
+        }
+    }
+
     public static void shutdown() {
         thirdPartyResourcePacks.clear();
+        resourcePackChangeWatcher.cancel();
     }
 
     public static void initializeThirdPartyResourcePack(CompatiblePluginConfigFields compatiblePluginConfigFields) {
