@@ -34,6 +34,9 @@ public class CompatiblePluginConfigFields extends CustomConfigFields {
     @Getter
     @Setter
     private String mixerFilename;
+    @Getter
+    @Setter
+    private boolean cluster = false;
 
     public CompatiblePluginConfigFields(String filename, boolean isEnabled) {
         super(filename, isEnabled);
@@ -51,6 +54,7 @@ public class CompatiblePluginConfigFields extends CustomConfigFields {
         this.resourcePackUpdated = processBoolean("resourcePackUpdated", resourcePackUpdated, resourcePackUpdated, true);
         this.mixerFilename = processString("mixerFilename", mixerFilename, mixerFilename, true);
         this.localPath = processString("localPath", localPath, localPath, true);
+        this.cluster = processBoolean("cluster", cluster, cluster, true);
 
         if (isEnabled) ThirdPartyResourcePack.initializeThirdPartyResourcePack(this);
     }

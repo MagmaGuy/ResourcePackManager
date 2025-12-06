@@ -90,6 +90,10 @@ public class Mix {
 
         // Separate out truly custom files in the mixer folder
         for (File file : mixerFolder.listFiles()) {
+            // Skip directories that aren't zip files - these are likely from cluster processing
+            if (file.isDirectory()) continue;
+            // Skip non-zip files
+            if (!file.getName().endsWith(".zip")) continue;
             boolean isThirdParty = thirdPartyFiles.stream()
                     .anyMatch(tp -> tp.getName().equals(file.getName()));
             if (!isThirdParty) {
@@ -161,12 +165,62 @@ public class Mix {
                 stripDirectoryMetadata(file);
             } catch (Exception e) {
                 if (resourcePack == null)
-                    Logger.warn("Failed to extract resource pack! A file might be encrypted.");
+                    Logger.warn("Failed to extract resource pack! The file might be encrypted. This pack will be skipped.");
                 else
-                    Logger.warn("Failed to extract resource pack " + resourcePack.getName() + " ! The file might be encrypted.");
-                e.printStackTrace();
+                    Logger.warn("Failed to extract resource pack " + resourcePack.getName() + " - the file might be encrypted or the plugin distributes its own pack. This pack will be skipped.");
             }
         });
+
+        // Also copy any directories from mixer folder (from cluster processing) directly to output
+        copyClusterDirectoriesToOutput();
+    }
+
+    private static void copyClusterDirectoriesToOutput() {
+        if (mixerFolder == null || !mixerFolder.exists()) return;
+        File[] mixerContents = mixerFolder.listFiles();
+        if (mixerContents == null) return;
+
+        for (File file : mixerContents) {
+            // Only process directories (cluster content like 'assets')
+            if (!file.isDirectory()) continue;
+            // Skip the output folder if it somehow ends up here
+            if (file.getName().equals("output")) continue;
+
+            // Copy the directory to a wrapper folder in output
+            // This ensures the structure is: output/cluster_assets/assets/...
+            File outputWrapper = new File(getOutputFolder().getPath() + File.separatorChar + "cluster_" + file.getName());
+            if (!outputWrapper.exists()) outputWrapper.mkdir();
+
+            try {
+                recursivelyCopyDirectoryForCluster(file, new File(outputWrapper.getPath() + File.separatorChar + file.getName()));
+                // Track this for the merge process
+                if (!orderedResourcePacks.contains("cluster_" + file.getName())) {
+                    orderedResourcePacks.add("cluster_" + file.getName());
+                }
+                Logger.info("Copied cluster directory " + file.getName() + " to output folder");
+            } catch (Exception e) {
+                Logger.warn("Failed to copy cluster directory " + file.getName() + " to output folder");
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private static void recursivelyCopyDirectoryForCluster(File source, File target) {
+        if (source.isDirectory()) {
+            if (!target.exists()) target.mkdir();
+            File[] files = source.listFiles();
+            if (files != null) {
+                for (File child : files) {
+                    recursivelyCopyDirectoryForCluster(child, new File(target.getPath() + File.separatorChar + child.getName()));
+                }
+            }
+        } else {
+            try {
+                Files.copy(source.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                Logger.warn("Failed to copy cluster file " + source.getPath());
+            }
+        }
     }
 
     private static void createOutputDefaultElements() {
@@ -189,12 +243,19 @@ public class Mix {
 
         for (File file : orderedFiles) {
             if (file.getName().equals(resourcePackName + ".zip")) continue;
+            if (!file.exists()) {
+                // Pack likely failed to extract (possibly encrypted) - skip gracefully
+                Logger.info("Skipping " + file.getName() + " - pack was not extracted (may be encrypted or corrupted)");
+                continue;
+            }
             if (!file.isDirectory()) {
                 if (file.getName().endsWith(".zip")) continue;
                 Logger.warn("Somehow a non-folder file made its way to the output folder! This isn't good. File: " + file.getAbsolutePath());
                 continue;
             }
-            for (File subFile : file.listFiles()) {
+            File[] subFiles = file.listFiles();
+            if (subFiles == null) continue;
+            for (File subFile : subFiles) {
                 recursivelyCopyDirectory(subFile, getOutputResourcePackFolder());
             }
         }
