@@ -8,7 +8,9 @@ public class EliteMobs extends CompatiblePluginConfigFields {
     public EliteMobs() {
         super("elitemobs", true);
         setPluginName("EliteMobs");
-        setLocalPath("EliteMobs" + File.separatorChar + "exports" + File.separatorChar + "elitemobs_resource_pack.zip");
+        setLocalPath("EliteMobs" + File.separatorChar + "resource_pack");
         setReloadCommand("elitemobs reload");
+        setCluster(true);
+        setZips(false);
     }
 }

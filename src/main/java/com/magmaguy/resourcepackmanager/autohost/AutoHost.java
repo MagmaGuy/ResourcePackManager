@@ -7,6 +7,7 @@ import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
+import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
 import lombok.Getter;
 import lombok.Setter;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
@@ -29,9 +30,12 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.UUID;
 
 public class AutoHost {
     private static final String finalURL = "https://magmaguy.com/rsp/";
+    // Consistent UUID for identifying ResourcePackManager's pack when using multiple resource packs
+    private static final UUID RESOURCE_PACK_UUID = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d");
     @Setter
     private static boolean done = false;
 //    private static final String finalURL = "https://localhost:50000/";
@@ -49,7 +53,19 @@ public class AutoHost {
         Logger.info("Sending resource pack to " + player.getName() + ". rspUUID is null: " + (rspUUID == null) + ". done: " + done + ". firstUpload: " + firstUpload + ".");
         if (rspUUID == null || !done) return;
         Logger.info("Sending resource pack to " + player.getName());
-        player.setResourcePack(finalURL + rspUUID, Mix.getFinalSHA1Bytes(), DefaultConfig.getResourcePackPrompt(), DefaultConfig.isForceResourcePack());
+
+        String url = finalURL + rspUUID;
+        byte[] hash = Mix.getFinalSHA1Bytes();
+        String prompt = DefaultConfig.getResourcePackPrompt();
+        boolean force = DefaultConfig.isForceResourcePack();
+
+        if (ServerVersionHelper.supportsMultipleResourcePacks()) {
+            // 1.20.3+ supports multiple resource packs - use addResourcePack to coexist with other plugins
+            player.addResourcePack(RESOURCE_PACK_UUID, url, hash, prompt, force);
+        } else {
+            // Older versions - use setResourcePack (replaces any existing packs)
+            player.setResourcePack(url, hash, prompt, force);
+        }
     }
 
     public static void initialize() {

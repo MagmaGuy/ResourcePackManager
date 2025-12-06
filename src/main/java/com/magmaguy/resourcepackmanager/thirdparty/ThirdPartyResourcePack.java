@@ -42,6 +42,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     private boolean encrypts;
     private boolean distributes;
     private boolean zips;
+    private boolean cluster;
     private String reloadCommand;
     @Getter
     private boolean isEnabled;
@@ -58,7 +59,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     @Setter
     private boolean stableResourcePackSent = false;
 
-    public ThirdPartyResourcePack(String pluginName, String localPath, String url, boolean encrypts, boolean distributes, boolean zips, String reloadCommand) {
+    public ThirdPartyResourcePack(String pluginName, String localPath, String url, boolean encrypts, boolean distributes, boolean zips, boolean cluster, String reloadCommand) {
         this.pluginName = pluginName;
         this.mixerFilename = pluginName + "_resource_pack.zip";
         this.url = url;
@@ -84,12 +85,29 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         this.distributes = distributes;
         this.reloadCommand = reloadCommand;
         this.zips = zips;
+        this.cluster = cluster;
 
-        if (!zips) zipThirdPartyPack();
+        // If this is a cluster, process each resource pack in the folder
+        if (cluster) {
+            processCluster();
+        } else if (!zips) {
+            zipThirdPartyPack();
+        }
 
-        if (localPath != null) SHA1 = getSHA1(file);
+        if (localPath != null && !cluster) SHA1 = getSHA1(file);
 
-        process();
+        // Check if source file matches existing mixer file - if so, no changes occurred and it's stable
+        if (!cluster && localPath != null) {
+            File existingMixerFile = getTarget().toFile();
+            if (existingMixerFile.exists()) {
+                String existingMixerSHA1 = getSHA1(existingMixerFile);
+                if (Objects.equals(SHA1, existingMixerSHA1)) {
+                    consideredStable = true;
+                }
+            }
+        }
+
+        if (!cluster) process();
 
         if (DefaultConfig.getPriorityOrder().contains(pluginName))
             priority = DefaultConfig.getPriorityOrder().indexOf(pluginName);
@@ -121,10 +139,10 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                     if (!thirdPartyResourcePack.consideredStable) readyToSend = false;
                     if (thirdPartyResourcePack.consideredStable) continue;
                     thirdPartyResourcePack.ticksWithoutChange++;
-                    if (thirdPartyResourcePack.ticksWithoutChange == 3) {
-                        //Is nothing has changed for 1 second, then it should be considered to be stable
+                    if (thirdPartyResourcePack.ticksWithoutChange == 10) {
+                        //If nothing has changed for 10 seconds, then it should be considered to be stable
                         thirdPartyResourcePack.consideredStable = true;
-                        Logger.info("Resource pack for " + thirdPartyResourcePack.pluginName + " has not changed for 3 seconds, considering it stable.");
+                        Logger.info("Resource pack for " + thirdPartyResourcePack.pluginName + " has not changed for 10 seconds, considering it stable.");
                     }
                 }
 
@@ -156,6 +174,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                 compatiblePluginConfigFields.isEncrypts(),
                 compatiblePluginConfigFields.isDistributes(),
                 compatiblePluginConfigFields.isZips(),
+                compatiblePluginConfigFields.isCluster(),
                 compatiblePluginConfigFields.getReloadCommand());
     }
 
@@ -163,6 +182,73 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         ZipFile.zip(file, getTarget().toString());
         file = new File(getTarget().toUri());
         mixerResourcePack = file;
+    }
+
+    private void processCluster() {
+        if (!file.isDirectory()) {
+            Logger.warn("Cluster path for " + pluginName + " is not a directory: " + file.getPath());
+            isEnabled = false;
+            return;
+        }
+
+        File[] clusterContents = file.listFiles();
+        if (clusterContents == null || clusterContents.length == 0) {
+            Logger.warn("Cluster directory for " + pluginName + " is empty: " + file.getPath());
+            isEnabled = false;
+            return;
+        }
+
+        File mixerDir = new File(ResourcePackManager.plugin.getDataFolder().toString() + File.separatorChar + "mixer");
+        if (!mixerDir.exists()) mixerDir.mkdir();
+
+        Logger.info("Processing cluster for " + pluginName + " with " + clusterContents.length + " resource packs");
+
+        for (File resourcePackFolder : clusterContents) {
+            if (!resourcePackFolder.isDirectory()) {
+                Logger.info("Skipping non-directory in cluster: " + resourcePackFolder.getName());
+                continue;
+            }
+
+            // Each folder in the cluster is a resource pack - copy its contents to mixer
+            File[] resourcePackContents = resourcePackFolder.listFiles();
+            if (resourcePackContents == null) continue;
+
+            for (File contentFolder : resourcePackContents) {
+                if (!contentFolder.isDirectory()) continue;
+
+                File targetFolder = new File(mixerDir.getPath() + File.separatorChar + contentFolder.getName());
+                try {
+                    recursivelyCloneDirectory(contentFolder, targetFolder);
+                    Logger.info("Copied " + contentFolder.getName() + " from " + resourcePackFolder.getName() + " to mixer folder");
+                } catch (Exception e) {
+                    Logger.warn("Failed to copy " + contentFolder.getPath() + " to mixer folder");
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        // For clusters, we don't track a single mixerResourcePack since they get copied directly
+        // Set isEnabled to false so it doesn't try to process further as a single pack
+        isEnabled = false;
+        Logger.info("Finished processing cluster for " + pluginName);
+    }
+
+    private void recursivelyCloneDirectory(File source, File target) {
+        if (source.isDirectory()) {
+            if (!target.exists()) target.mkdir();
+            File[] files = source.listFiles();
+            if (files != null) {
+                for (File child : files) {
+                    recursivelyCloneDirectory(child, new File(target.getPath() + File.separatorChar + child.getName()));
+                }
+            }
+        } else {
+            try {
+                Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (Exception e) {
+                Logger.warn("Failed to copy file " + source.getPath() + " to " + target.getPath());
+            }
+        }
     }
 
     private boolean processLocal(String localPath) {
