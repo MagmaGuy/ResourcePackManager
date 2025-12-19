@@ -8,6 +8,9 @@ import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
 import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
 import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
+import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderCommand;
+import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderDismissedConfig;
+import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderWarningListener;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfig;
@@ -37,6 +40,7 @@ public class ResourcePackManager extends JavaPlugin {
         new DataConfig();
         new DefaultConfig();
         new CompatiblePluginConfig();
+        new ItemsAdderDismissedConfig();
 
         BlueprintFolder.initialize();
         //This starts a watchdog to see if the resource packs change and updates the mixer if htey do.
@@ -46,7 +50,9 @@ public class ResourcePackManager extends JavaPlugin {
         CommandManager commandManager = new CommandManager(this, "resourcepackmanager");
         commandManager.registerCommand(new ReloadCommand());
         commandManager.registerCommand(new DataComplianceRequestCommand());
+        commandManager.registerCommand(new ItemsAdderCommand());
         Bukkit.getPluginManager().registerEvents(new VersionChecker.VersionCheckerEvents(), this);
+        Bukkit.getPluginManager().registerEvents(new ItemsAdderWarningListener(), this);
 //        AutoHost.initialize();
 
         Metrics metrics = new Metrics(this, 22867);

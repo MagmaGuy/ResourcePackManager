@@ -216,7 +216,12 @@ public class Mix {
             }
         } else {
             try {
-                Files.copy(source.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                // Check if target exists - if so, use resolveFileCollision to handle merging
+                if (target.exists()) {
+                    resolveFileCollision(source, target);
+                } else {
+                    Files.copy(source.toPath(), target.toPath());
+                }
             } catch (IOException e) {
                 Logger.warn("Failed to copy cluster file " + source.getPath());
             }
@@ -271,7 +276,7 @@ public class Mix {
                     Logger.warn("Failed to reroute zipped file to " + rerouteFolder.getAbsolutePath() + " because that folder does not exist!");
                 } else if (!rerouteFolder.isDirectory()) {
                     Logger.warn("Failed to reroute zipped file to " + rerouteFolder.getAbsolutePath() + " because that is a file and not a folder!");
-                } else if (!ZipFile.zip(getOutputResourcePackFolder(), rerouteFolder.getPath() + ".zip")) {
+                } else if (!ZipFile.zip(getOutputResourcePackFolder(), rerouteFolder.getPath() + File.separatorChar + resourcePackName + ".zip")) {
                     Logger.warn("Failed to zip merged resource pack into reroute directory!");
                     return;
                 }
@@ -347,11 +352,20 @@ public class Mix {
         }
     }
 
-    private static void resolveFileCollision(File sourceFile, File targetFile) throws IOException {
+    public static void resolveFileCollision(File sourceFile, File targetFile) throws IOException {
         if (!targetFile.getName().endsWith(".json")) {
-            //If the file isn't .json then it can't be merged, only replaced (such as with .png).
-            //No further action is needed here since files are transferred over in priority order
-            Logger.info("Hard collision for file " + targetFile.getPath() + " detected! Auto-resolved based on highest priority.");
+            //If the file isn't .json then it can't be merged, only replaced (such as with .png, shaders, etc).
+            //Higher priority pack overwrites the file
+            Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Logger.info("Hard collision for file " + targetFile.getPath() + " detected! Replaced with higher priority version.");
+            return;
+        }
+
+        // Only merge JSON files that are designed to be merged (sounds.json, lang files)
+        // Model files, blockstates, etc. have fixed-size arrays that break when concatenated
+        if (!isMergeableJsonFile(targetFile)) {
+            Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Logger.info("JSON collision for file " + targetFile.getPath() + " detected! Replaced with higher priority version (not a mergeable JSON type).");
             return;
         }
 
@@ -391,6 +405,44 @@ public class Mix {
         targetFileWriter.close();
 
         Logger.info("File " + targetFile.getName() + " successfully auto-merged!");
+    }
+
+    /**
+     * Checks if a JSON file is designed to be merged (content can be combined).
+     * Files like sounds.json, lang files, atlases, fonts, and vanilla item model overrides can be merged.
+     * Custom model files, blockstates, equipment layers, etc. have fixed-size arrays that break when concatenated.
+     */
+    private static boolean isMergeableJsonFile(File file) {
+        String path = file.getPath().replace("\\", "/");
+        String fileName = file.getName();
+
+        // sounds.json files should be merged
+        if (fileName.equals("sounds.json")) {
+            return true;
+        }
+
+        // Language files should be merged
+        if (path.contains("/lang/") || path.contains("/languages/")) {
+            return true;
+        }
+
+        // Vanilla item model overrides should be merged (for custom model data)
+        if (path.contains("/minecraft/models/item/")) {
+            return true;
+        }
+
+        // Atlas files should be merged (sources array)
+        if (path.contains("/atlases/")) {
+            return true;
+        }
+
+        // Font files should be merged (providers array)
+        if (path.contains("/font/")) {
+            return true;
+        }
+
+        // All other JSON files (custom models, blockstates, equipment layers, etc.) should not be merged
+        return false;
     }
 
     private static void stripDirectoryMetadata(File file) throws IOException {

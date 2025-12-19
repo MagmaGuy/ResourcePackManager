@@ -8,8 +8,8 @@ public class BetterHUD extends CompatiblePluginConfigFields {
     public BetterHUD() {
         super("better_hud", true);
         setPluginName("BetterHUD");
-        setLocalPath("BackpackPlus" + File.separatorChar + "pack" + File.separatorChar + "resourcepack.zip");
-        setEncrypts(true);
+        setLocalPath("BetterHUD" + File.separatorChar + "build.zip");
+        setEncrypts(false);
         setReloadCommand("betterhud reload");
     }
 }
