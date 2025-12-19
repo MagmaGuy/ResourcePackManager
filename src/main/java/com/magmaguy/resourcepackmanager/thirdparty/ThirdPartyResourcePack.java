@@ -3,9 +3,9 @@ package com.magmaguy.resourcepackmanager.thirdparty;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
+import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfigFields;
-import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import lombok.Getter;
 import lombok.Setter;
@@ -139,17 +139,24 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                     if (!thirdPartyResourcePack.consideredStable) readyToSend = false;
                     if (thirdPartyResourcePack.consideredStable) continue;
                     thirdPartyResourcePack.ticksWithoutChange++;
-                    if (thirdPartyResourcePack.ticksWithoutChange == 10) {
-                        //If nothing has changed for 10 seconds, then it should be considered to be stable
+                    if (thirdPartyResourcePack.ticksWithoutChange == 3) {
+                        //If nothing has changed for 3 seconds, then it should be considered to be stable
                         thirdPartyResourcePack.consideredStable = true;
-                        Logger.info("Resource pack for " + thirdPartyResourcePack.pluginName + " has not changed for 10 seconds, considering it stable.");
+                        Logger.info("Resource pack for " + thirdPartyResourcePack.pluginName + " has not changed for 3 seconds, considering it stable.");
                     }
                 }
 
                 if (!stableAlreadySent && readyToSend) {
-                    Logger.info("All resource packs are stable, sending resource pack to players.");
+                    notifyResourcePackSending();
                     tagAsResourcePackSent();
-                    Mix.mixResourcePacks();
+                    // Delay 5 seconds before actually mixing and sending
+                    new BukkitRunnable() {
+                        @Override
+                        public void run() {
+                            Logger.info("Sending resource pack now.");
+                            Mix.mixResourcePacks();
+                        }
+                    }.runTaskLater(ResourcePackManager.plugin, 100L);
                 }
             }
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 20, 20);
@@ -158,6 +165,17 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     public static void tagAsResourcePackSent(){
         for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
             thirdPartyResourcePack.stableResourcePackSent = true;
+        }
+    }
+
+    private static void notifyResourcePackSending() {
+        String message = "&eAll resource packs are stable. Resource pack will be sent in 5 seconds.";
+        Logger.info("All resource packs are stable. Resource pack will be sent in 5 seconds.");
+        // Notify all online OPs
+        for (org.bukkit.entity.Player player : Bukkit.getOnlinePlayers()) {
+            if (player.isOp()) {
+                player.sendMessage(com.magmaguy.magmacore.util.ChatColorConverter.convert(message));
+            }
         }
     }
 
@@ -244,7 +262,12 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
             }
         } else {
             try {
-                Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                // Check if target exists - if so, use Mix.resolveFileCollision to handle merging
+                if (target.exists()) {
+                    Mix.resolveFileCollision(source, target);
+                } else {
+                    Files.copy(source.toPath(), target.toPath());
+                }
             } catch (Exception e) {
                 Logger.warn("Failed to copy file " + source.getPath() + " to " + target.getPath());
             }
@@ -311,6 +334,10 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     private void cloneLocalRSP() {
         try {
             if (zips) {
+                // Ensure mixer folder exists
+                File mixerFolder = new File(ResourcePackManager.plugin.getDataFolder().toString(), "mixer");
+                if (!mixerFolder.exists()) mixerFolder.mkdirs();
+
                 Logger.info("Cloning resource pack from " + file.toPath());
                 mixerResourcePack = Files.copy(Path.of(file.getAbsolutePath()), Path.of(getTarget().toAbsolutePath().toString()), StandardCopyOption.REPLACE_EXISTING).toFile();
             }
