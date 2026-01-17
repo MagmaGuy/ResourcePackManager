@@ -21,6 +21,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.event.HandlerList;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.File;
+
 public class ResourcePackManager extends JavaPlugin {
 
     public static JavaPlugin plugin;
@@ -41,6 +43,10 @@ public class ResourcePackManager extends JavaPlugin {
         new DefaultConfig();
         new CompatiblePluginConfig();
         new ItemsAdderDismissedConfig();
+
+        // Create mixer folder on startup so users can add custom resource packs
+        File mixerFolder = new File(getDataFolder(), "mixer");
+        if (!mixerFolder.exists()) mixerFolder.mkdirs();
 
         BlueprintFolder.initialize();
         //This starts a watchdog to see if the resource packs change and updates the mixer if htey do.

@@ -11,6 +11,7 @@ import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
 import lombok.Getter;
+import org.bukkit.scheduler.BukkitRunnable;
 
 import java.io.File;
 import java.io.FileReader;
@@ -38,6 +39,21 @@ public class Mix {
     private Mix() {
     }
 
+    /**
+     * Mixes resource packs asynchronously. Use this from the main thread.
+     */
+    public static void mixResourcePacksAsync() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                mixResourcePacks();
+            }
+        }.runTaskAsynchronously(ResourcePackManager.plugin);
+    }
+
+    /**
+     * Mixes resource packs synchronously. Only call this from an async context to avoid blocking the main thread.
+     */
     public static void mixResourcePacks() {
         if (!initializeDefaultPluginFolders()) return;
         initializeThirdPartyResourcePacks();
@@ -160,14 +176,18 @@ public class Mix {
                     Logger.warn("A resource pack was null by the time it was meant to be unzipped!");
                     return;
                 }
-                File file = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "output" + File.separatorChar + resourcePack.getName().replace(".zip", ""));
-                ZipFile.unzip(resourcePack, file);
-                stripDirectoryMetadata(file);
+                File outputDir = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "output" + File.separatorChar + resourcePack.getName().replace(".zip", ""));
+                // Pre-create the output directory to ensure getCanonicalPath() works correctly in the unzip security check
+                if (!outputDir.exists()) outputDir.mkdirs();
+                ZipFile.unzip(resourcePack, outputDir);
+                stripDirectoryMetadata(outputDir);
             } catch (Exception e) {
                 if (resourcePack == null)
                     Logger.warn("Failed to extract resource pack! The file might be encrypted. This pack will be skipped.");
-                else
+                else {
                     Logger.warn("Failed to extract resource pack " + resourcePack.getName() + " - the file might be encrypted or the plugin distributes its own pack. This pack will be skipped.");
+                    Logger.warn("Error details: " + e.getMessage());
+                }
             }
         });
 
@@ -264,6 +284,13 @@ public class Mix {
                 recursivelyCopyDirectory(subFile, getOutputResourcePackFolder());
             }
         }
+
+        // Copy ResourcePackManager's own pack.mcmeta to ensure valid metadata
+        copyPluginPackMcmeta();
+
+        // Remove incompatible custom shaders that can break the resource pack
+        removeIncompatibleShaders();
+
         if (!ZipFile.zip(getOutputResourcePackFolder(), getOutputResourcePackFolder().getPath() + ".zip")) {
             Logger.warn("Failed to zip merged resource pack!");
             return;
@@ -491,6 +518,65 @@ public class Mix {
         }
 
         return mergedArray;
+    }
+
+    /**
+     * Copies ResourcePackManager's own pack.mcmeta from resources to the output folder.
+     * This ensures the merged resource pack has a valid, compatible pack.mcmeta.
+     */
+    private static void copyPluginPackMcmeta() {
+        try {
+            java.io.InputStream inputStream = ResourcePackManager.plugin.getResource("pack.mcmeta");
+            if (inputStream == null) {
+                Logger.warn("Could not find pack.mcmeta in plugin resources!");
+                return;
+            }
+            File targetFile = new File(getOutputResourcePackFolder().getPath() + File.separatorChar + "pack.mcmeta");
+            Files.copy(inputStream, targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            inputStream.close();
+            Logger.info("Copied ResourcePackManager pack.mcmeta to merged resource pack.");
+        } catch (IOException e) {
+            Logger.warn("Failed to copy pack.mcmeta to merged resource pack!");
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Removes custom shaders from the core shader folder that can cause compatibility issues.
+     * Custom shaders written for different Minecraft versions often have incompatible function names
+     * and variable declarations that cause shader compilation errors.
+     */
+    private static void removeIncompatibleShaders() {
+        File coreShaderFolder = new File(getOutputResourcePackFolder().getPath() +
+                File.separatorChar + "assets" +
+                File.separatorChar + "minecraft" +
+                File.separatorChar + "shaders" +
+                File.separatorChar + "core");
+
+        if (!coreShaderFolder.exists()) {
+            return; // No custom core shaders, nothing to do
+        }
+
+        File[] shaderFiles = coreShaderFolder.listFiles();
+        if (shaderFiles == null) return;
+
+        int removedCount = 0;
+        for (File shaderFile : shaderFiles) {
+            if (shaderFile.isFile() && (shaderFile.getName().endsWith(".fsh") ||
+                    shaderFile.getName().endsWith(".vsh") ||
+                    shaderFile.getName().endsWith(".glsl"))) {
+                try {
+                    Files.delete(shaderFile.toPath());
+                    removedCount++;
+                } catch (IOException e) {
+                    Logger.warn("Failed to remove incompatible shader: " + shaderFile.getName());
+                }
+            }
+        }
+
+        if (removedCount > 0) {
+            Logger.warn("Removed " + removedCount + " custom core shader(s) from merged resource pack to prevent compatibility issues.");
+        }
     }
 
 }

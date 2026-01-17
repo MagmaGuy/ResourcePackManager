@@ -156,7 +156,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                             Logger.info("Sending resource pack now.");
                             Mix.mixResourcePacks();
                         }
-                    }.runTaskLater(ResourcePackManager.plugin, 100L);
+                    }.runTaskLaterAsynchronously(ResourcePackManager.plugin, 100L);
                 }
             }
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 20, 20);
