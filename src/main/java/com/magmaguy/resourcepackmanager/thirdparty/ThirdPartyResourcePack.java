@@ -149,14 +149,14 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                 if (!stableAlreadySent && readyToSend) {
                     notifyResourcePackSending();
                     tagAsResourcePackSent();
-                    // Delay 5 seconds before actually mixing and sending
+                    // Delay 1 second before actually mixing and sending
                     new BukkitRunnable() {
                         @Override
                         public void run() {
                             Logger.info("Sending resource pack now.");
                             Mix.mixResourcePacks();
                         }
-                    }.runTaskLaterAsynchronously(ResourcePackManager.plugin, 100L);
+                    }.runTaskLaterAsynchronously(ResourcePackManager.plugin, 20L);
                 }
             }
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 20, 20);
@@ -169,8 +169,8 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     }
 
     private static void notifyResourcePackSending() {
-        String message = "&eAll resource packs are stable. Resource pack will be sent in 5 seconds.";
-        Logger.info("All resource packs are stable. Resource pack will be sent in 5 seconds.");
+        String message = "&eAll resource packs are stable. Resource pack will be sent in 1 second.";
+        Logger.info("All resource packs are stable. Resource pack will be sent in 1 second.");
         // Notify all online OPs
         for (org.bukkit.entity.Player player : Bukkit.getOnlinePlayers()) {
             if (player.isOp()) {

@@ -35,6 +35,7 @@ public class Mix {
     @Getter
     private static byte[] finalSHA1Bytes;
     private static File mixerFolder;
+    private static List<String> collisionLog;
 
     private Mix() {
     }
@@ -55,10 +56,14 @@ public class Mix {
      * Mixes resource packs synchronously. Only call this from an async context to avoid blocking the main thread.
      */
     public static void mixResourcePacks() {
+        Logger.info("Starting resource pack mixing...");
+        collisionLog = new ArrayList<>();
         if (!initializeDefaultPluginFolders()) return;
         initializeThirdPartyResourcePacks();
         cloneToOutputAndUnzip();
         createOutputDefaultElements();
+        writeCollisionLog();
+        Logger.info("Resource pack mixing complete.");
         AutoHost.initialize();
     }
 
@@ -158,14 +163,12 @@ public class Mix {
                 .forEach(packFile -> {
                     resourcePacks.add(packFile);
                     orderedResourcePacks.add(packFile.getName().replace(".zip", ""));
-                    Logger.info("Added supported resource pack " + packFile.getName() + " without a priority!");
                 });
 
         // Any leftover custom files without explicit priority
         customFiles.forEach(customFile -> {
             resourcePacks.add(customFile);
             orderedResourcePacks.add(customFile.getName().replace(".zip", ""));
-            Logger.info("Added custom resource pack " + customFile.getName() + " without a priority!");
         });
     }
 
@@ -217,7 +220,6 @@ public class Mix {
                 if (!orderedResourcePacks.contains("cluster_" + file.getName())) {
                     orderedResourcePacks.add("cluster_" + file.getName());
                 }
-                Logger.info("Copied cluster directory " + file.getName() + " to output folder");
             } catch (Exception e) {
                 Logger.warn("Failed to copy cluster directory " + file.getName() + " to output folder");
                 e.printStackTrace();
@@ -227,6 +229,18 @@ public class Mix {
 
     private static void recursivelyCopyDirectoryForCluster(File source, File target) {
         if (source.isDirectory()) {
+            String sourceName = source.getName();
+
+            // Skip shaders folder entirely
+            if (sourceName.equals("shaders")) {
+                return;
+            }
+
+            // Skip overlay directories
+            if (sourceName.startsWith("ia_overlay") || sourceName.contains("overlay")) {
+                return;
+            }
+
             if (!target.exists()) target.mkdir();
             File[] files = source.listFiles();
             if (files != null) {
@@ -270,7 +284,6 @@ public class Mix {
             if (file.getName().equals(resourcePackName + ".zip")) continue;
             if (!file.exists()) {
                 // Pack likely failed to extract (possibly encrypted) - skip gracefully
-                Logger.info("Skipping " + file.getName() + " - pack was not extracted (may be encrypted or corrupted)");
                 continue;
             }
             if (!file.isDirectory()) {
@@ -360,7 +373,19 @@ public class Mix {
 
     private static void recursivelyCopyDirectory(File source, File target) {
         if (source.isDirectory()) {
-            target = new File(target.getAbsolutePath() + File.separatorChar + source.getName());
+            String sourceName = source.getName();
+
+            // Skip shaders folder entirely - ItemsAdder has incomplete shaders that break MC 1.21.4+
+            if (sourceName.equals("shaders")) {
+                return;
+            }
+
+            // Skip overlay directories - they contain version-specific partial assets
+            if (sourceName.startsWith("ia_overlay") || sourceName.contains("overlay")) {
+                return;
+            }
+
+            target = new File(target.getAbsolutePath() + File.separatorChar + sourceName);
             target.mkdir();
             for (File file : source.listFiles()) {
                 recursivelyCopyDirectory(file, target);
@@ -384,7 +409,7 @@ public class Mix {
             //If the file isn't .json then it can't be merged, only replaced (such as with .png, shaders, etc).
             //Higher priority pack overwrites the file
             Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            Logger.info("Hard collision for file " + targetFile.getPath() + " detected! Replaced with higher priority version.");
+            logCollision("Replaced: " + targetFile.getPath());
             return;
         }
 
@@ -392,7 +417,7 @@ public class Mix {
         // Model files, blockstates, etc. have fixed-size arrays that break when concatenated
         if (!isMergeableJsonFile(targetFile)) {
             Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            Logger.info("JSON collision for file " + targetFile.getPath() + " detected! Replaced with higher priority version (not a mergeable JSON type).");
+            logCollision("Replaced (non-mergeable JSON): " + targetFile.getPath());
             return;
         }
 
@@ -404,14 +429,13 @@ public class Mix {
         try {
             json1 = JsonParser.parseReader(sourceFileReader).getAsJsonObject();
         } catch (Exception e) {
-            Logger.warn("Malformed JSON for " + sourceFile.getAbsolutePath() + " !");
+            Logger.warn("Malformed JSON: " + sourceFile.getAbsolutePath());
             try {
                 JsonReader jsonReader = new JsonReader(sourceFileReader);
                 jsonReader.setStrictness(Strictness.LENIENT);
                 json1 = JsonParser.parseReader(jsonReader).getAsJsonObject();
-                Logger.info(JsonParser.parseReader(jsonReader).getAsString());
             } catch (Exception ex) {
-                Logger.warn("Your JSON " + sourceFile.getAbsolutePath() + " is so broken even lenient won't let me read it!");
+                Logger.warn("Unreadable JSON: " + sourceFile.getAbsolutePath());
             }
         }
         JsonObject json2 = JsonParser.parseReader(targetFileReader).getAsJsonObject();
@@ -431,7 +455,7 @@ public class Mix {
 
         targetFileWriter.close();
 
-        Logger.info("File " + targetFile.getName() + " successfully auto-merged!");
+        logCollision("Merged: " + targetFile.getPath());
     }
 
     /**
@@ -534,7 +558,6 @@ public class Mix {
             File targetFile = new File(getOutputResourcePackFolder().getPath() + File.separatorChar + "pack.mcmeta");
             Files.copy(inputStream, targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             inputStream.close();
-            Logger.info("Copied ResourcePackManager pack.mcmeta to merged resource pack.");
         } catch (IOException e) {
             Logger.warn("Failed to copy pack.mcmeta to merged resource pack!");
             e.printStackTrace();
@@ -542,40 +565,36 @@ public class Mix {
     }
 
     /**
-     * Removes custom shaders from the core shader folder that can cause compatibility issues.
-     * Custom shaders written for different Minecraft versions often have incompatible function names
-     * and variable declarations that cause shader compilation errors.
+     * Shader handling removed - reverting to 1.7.1 behavior where shaders were
+     * copied/merged like any other files without special handling.
      */
     private static void removeIncompatibleShaders() {
-        File coreShaderFolder = new File(getOutputResourcePackFolder().getPath() +
-                File.separatorChar + "assets" +
-                File.separatorChar + "minecraft" +
-                File.separatorChar + "shaders" +
-                File.separatorChar + "core");
+        // No-op: 1.7.1 had no shader handling and worked fine
+    }
 
-        if (!coreShaderFolder.exists()) {
-            return; // No custom core shaders, nothing to do
-        }
+    /**
+     * Writes the collision log to a file in the plugin's config folder.
+     * Only keeps the latest log, no history.
+     */
+    private static void writeCollisionLog() {
+        if (collisionLog == null || collisionLog.isEmpty()) return;
 
-        File[] shaderFiles = coreShaderFolder.listFiles();
-        if (shaderFiles == null) return;
-
-        int removedCount = 0;
-        for (File shaderFile : shaderFiles) {
-            if (shaderFile.isFile() && (shaderFile.getName().endsWith(".fsh") ||
-                    shaderFile.getName().endsWith(".vsh") ||
-                    shaderFile.getName().endsWith(".glsl"))) {
-                try {
-                    Files.delete(shaderFile.toPath());
-                    removedCount++;
-                } catch (IOException e) {
-                    Logger.warn("Failed to remove incompatible shader: " + shaderFile.getName());
-                }
+        File logFile = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "collision_log.txt");
+        try (FileWriter writer = new FileWriter(logFile, false)) {
+            writer.write("Resource Pack Collision Log\n");
+            writer.write("Generated: " + java.time.LocalDateTime.now() + "\n");
+            writer.write("================================================\n\n");
+            for (String entry : collisionLog) {
+                writer.write(entry + "\n");
             }
+        } catch (IOException e) {
+            Logger.warn("Failed to write collision log file.");
         }
+    }
 
-        if (removedCount > 0) {
-            Logger.warn("Removed " + removedCount + " custom core shader(s) from merged resource pack to prevent compatibility issues.");
+    private static void logCollision(String message) {
+        if (collisionLog != null) {
+            collisionLog.add(message);
         }
     }
 

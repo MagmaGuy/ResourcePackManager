@@ -11,13 +11,18 @@ import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
 import lombok.Getter;
 import lombok.Setter;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.client5.http.config.ConnectionConfig;
+import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.entity.mime.MultipartEntityBuilder;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.io.HttpClientConnectionManager;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.util.Timeout;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -46,7 +51,44 @@ public class AutoHost {
     @Setter
     private static boolean firstUpload = true;
 
+    // Timeout settings for HTTP requests (in seconds)
+    private static final int DEFAULT_CONNECT_TIMEOUT = 30;
+    private static final int DEFAULT_SOCKET_TIMEOUT = 60;
+    private static final int UPLOAD_SOCKET_TIMEOUT = 300; // 5 minutes for file uploads
+
     private AutoHost() {
+    }
+
+    /**
+     * Creates an HTTP client with custom timeouts suitable for regular requests.
+     */
+    private static CloseableHttpClient createHttpClient() {
+        return createHttpClient(DEFAULT_SOCKET_TIMEOUT);
+    }
+
+    /**
+     * Creates an HTTP client with custom timeouts.
+     * @param socketTimeoutSeconds The socket (read) timeout in seconds
+     */
+    private static CloseableHttpClient createHttpClient(int socketTimeoutSeconds) {
+        ConnectionConfig connectionConfig = ConnectionConfig.custom()
+                .setConnectTimeout(Timeout.ofSeconds(DEFAULT_CONNECT_TIMEOUT))
+                .setSocketTimeout(Timeout.ofSeconds(socketTimeoutSeconds))
+                .build();
+
+        HttpClientConnectionManager connectionManager = PoolingHttpClientConnectionManagerBuilder.create()
+                .setDefaultConnectionConfig(connectionConfig)
+                .build();
+
+        RequestConfig requestConfig = RequestConfig.custom()
+                .setConnectionRequestTimeout(Timeout.ofSeconds(DEFAULT_CONNECT_TIMEOUT))
+                .setResponseTimeout(Timeout.ofSeconds(socketTimeoutSeconds))
+                .build();
+
+        return HttpClients.custom()
+                .setConnectionManager(connectionManager)
+                .setDefaultRequestConfig(requestConfig)
+                .build();
     }
 
     public static void sendResourcePack(Player player) {
@@ -122,7 +164,7 @@ public class AutoHost {
     }
 
     public static void initializeLink() {
-        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+        try (CloseableHttpClient httpClient = createHttpClient()) {
             HttpPost httpPost = new HttpPost(finalURL + "initialize");
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
             builder.addTextBody("uuid", DataConfig.getRspUUID(), ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
@@ -197,7 +239,7 @@ public class AutoHost {
     public static void uploadFile() {
         Logger.info("Uploading resource!");
 
-        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+        try (CloseableHttpClient httpClient = createHttpClient(UPLOAD_SOCKET_TIMEOUT)) {
             HttpPost uploadFile = new HttpPost(finalURL + "upload");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
@@ -233,7 +275,7 @@ public class AutoHost {
     }
 
     private static boolean sendSHA1() {
-        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+        try (CloseableHttpClient httpClient = createHttpClient()) {
             HttpPost httpPost = new HttpPost(finalURL + "sha1");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
@@ -303,7 +345,7 @@ public class AutoHost {
     }
 
     private static void sendStillAlive() throws IOException {
-        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+        try (CloseableHttpClient httpClient = createHttpClient()) {
             HttpPost httpPost = new HttpPost(finalURL + "still_alive");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
@@ -331,7 +373,7 @@ public class AutoHost {
     }
 
     public static void dataComplianceRequest() throws IOException {
-        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+        try (CloseableHttpClient httpClient = createHttpClient()) {
             HttpPost httpPost = new HttpPost(finalURL + "data_compliance");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
