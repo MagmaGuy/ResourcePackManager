@@ -298,8 +298,6 @@ public class Mix {
             }
         }
 
-        // Copy ResourcePackManager's own pack.mcmeta to ensure valid metadata
-        copyPluginPackMcmeta();
 
         // Remove incompatible custom shaders that can break the resource pack
         removeIncompatibleShaders();
