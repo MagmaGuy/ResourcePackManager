@@ -298,12 +298,6 @@ public class Mix {
             }
         }
 
-        // Copy ResourcePackManager's own pack.mcmeta to ensure valid metadata
-        copyPluginPackMcmeta();
-
-        // Remove incompatible custom shaders that can break the resource pack
-        removeIncompatibleShaders();
-
         if (!ZipFile.zip(getOutputResourcePackFolder(), getOutputResourcePackFolder().getPath() + ".zip")) {
             Logger.warn("Failed to zip merged resource pack!");
             return;
@@ -542,34 +536,6 @@ public class Mix {
         }
 
         return mergedArray;
-    }
-
-    /**
-     * Copies ResourcePackManager's own pack.mcmeta from resources to the output folder.
-     * This ensures the merged resource pack has a valid, compatible pack.mcmeta.
-     */
-    private static void copyPluginPackMcmeta() {
-        try {
-            java.io.InputStream inputStream = ResourcePackManager.plugin.getResource("pack.mcmeta");
-            if (inputStream == null) {
-                Logger.warn("Could not find pack.mcmeta in plugin resources!");
-                return;
-            }
-            File targetFile = new File(getOutputResourcePackFolder().getPath() + File.separatorChar + "pack.mcmeta");
-            Files.copy(inputStream, targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            inputStream.close();
-        } catch (IOException e) {
-            Logger.warn("Failed to copy pack.mcmeta to merged resource pack!");
-            e.printStackTrace();
-        }
-    }
-
-    /**
-     * Shader handling removed - reverting to 1.7.1 behavior where shaders were
-     * copied/merged like any other files without special handling.
-     */
-    private static void removeIncompatibleShaders() {
-        // No-op: 1.7.1 had no shader handling and worked fine
     }
 
     /**
