@@ -1,7 +1,6 @@
 package com.magmaguy.resourcepackmanager.config.compatibleplugins;
 
 import com.magmaguy.magmacore.config.CustomConfigFields;
-import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -56,6 +55,5 @@ public class CompatiblePluginConfigFields extends CustomConfigFields {
         this.localPath = processString("localPath", localPath, localPath, true);
         this.cluster = processBoolean("cluster", cluster, cluster, true);
 
-        if (isEnabled) ThirdPartyResourcePack.initializeThirdPartyResourcePack(this);
     }
 }
