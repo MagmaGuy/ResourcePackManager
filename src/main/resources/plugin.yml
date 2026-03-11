@@ -1,6 +1,6 @@
 name: ResourcePackManager
 main: com.magmaguy.resourcepackmanager.ResourcePackManager
-version: 1.7.3
+version: 1.7.5
 api-version: 1.14
 author: MagmaGuy
 softdepend:
@@ -11,6 +11,12 @@ softdepend:
   - Oraxen
   - ItemsAdder
   - BackpackPlus
+  - BetterHUD
+  - InfiniteVehicles
+  - MegaBlockSurvivors
+  - MMOInventory
+  - Nexo
+  - ValhallaMMO
   - vane-core
   - RealisticSurvival
 

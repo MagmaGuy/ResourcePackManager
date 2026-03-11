@@ -236,11 +236,6 @@ public class Mix {
                 return;
             }
 
-            // Skip overlay directories
-            if (sourceName.startsWith("ia_overlay") || sourceName.contains("overlay")) {
-                return;
-            }
-
             if (!target.exists()) target.mkdir();
             File[] files = source.listFiles();
             if (files != null) {
@@ -371,11 +366,6 @@ public class Mix {
 
             // Skip shaders folder entirely - ItemsAdder has incomplete shaders that break MC 1.21.4+
             if (sourceName.equals("shaders")) {
-                return;
-            }
-
-            // Skip overlay directories - they contain version-specific partial assets
-            if (sourceName.startsWith("ia_overlay") || sourceName.contains("overlay")) {
                 return;
             }
 

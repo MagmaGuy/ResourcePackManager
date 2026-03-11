@@ -119,6 +119,9 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     private static BukkitTask resourcePackChangeWatcher = null;
 
     public static void startResourcePackChangeWatchdog() {
+        if (resourcePackChangeWatcher != null) {
+            resourcePackChangeWatcher.cancel();
+        }
         resourcePackChangeWatcher = new BukkitRunnable() {
             @Override
             public void run() {
@@ -181,7 +184,10 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
 
     public static void shutdown() {
         thirdPartyResourcePacks.clear();
-        resourcePackChangeWatcher.cancel();
+        if (resourcePackChangeWatcher != null) {
+            resourcePackChangeWatcher.cancel();
+            resourcePackChangeWatcher = null;
+        }
     }
 
     public static void initializeThirdPartyResourcePack(CompatiblePluginConfigFields compatiblePluginConfigFields) {
