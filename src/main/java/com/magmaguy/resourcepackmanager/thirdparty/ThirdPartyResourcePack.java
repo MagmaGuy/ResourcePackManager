@@ -272,6 +272,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                 if (target.exists()) {
                     Mix.resolveFileCollision(source, target);
                 } else {
+                    target.getParentFile().mkdirs();
                     Files.copy(source.toPath(), target.toPath());
                 }
             } catch (Exception e) {

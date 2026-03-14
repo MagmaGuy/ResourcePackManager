@@ -249,6 +249,7 @@ public class Mix {
                 if (target.exists()) {
                     resolveFileCollision(source, target);
                 } else {
+                    target.getParentFile().mkdirs();
                     Files.copy(source.toPath(), target.toPath());
                 }
             } catch (IOException e) {
@@ -380,7 +381,9 @@ public class Mix {
                     resolveFileCollision(source, Path.of(target.getPath() + File.separatorChar + source.getName()).toFile());
                     return;
                 }
-                Files.copy(source.toPath(), Path.of(target.getPath() + File.separatorChar + source.getName()));
+                Path targetPath = Path.of(target.getPath() + File.separatorChar + source.getName());
+                targetPath.getParent().toFile().mkdirs();
+                Files.copy(source.toPath(), targetPath);
             } catch (IOException e) {
                 Logger.warn("Failed to copy file");
                 throw new RuntimeException(e);
