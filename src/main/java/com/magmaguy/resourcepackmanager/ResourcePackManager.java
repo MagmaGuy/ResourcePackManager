@@ -5,6 +5,9 @@ import com.magmaguy.magmacore.command.CommandManager;
 import com.magmaguy.magmacore.initialization.PluginInitializationConfig;
 import com.magmaguy.magmacore.initialization.PluginInitializationContext;
 import com.magmaguy.magmacore.initialization.PluginInitializationState;
+import com.magmaguy.magmacore.nightbreak.NightbreakPluginBootstrap;
+import com.magmaguy.magmacore.nightbreak.NightbreakPluginHooks;
+import com.magmaguy.magmacore.nightbreak.NightbreakPluginSpec;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
@@ -29,6 +32,12 @@ import java.io.File;
 
 public class ResourcePackManager extends JavaPlugin {
 
+    public static final NightbreakPluginSpec NIGHTBREAK_PLUGIN_SPEC = new NightbreakPluginSpec(
+            "ResourcePackManager", "resourcepackmanager", "resourcepackmanager.*",
+            "resourcepackmanager.setup", "resourcepackmanager.initialize",
+            "", "Reloaded ResourcePackManager.",
+            false, false, false);
+
     public static JavaPlugin plugin;
 
     @Override
@@ -41,13 +50,30 @@ public class ResourcePackManager extends JavaPlugin {
                 "                                    |___/         ");
         Bukkit.getLogger().info("ResourcePackManager v." + this.getDescription().getVersion());
         plugin = this;
-        MagmaCore.onEnable(this);
-        MagmaCore.startInitialization(this,
+        NightbreakPluginBootstrap.startInitialization(this,
                 new PluginInitializationConfig("ResourcePackManager", null, 10),
-                this::asyncInitialization,
-                this::syncInitialization,
-                () -> Logger.info("ResourcePackManager fully initialized!"),
-                throwable -> throwable.printStackTrace());
+                NIGHTBREAK_PLUGIN_SPEC,
+                new NightbreakPluginHooks() {
+                    @Override
+                    public void asyncInitialization(PluginInitializationContext initializationContext) {
+                        ResourcePackManager.this.asyncInitialization(initializationContext);
+                    }
+
+                    @Override
+                    public void syncInitialization(PluginInitializationContext initializationContext) {
+                        ResourcePackManager.this.syncInitialization(initializationContext);
+                    }
+
+                    @Override
+                    public void onInitializationSuccess() {
+                        Logger.info("ResourcePackManager fully initialized!");
+                    }
+
+                    @Override
+                    public void onInitializationFailure(Throwable throwable) {
+                        throwable.printStackTrace();
+                    }
+                });
     }
 
     @Override
@@ -115,6 +141,11 @@ public class ResourcePackManager extends JavaPlugin {
 
         initializationContext.step("Commands");
         CommandManager commandManager = new CommandManager(this, "resourcepackmanager");
+        NightbreakPluginBootstrap.registerStandardCommands(this,
+                commandManager,
+                NIGHTBREAK_PLUGIN_SPEC,
+                player -> Logger.sendMessage(player, "&eResourcePackManager has no setup menu. Edit config files in plugins/ResourcePackManager/ and use &6/resourcepackmanager reload&e."),
+                sender -> ReloadCommand.reloadPlugin(sender));
         commandManager.registerCommand(new ReloadCommand());
         commandManager.registerCommand(new DataComplianceRequestCommand());
         commandManager.registerCommand(new ItemsAdderCommand());
