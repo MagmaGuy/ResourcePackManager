@@ -19,6 +19,7 @@ softdepend:
   - ValhallaMMO
   - vane-core
   - RealisticSurvival
+  - Nexo
 
 commands:
   resourcepackmanager:
