@@ -418,6 +418,8 @@ public class Mix {
         } catch (Exception e) {
             Logger.warn("Malformed JSON: " + sourceFile.getAbsolutePath());
             try {
+                sourceFileReader.close();
+                sourceFileReader = new FileReader(sourceFile);
                 JsonReader jsonReader = new JsonReader(sourceFileReader);
                 jsonReader.setStrictness(Strictness.LENIENT);
                 json1 = JsonParser.parseReader(jsonReader).getAsJsonObject();
@@ -425,10 +427,40 @@ public class Mix {
                 Logger.warn("Unreadable JSON: " + sourceFile.getAbsolutePath());
             }
         }
-        JsonObject json2 = JsonParser.parseReader(targetFileReader).getAsJsonObject();
+        JsonObject json2 = null;
+        try {
+            json2 = JsonParser.parseReader(targetFileReader).getAsJsonObject();
+        } catch (Exception e) {
+            Logger.warn("Malformed JSON: " + targetFile.getAbsolutePath());
+            try {
+                targetFileReader.close();
+                targetFileReader = new FileReader(targetFile);
+                JsonReader jsonReader = new JsonReader(targetFileReader);
+                jsonReader.setStrictness(Strictness.LENIENT);
+                json2 = JsonParser.parseReader(jsonReader).getAsJsonObject();
+            } catch (Exception ex) {
+                Logger.warn("Unreadable JSON: " + targetFile.getAbsolutePath());
+            }
+        }
 
         sourceFileReader.close();
         targetFileReader.close();
+
+        // If either JSON is unreadable, keep whichever one is valid, or skip
+        if (json1 == null && json2 == null) {
+            Logger.warn("Both JSON files unreadable during merge, skipping: " + targetFile.getPath());
+            return;
+        }
+        if (json1 == null) {
+            // Target is already in place, nothing to merge
+            return;
+        }
+        if (json2 == null) {
+            // Overwrite with the source since target is broken
+            Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            logCollision("Replaced (unreadable target JSON): " + targetFile.getPath());
+            return;
+        }
 
         // Merge JSON objects
         JsonObject mergedJson = mergeJsonObjects(json1, json2);
