@@ -339,18 +339,30 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     }
 
     private void cloneLocalRSP() {
-        try {
-            if (zips) {
-                // Ensure mixer folder exists
-                File mixerFolder = new File(ResourcePackManager.plugin.getDataFolder().toString(), "mixer");
-                if (!mixerFolder.exists()) mixerFolder.mkdirs();
+        if (!zips) return;
+        File mixerFolder = new File(ResourcePackManager.plugin.getDataFolder().toString(), "mixer");
+        if (!mixerFolder.exists()) mixerFolder.mkdirs();
 
+        // Retry up to 5 times with increasing delay — on Windows the source file
+        // may still be locked by the plugin that just finished writing it.
+        for (int attempt = 1; attempt <= 5; attempt++) {
+            try {
                 Logger.info("Cloning resource pack from " + file.toPath());
                 mixerResourcePack = Files.copy(Path.of(file.getAbsolutePath()), Path.of(getTarget().toAbsolutePath().toString()), StandardCopyOption.REPLACE_EXISTING).toFile();
+                return;
+            } catch (java.nio.file.FileSystemException e) {
+                if (attempt < 5) {
+                    Logger.warn("Resource pack file is locked (attempt " + attempt + "/5), retrying in " + (attempt * 500) + "ms...");
+                    try { Thread.sleep(attempt * 500L); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); return; }
+                } else {
+                    Logger.warn("Failed to clone resource pack from " + file.getPath() + " after 5 attempts — file is still locked by another process.");
+                    e.printStackTrace();
+                }
+            } catch (Exception e) {
+                Logger.warn("Failed to clone resource pack from " + file.getPath() + " to the mixer folder!");
+                e.printStackTrace();
+                return;
             }
-        } catch (Exception e) {
-            Logger.warn("Failed to clone resource pack from " + file.getPath() + " to the mixer folder!");
-            e.printStackTrace();
         }
     }
 
