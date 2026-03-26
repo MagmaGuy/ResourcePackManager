@@ -7,6 +7,5 @@ public class VaneCore extends CompatiblePluginConfigFields {
         super("vane_core", true);
         setPluginName("vane-core");
         setLocalPath("vane-resource-pack.zip");
-        setDistributes(true);
     }
 }

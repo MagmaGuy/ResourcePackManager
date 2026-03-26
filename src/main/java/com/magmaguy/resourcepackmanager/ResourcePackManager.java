@@ -22,7 +22,6 @@ import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePlugi
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfigFields;
 import com.magmaguy.resourcepackmanager.playermanager.PlayerManager;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
-import com.magmaguy.resourcepackmanager.utils.VersionChecker;
 import org.bstats.bukkit.Metrics;
 import org.bukkit.Bukkit;
 import org.bukkit.event.HandlerList;
@@ -136,7 +135,6 @@ public class ResourcePackManager extends JavaPlugin {
         if (DefaultConfig.isAutoHost()) {
             Bukkit.getPluginManager().registerEvents(new PlayerManager(), this);
         }
-        Bukkit.getPluginManager().registerEvents(new VersionChecker.VersionCheckerEvents(), this);
         Bukkit.getPluginManager().registerEvents(new ItemsAdderWarningListener(), this);
 
         initializationContext.step("Commands");

@@ -92,7 +92,6 @@ public class AutoHost {
     }
 
     public static void sendResourcePack(Player player) {
-        Logger.info("Sending resource pack to " + player.getName() + ". rspUUID is null: " + (rspUUID == null) + ". done: " + done + ". firstUpload: " + firstUpload + ".");
         if (rspUUID == null || !done) return;
         Logger.info("Sending resource pack to " + player.getName());
 
@@ -193,11 +192,12 @@ public class AutoHost {
                     } catch (Exception e) {
                         // JSON parsing failed - validate if it looks like a UUID before using it
                         String trimmedResponse = responseString.trim();
-                        if (isValidUUID(trimmedResponse)) {
+                        try {
+                            UUID.fromString(trimmedResponse);
                             rspUUID = trimmedResponse;
                             DataConfig.setRspUUID(rspUUID);
                             Logger.info("Server initialized with UUID: " + rspUUID);
-                        } else {
+                        } catch (IllegalArgumentException ignored) {
                             Logger.warn("Invalid response format from server: " + responseString);
                             rspUUID = null;
                         }
@@ -219,22 +219,6 @@ public class AutoHost {
         }
     }
 
-    // Helper method to validate UUID format
-    private static boolean isValidUUID(String uuidString) {
-        if (uuidString == null || uuidString.isEmpty()) {
-            return false;
-        }
-
-        // Check if it looks like a UUID (basic validation)
-        // UUIDs are typically 36 characters with dashes or 32 characters without
-        String cleanUuid = uuidString.replaceAll("-", "");
-        if (cleanUuid.length() != 32) {
-            return false;
-        }
-
-        // Check if it contains only valid hex characters
-        return cleanUuid.matches("[0-9a-fA-F]+");
-    }
 
     public static void uploadFile() {
         Logger.info("Uploading resource!");

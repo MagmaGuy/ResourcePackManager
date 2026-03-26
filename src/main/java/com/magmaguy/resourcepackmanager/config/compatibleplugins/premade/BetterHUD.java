@@ -9,7 +9,6 @@ public class BetterHUD extends CompatiblePluginConfigFields {
         super("better_hud", true);
         setPluginName("BetterHUD");
         setLocalPath("BetterHUD" + File.separatorChar + "build.zip");
-        setEncrypts(false);
         setReloadCommand("betterhud reload");
     }
 }

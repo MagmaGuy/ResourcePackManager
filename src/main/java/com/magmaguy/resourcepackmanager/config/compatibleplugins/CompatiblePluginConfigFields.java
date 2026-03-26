@@ -17,22 +17,10 @@ public class CompatiblePluginConfigFields extends CustomConfigFields {
     private String localPath = null;
     @Getter
     @Setter
-    private boolean encrypts = false;
-    @Getter
-    @Setter
-    private boolean distributes = false;
-    @Getter
-    @Setter
     private boolean zips = true;
     @Getter
     @Setter
     private String reloadCommand;
-    @Getter
-    @Setter
-    private boolean resourcePackUpdated = false;
-    @Getter
-    @Setter
-    private String mixerFilename;
     @Getter
     @Setter
     private boolean cluster = false;
@@ -46,12 +34,8 @@ public class CompatiblePluginConfigFields extends CustomConfigFields {
         this.isEnabled = processBoolean("isEnabled", isEnabled, isEnabled, true);
         this.pluginName = processString("pluginName", pluginName, pluginName, true);
         this.url = processString("url", url, url, true);
-        this.encrypts = processBoolean("encrypts", encrypts, encrypts, true);
-        this.distributes = processBoolean("distributes", distributes, distributes, true);
         this.zips = processBoolean("zips", zips, zips, true);
         this.reloadCommand = processString("reloadCommand", reloadCommand, reloadCommand, true);
-        this.resourcePackUpdated = processBoolean("resourcePackUpdated", resourcePackUpdated, resourcePackUpdated, true);
-        this.mixerFilename = processString("mixerFilename", mixerFilename, mixerFilename, true);
         this.localPath = processString("localPath", localPath, localPath, true);
         this.cluster = processBoolean("cluster", cluster, cluster, true);
 

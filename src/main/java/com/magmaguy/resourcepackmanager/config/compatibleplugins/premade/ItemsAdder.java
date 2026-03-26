@@ -9,7 +9,5 @@ public class ItemsAdder extends CompatiblePluginConfigFields {
         super("items_adder", true);
         setPluginName("ItemsAdder");
         setLocalPath("ItemsAdder" + File.separatorChar + "output" + File.separatorChar + "generated.zip");
-        setEncrypts(true);
-        setDistributes(true);
     }
 }

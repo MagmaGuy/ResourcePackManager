@@ -29,7 +29,7 @@ public class ResourcePackManagerAPI {
                                             boolean zips,
                                             String reloadCommand) {
         thirdPartyResourcePackHashMap.put(pluginName,
-                new ThirdPartyResourcePack(pluginName, localPath, url, encrypts, distributes, zips, false, reloadCommand));
+                new ThirdPartyResourcePack(pluginName, localPath, url, zips, false, reloadCommand));
     }
 
     /**
@@ -49,7 +49,7 @@ public class ResourcePackManagerAPI {
                                                  boolean zips,
                                                  String reloadCommand) {
         thirdPartyResourcePackHashMap.put(pluginName,
-                new ThirdPartyResourcePack(pluginName, localPath, null, encrypts, distributes, zips, false, reloadCommand));
+                new ThirdPartyResourcePack(pluginName, localPath, null, zips, false, reloadCommand));
     }
 
     /**
@@ -70,7 +70,7 @@ public class ResourcePackManagerAPI {
                                                   boolean zips,
                                                   String reloadCommand) {
         thirdPartyResourcePackHashMap.put(pluginName,
-                new ThirdPartyResourcePack(pluginName, null, url, encrypts, distributes, zips, false, reloadCommand));
+                new ThirdPartyResourcePack(pluginName, null, url, zips, false, reloadCommand));
     }
 
     /**

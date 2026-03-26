@@ -16,10 +16,8 @@ public class SHA1Generator {
         try (FileInputStream fileInputStream = new FileInputStream(file);
              DigestInputStream digestInputStream = new DigestInputStream(fileInputStream, MessageDigest.getInstance("SHA-1"))) {
             byte[] bytes = new byte[1024];
-            MessageDigest digest = null;
-            //read all file content
-            while (digestInputStream.read(bytes) > 0) digest = digestInputStream.getMessageDigest();
-            byte[] resultByteArry = digest.digest();
+            while (digestInputStream.read(bytes) > 0) ;
+            byte[] resultByteArry = digestInputStream.getMessageDigest().digest();
             return bytesToHexString(resultByteArry);
         }
     }
@@ -37,13 +35,12 @@ public class SHA1Generator {
     }
 
     public static byte[] sha1CodeByteArray(File file) throws IOException, NoSuchAlgorithmException {
-        FileInputStream fileInputStream = new FileInputStream(file);
-        MessageDigest digest = MessageDigest.getInstance("SHA-1");
-        DigestInputStream digestInputStream = new DigestInputStream(fileInputStream, digest);
-        byte[] bytes = new byte[1024];
-        // read all file content
-        while (digestInputStream.read(bytes) > 0) digest = digestInputStream.getMessageDigest();
-        return digest.digest();
+        try (FileInputStream fileInputStream = new FileInputStream(file);
+             DigestInputStream digestInputStream = new DigestInputStream(fileInputStream, MessageDigest.getInstance("SHA-1"))) {
+            byte[] bytes = new byte[1024];
+            while (digestInputStream.read(bytes) > 0) ;
+            return digestInputStream.getMessageDigest().digest();
+        }
     }
 
     public static String bytesToHexString(byte[] bytes) {

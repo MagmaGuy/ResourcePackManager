@@ -15,7 +15,7 @@ public class DataComplianceRequestCommand extends AdvancedCommand {
         super(List.of("data_compliance_request"));
         setDescription("Downloads a copy of all data associated to this server from the autohoster");
         setPermission("resourcepackmanager.*");
-        setUsage("/fmm data_compliance_request");
+        setUsage("/rspm data_compliance_request");
     }
 
     @Override

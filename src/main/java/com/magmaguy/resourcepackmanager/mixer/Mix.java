@@ -19,10 +19,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 
 public class Mix {
     private static final String resourcePackName = "ResourcePackManager_RSP";
@@ -82,94 +79,51 @@ public class Mix {
         }
     }
 
+    /**
+     * Builds the ordered list of resource packs to merge, sorted by configured priority.
+     * Packs are copied in this order during merging — higher priority packs go first,
+     * and their files are preserved when lower priority packs collide with them.
+     */
     private static void initializeThirdPartyResourcePacks() {
         orderedResourcePacks = new ArrayList<>();
-
-        // Use a mutable list so we can addAll() to it
-        List<ThirdPartyResourcePack> resourcePackManagers = new ArrayList<>(ThirdPartyResourcePack.thirdPartyResourcePacks.stream().toList());
-
-        // Add any API-registered packs
-        resourcePackManagers.addAll(ResourcePackManagerAPI.thirdPartyResourcePackHashMap.values());
-
-        // Filter enabled packs into a working list
-        List<ThirdPartyResourcePack> tempList = new ArrayList<>();
-        resourcePackManagers.stream()
-                .filter(ThirdPartyResourcePack::isEnabled)
-                .forEach(tempList::add);
-
         resourcePacks = new ArrayList<>();
-        List<File> customFiles = new ArrayList<>();
-        List<File> thirdPartyFiles = new ArrayList<>();
-
-        // Collect actual pack files from each enabled pack
-        tempList.forEach(rsp -> {
-            File mixerPack = rsp.getMixerResourcePack();
-            if (mixerPack != null) {
-                thirdPartyFiles.add(mixerPack);
-            }
-        });
-
-        // Separate out truly custom files in the mixer folder
-        for (File file : mixerFolder.listFiles()) {
-            // Skip directories that aren't zip files - these are likely from cluster processing
-            if (file.isDirectory()) continue;
-            // Skip non-zip files
-            if (!file.getName().endsWith(".zip")) continue;
-            boolean isThirdParty = thirdPartyFiles.stream()
-                    .anyMatch(tp -> tp.getName().equals(file.getName()));
-            if (!isThirdParty) {
-                customFiles.add(file);
-            }
-        }
-
-        // Add in order of configured priority
         List<String> priorityOrder = DefaultConfig.getPriorityOrder();
-        for (int i = 0; i < priorityOrder.size(); i++) {
-            boolean foundAtThisPriority = false;
 
-            Iterator<ThirdPartyResourcePack> it = tempList.iterator();
-            while (it.hasNext()) {
-                ThirdPartyResourcePack pack = it.next();
-                if (pack.getPriority() == i) {
-                    File f = pack.getMixerResourcePack();
-                    if (f != null) {
-                        resourcePacks.add(f);
-                        orderedResourcePacks.add(f.getName().replace(".zip", ""));
-                        it.remove();
-                        foundAtThisPriority = true;
-                        break;
-                    }
-                }
-            }
+        // Collect all enabled packs from both the static set and API registrations
+        List<ThirdPartyResourcePack> allPacks = new ArrayList<>(ThirdPartyResourcePack.thirdPartyResourcePacks);
+        allPacks.addAll(ResourcePackManagerAPI.thirdPartyResourcePackHashMap.values());
 
-            if (!foundAtThisPriority) {
-                Iterator<File> fileIt = customFiles.iterator();
-                while (fileIt.hasNext()) {
-                    File custom = fileIt.next();
-                    int prio = priorityOrder.indexOf(custom.getName());
-                    if (prio == i) {
-                        resourcePacks.add(custom);
-                        orderedResourcePacks.add(custom.getName().replace(".zip", ""));
-                        fileIt.remove();
-                    }
-                }
+        // Build a unified map of (file -> priority) for sorting
+        Map<File, Integer> filePriorities = new HashMap<>();
+        Set<String> registeredFilenames = new HashSet<>();
+
+        for (ThirdPartyResourcePack pack : allPacks) {
+            if (!pack.isEnabled() || pack.getMixerResourcePack() == null) continue;
+            registeredFilenames.add(pack.getMixerResourcePack().getName());
+            filePriorities.put(pack.getMixerResourcePack(),
+                    pack.getPriority() >= 0 ? pack.getPriority() : Integer.MAX_VALUE);
+        }
+
+        // Add custom zip files from the mixer folder (user-provided packs not tied to a plugin)
+        File[] mixerContents = mixerFolder.listFiles();
+        if (mixerContents != null) {
+            for (File file : mixerContents) {
+                if (file.isDirectory() || !file.getName().endsWith(".zip")) continue;
+                if (registeredFilenames.contains(file.getName())) continue;
+                // Check priority list by both filename and name without .zip
+                int prio = priorityOrder.indexOf(file.getName());
+                if (prio < 0) prio = priorityOrder.indexOf(file.getName().replace(".zip", ""));
+                filePriorities.put(file, prio >= 0 ? prio : Integer.MAX_VALUE);
             }
         }
 
-        // Any remaining third-party packs without explicit priority
-        tempList.stream()
-                .map(ThirdPartyResourcePack::getMixerResourcePack)
-                .filter(Objects::nonNull)
-                .forEach(packFile -> {
-                    resourcePacks.add(packFile);
-                    orderedResourcePacks.add(packFile.getName().replace(".zip", ""));
+        // Sort all packs by priority (lower index = higher priority = copied first = wins collisions)
+        filePriorities.entrySet().stream()
+                .sorted(Map.Entry.comparingByValue())
+                .forEach(entry -> {
+                    resourcePacks.add(entry.getKey());
+                    orderedResourcePacks.add(entry.getKey().getName().replace(".zip", ""));
                 });
-
-        // Any leftover custom files without explicit priority
-        customFiles.forEach(customFile -> {
-            resourcePacks.add(customFile);
-            orderedResourcePacks.add(customFile.getName().replace(".zip", ""));
-        });
     }
 
     private static void cloneToOutputAndUnzip() {
@@ -183,7 +137,6 @@ public class Mix {
                 // Pre-create the output directory to ensure getCanonicalPath() works correctly in the unzip security check
                 if (!outputDir.exists()) outputDir.mkdirs();
                 ZipFile.unzip(resourcePack, outputDir);
-                stripDirectoryMetadata(outputDir);
             } catch (Exception e) {
                 if (resourcePack == null)
                     Logger.warn("Failed to extract resource pack! The file might be encrypted. This pack will be skipped.");
@@ -215,7 +168,7 @@ public class Mix {
             if (!outputWrapper.exists()) outputWrapper.mkdir();
 
             try {
-                recursivelyCopyDirectoryForCluster(file, new File(outputWrapper.getPath() + File.separatorChar + file.getName()));
+                recursivelyCopyDirectory(file, outputWrapper);
                 // Track this for the merge process
                 if (!orderedResourcePacks.contains("cluster_" + file.getName())) {
                     orderedResourcePacks.add("cluster_" + file.getName());
@@ -223,37 +176,6 @@ public class Mix {
             } catch (Exception e) {
                 Logger.warn("Failed to copy cluster directory " + file.getName() + " to output folder");
                 e.printStackTrace();
-            }
-        }
-    }
-
-    private static void recursivelyCopyDirectoryForCluster(File source, File target) {
-        if (source.isDirectory()) {
-            String sourceName = source.getName();
-
-            // Skip shaders folder entirely
-            if (sourceName.equals("shaders")) {
-                return;
-            }
-
-            if (!target.exists()) target.mkdir();
-            File[] files = source.listFiles();
-            if (files != null) {
-                for (File child : files) {
-                    recursivelyCopyDirectoryForCluster(child, new File(target.getPath() + File.separatorChar + child.getName()));
-                }
-            }
-        } else {
-            try {
-                // Check if target exists - if so, use resolveFileCollision to handle merging
-                if (target.exists()) {
-                    resolveFileCollision(source, target);
-                } else {
-                    target.getParentFile().mkdirs();
-                    Files.copy(source.toPath(), target.toPath());
-                }
-            } catch (IOException e) {
-                Logger.warn("Failed to copy cluster file " + source.getPath());
             }
         }
     }
@@ -342,7 +264,7 @@ public class Mix {
         return new File(getOutputFolder().getAbsolutePath() + File.separatorChar + resourcePackName);
     }
 
-    private static void recursivelyDeleteDirectory(File directory) {
+    public static void recursivelyDeleteDirectory(File directory) {
         if (directory.isDirectory()) {
             for (File file : directory.listFiles()) {
                 recursivelyDeleteDirectory(file);
@@ -361,14 +283,9 @@ public class Mix {
         }
     }
 
-    private static void recursivelyCopyDirectory(File source, File target) {
+    public static void recursivelyCopyDirectory(File source, File target) {
         if (source.isDirectory()) {
             String sourceName = source.getName();
-
-            // Skip shaders folder entirely - ItemsAdder has incomplete shaders that break MC 1.21.4+
-            if (sourceName.equals("shaders")) {
-                return;
-            }
 
             target = new File(target.getAbsolutePath() + File.separatorChar + sourceName);
             target.mkdir();
@@ -392,89 +309,74 @@ public class Mix {
     }
 
     public static void resolveFileCollision(File sourceFile, File targetFile) throws IOException {
+        // pack.mcmeta needs overlay entries merged from all packs
+        if (targetFile.getName().equals("pack.mcmeta")) {
+            mergePackMcmeta(sourceFile, targetFile);
+            return;
+        }
+
         if (!targetFile.getName().endsWith(".json")) {
-            //If the file isn't .json then it can't be merged, only replaced (such as with .png, shaders, etc).
-            //Higher priority pack overwrites the file
-            Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            logCollision("Replaced: " + targetFile.getPath());
+            // Non-JSON: higher priority pack already placed this file, keep it
+            logCollision("Kept (higher priority): " + targetFile.getPath());
             return;
         }
 
-        // Only merge JSON files that are designed to be merged (sounds.json, lang files)
-        // Model files, blockstates, etc. have fixed-size arrays that break when concatenated
         if (!isMergeableJsonFile(targetFile)) {
-            Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            logCollision("Replaced (non-mergeable JSON): " + targetFile.getPath());
+            // Non-mergeable JSON (models, blockstates, etc.): higher priority version takes precedence
+            logCollision("Kept (higher priority, non-mergeable JSON): " + targetFile.getPath());
             return;
         }
 
-        FileReader sourceFileReader = new FileReader(sourceFile);
-        FileReader targetFileReader = new FileReader(targetFile);
+        JsonObject json1 = readJsonFile(sourceFile);
+        JsonObject json2 = readJsonFile(targetFile);
 
-        JsonObject json1 = null;
-        // Read JSON files
-        try {
-            json1 = JsonParser.parseReader(sourceFileReader).getAsJsonObject();
-        } catch (Exception e) {
-            Logger.warn("Malformed JSON: " + sourceFile.getAbsolutePath());
-            try {
-                sourceFileReader.close();
-                sourceFileReader = new FileReader(sourceFile);
-                JsonReader jsonReader = new JsonReader(sourceFileReader);
-                jsonReader.setStrictness(Strictness.LENIENT);
-                json1 = JsonParser.parseReader(jsonReader).getAsJsonObject();
-            } catch (Exception ex) {
-                Logger.warn("Unreadable JSON: " + sourceFile.getAbsolutePath());
-            }
-        }
-        JsonObject json2 = null;
-        try {
-            json2 = JsonParser.parseReader(targetFileReader).getAsJsonObject();
-        } catch (Exception e) {
-            Logger.warn("Malformed JSON: " + targetFile.getAbsolutePath());
-            try {
-                targetFileReader.close();
-                targetFileReader = new FileReader(targetFile);
-                JsonReader jsonReader = new JsonReader(targetFileReader);
-                jsonReader.setStrictness(Strictness.LENIENT);
-                json2 = JsonParser.parseReader(jsonReader).getAsJsonObject();
-            } catch (Exception ex) {
-                Logger.warn("Unreadable JSON: " + targetFile.getAbsolutePath());
-            }
-        }
-
-        sourceFileReader.close();
-        targetFileReader.close();
-
-        // If either JSON is unreadable, keep whichever one is valid, or skip
         if (json1 == null && json2 == null) {
             Logger.warn("Both JSON files unreadable during merge, skipping: " + targetFile.getPath());
             return;
         }
-        if (json1 == null) {
-            // Target is already in place, nothing to merge
-            return;
-        }
+        if (json1 == null) return;
         if (json2 == null) {
-            // Overwrite with the source since target is broken
             Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             logCollision("Replaced (unreadable target JSON): " + targetFile.getPath());
             return;
         }
 
-        // Merge JSON objects
-        JsonObject mergedJson = mergeJsonObjects(json1, json2);
-
-        FileWriter targetFileWriter = new FileWriter(targetFile);
-
-        // Write merged JSON to a file
-        try (FileWriter file = targetFileWriter) {
-            new Gson().toJson(mergedJson, file);
+        // Route to format-specific merge where needed
+        JsonObject mergedJson;
+        if (isItemsFile(targetFile)) {
+            mergedJson = mergeItemsModels(json1, json2);
+        } else if (targetFile.getName().equals("sounds.json")) {
+            mergedJson = mergeSoundsJson(json1, json2);
+        } else {
+            mergedJson = mergeJsonObjects(json1, json2);
         }
 
-        targetFileWriter.close();
+        // Post-process: sort overrides in legacy item model files by custom_model_data
+        if (isLegacyItemModel(targetFile) && mergedJson.has("overrides")) {
+            sortModelOverrides(mergedJson);
+        }
+
+        try (FileWriter writer = new FileWriter(targetFile)) {
+            new Gson().toJson(mergedJson, writer);
+        }
 
         logCollision("Merged: " + targetFile.getPath());
+    }
+
+    private static JsonObject readJsonFile(File file) {
+        try (FileReader reader = new FileReader(file)) {
+            return JsonParser.parseReader(reader).getAsJsonObject();
+        } catch (Exception e) {
+            Logger.warn("Malformed JSON: " + file.getAbsolutePath());
+            try (FileReader reader = new FileReader(file);
+                 JsonReader jsonReader = new JsonReader(reader)) {
+                jsonReader.setStrictness(Strictness.LENIENT);
+                return JsonParser.parseReader(jsonReader).getAsJsonObject();
+            } catch (Exception ex) {
+                Logger.warn("Unreadable JSON: " + file.getAbsolutePath());
+                return null;
+            }
+        }
     }
 
     /**
@@ -511,14 +413,13 @@ public class Mix {
             return true;
         }
 
+        // 1.21.4+ item model definitions should be merged (range_dispatch entries, select cases)
+        if (path.contains("/items/")) {
+            return true;
+        }
+
         // All other JSON files (custom models, blockstates, equipment layers, etc.) should not be merged
         return false;
-    }
-
-    private static void stripDirectoryMetadata(File file) throws IOException {
-        if (!file.isDirectory()) return;
-        for (File listFile : file.listFiles())
-            stripDirectoryMetadata(listFile);
     }
 
     public static JsonObject mergeJsonObjects(JsonObject json1, JsonObject json2) {
@@ -587,6 +488,273 @@ public class Mix {
         if (collisionLog != null) {
             collisionLog.add(message);
         }
+    }
+
+    private static void mergePackMcmeta(File sourceFile, File targetFile) throws IOException {
+        JsonObject source = readJsonFile(sourceFile);
+        JsonObject target = readJsonFile(targetFile);
+
+        if (source == null) return;
+        if (target == null) {
+            Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            return;
+        }
+
+        // Take the highest pack_format
+        if (source.has("pack") && target.has("pack")) {
+            JsonObject sourcePack = source.getAsJsonObject("pack");
+            JsonObject targetPack = target.getAsJsonObject("pack");
+            if (sourcePack.has("pack_format") && targetPack.has("pack_format")) {
+                int sourceFormat = sourcePack.get("pack_format").getAsInt();
+                int targetFormat = targetPack.get("pack_format").getAsInt();
+                targetPack.addProperty("pack_format", Math.max(sourceFormat, targetFormat));
+            }
+        }
+
+        // Merge supported_formats to widest range
+        if (source.has("supported_formats") && target.has("supported_formats")) {
+            JsonArray sourceFormats = source.getAsJsonArray("supported_formats");
+            JsonArray targetFormats = target.getAsJsonArray("supported_formats");
+            if (sourceFormats.size() >= 2 && targetFormats.size() >= 2) {
+                int min = Math.min(sourceFormats.get(0).getAsInt(), targetFormats.get(0).getAsInt());
+                int max = Math.max(sourceFormats.get(1).getAsInt(), targetFormats.get(1).getAsInt());
+                JsonArray merged = new JsonArray();
+                merged.add(min);
+                merged.add(max);
+                target.add("supported_formats", merged);
+            }
+        } else if (source.has("supported_formats") && !target.has("supported_formats")) {
+            target.add("supported_formats", source.get("supported_formats"));
+        }
+
+        // Merge overlay entries from both packs
+        JsonArray mergedEntries = new JsonArray();
+
+        if (target.has("overlays")) {
+            JsonObject targetOverlays = target.getAsJsonObject("overlays");
+            if (targetOverlays.has("entries")) {
+                mergedEntries.addAll(targetOverlays.getAsJsonArray("entries"));
+            }
+        }
+        if (source.has("overlays")) {
+            JsonObject sourceOverlays = source.getAsJsonObject("overlays");
+            if (sourceOverlays.has("entries")) {
+                Set<String> existingDirs = new HashSet<>();
+                for (JsonElement e : mergedEntries) {
+                    if (e.isJsonObject() && e.getAsJsonObject().has("directory")) {
+                        existingDirs.add(e.getAsJsonObject().get("directory").getAsString());
+                    }
+                }
+                for (JsonElement e : sourceOverlays.getAsJsonArray("entries")) {
+                    if (e.isJsonObject()) {
+                        String dir = e.getAsJsonObject().has("directory")
+                                ? e.getAsJsonObject().get("directory").getAsString() : "";
+                        if (!existingDirs.contains(dir)) {
+                            mergedEntries.add(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (mergedEntries.size() > 0) {
+            JsonObject overlays = new JsonObject();
+            overlays.add("entries", mergedEntries);
+            target.add("overlays", overlays);
+        }
+
+        try (FileWriter writer = new FileWriter(targetFile)) {
+            new Gson().toJson(target, writer);
+        }
+
+        logCollision("Merged pack.mcmeta: " + targetFile.getPath());
+    }
+
+    private static boolean isLegacyItemModel(File file) {
+        return file.getPath().replace("\\", "/").contains("/minecraft/models/item/");
+    }
+
+    private static boolean isItemsFile(File file) {
+        String path = file.getPath().replace("\\", "/");
+        return path.contains("/items/") && !path.contains("/models/item/");
+    }
+
+    private static void sortModelOverrides(JsonObject modelJson) {
+        JsonArray overrides = modelJson.getAsJsonArray("overrides");
+        if (overrides == null || overrides.size() <= 1) return;
+
+        List<JsonElement> sorted = new ArrayList<>();
+        for (JsonElement e : overrides) sorted.add(e);
+
+        sorted.sort((a, b) -> {
+            int cmdA = getCustomModelData(a);
+            int cmdB = getCustomModelData(b);
+            return Integer.compare(cmdA, cmdB);
+        });
+
+        JsonArray sortedArray = new JsonArray();
+        for (JsonElement e : sorted) sortedArray.add(e);
+        modelJson.add("overrides", sortedArray);
+    }
+
+    private static int getCustomModelData(JsonElement override) {
+        try {
+            return override.getAsJsonObject()
+                    .getAsJsonObject("predicate")
+                    .get("custom_model_data").getAsInt();
+        } catch (Exception e) {
+            return Integer.MAX_VALUE;
+        }
+    }
+
+    private static JsonObject mergeItemsModels(JsonObject source, JsonObject target) {
+        if (!source.has("model") || !target.has("model")) {
+            return mergeJsonObjects(source, target);
+        }
+
+        JsonObject sourceModel = source.getAsJsonObject("model");
+        JsonObject targetModel = target.getAsJsonObject("model");
+
+        String sourceType = sourceModel.has("type") ? sourceModel.get("type").getAsString().replace("minecraft:", "") : "";
+        String targetType = targetModel.has("type") ? targetModel.get("type").getAsString().replace("minecraft:", "") : "";
+
+        if (sourceType.equals("range_dispatch") && targetType.equals("range_dispatch")) {
+            mergeRangeDispatchEntries(sourceModel, targetModel);
+            target.add("model", targetModel);
+            for (String key : source.keySet()) {
+                if (!key.equals("model") && !target.has(key)) {
+                    target.add(key, source.get(key));
+                }
+            }
+            return target;
+        }
+
+        if (sourceType.equals("select") && targetType.equals("select")) {
+            String sourceProp = sourceModel.has("property") ? sourceModel.get("property").getAsString() : "";
+            String targetProp = targetModel.has("property") ? targetModel.get("property").getAsString() : "";
+            if (sourceProp.equals(targetProp)) {
+                mergeSelectCases(sourceModel, targetModel);
+                target.add("model", targetModel);
+                for (String key : source.keySet()) {
+                    if (!key.equals("model") && !target.has(key)) {
+                        target.add(key, source.get(key));
+                    }
+                }
+                return target;
+            }
+        }
+
+        // Incompatible types: higher priority (target) wins
+        return mergeJsonObjects(source, target);
+    }
+
+    private static void mergeRangeDispatchEntries(JsonObject sourceModel, JsonObject targetModel) {
+        JsonArray sourceEntries = sourceModel.has("entries") ? sourceModel.getAsJsonArray("entries") : new JsonArray();
+        JsonArray targetEntries = targetModel.has("entries") ? targetModel.getAsJsonArray("entries") : new JsonArray();
+
+        // Collect all entries, target (higher priority) wins on threshold conflicts
+        Map<Double, JsonElement> entryMap = new LinkedHashMap<>();
+        for (JsonElement e : sourceEntries) {
+            double threshold = e.getAsJsonObject().has("threshold")
+                    ? e.getAsJsonObject().get("threshold").getAsDouble() : 0;
+            entryMap.put(threshold, e);
+        }
+        for (JsonElement e : targetEntries) {
+            double threshold = e.getAsJsonObject().has("threshold")
+                    ? e.getAsJsonObject().get("threshold").getAsDouble() : 0;
+            entryMap.put(threshold, e);
+        }
+
+        List<Map.Entry<Double, JsonElement>> sorted = new ArrayList<>(entryMap.entrySet());
+        sorted.sort(Comparator.comparingDouble(Map.Entry::getKey));
+
+        JsonArray merged = new JsonArray();
+        for (Map.Entry<Double, JsonElement> entry : sorted) {
+            merged.add(entry.getValue());
+        }
+
+        targetModel.add("entries", merged);
+    }
+
+    private static void mergeSelectCases(JsonObject sourceModel, JsonObject targetModel) {
+        JsonArray sourceCases = sourceModel.has("cases") ? sourceModel.getAsJsonArray("cases") : new JsonArray();
+        JsonArray targetCases = targetModel.has("cases") ? targetModel.getAsJsonArray("cases") : new JsonArray();
+
+        Map<String, JsonElement> caseMap = new LinkedHashMap<>();
+        for (JsonElement e : sourceCases) {
+            String when = e.getAsJsonObject().has("when")
+                    ? e.getAsJsonObject().get("when").getAsString() : "";
+            caseMap.put(when, e);
+        }
+        for (JsonElement e : targetCases) {
+            String when = e.getAsJsonObject().has("when")
+                    ? e.getAsJsonObject().get("when").getAsString() : "";
+            caseMap.put(when, e);
+        }
+
+        JsonArray merged = new JsonArray();
+        for (JsonElement e : caseMap.values()) {
+            merged.add(e);
+        }
+
+        targetModel.add("cases", merged);
+    }
+
+    private static JsonObject mergeSoundsJson(JsonObject source, JsonObject target) {
+        JsonObject merged = new JsonObject();
+
+        // Start with all source (lower priority) events
+        for (String key : source.keySet()) {
+            merged.add(key, source.get(key));
+        }
+
+        // Apply target (higher priority) events
+        for (String key : target.keySet()) {
+            JsonElement targetEvent = target.get(key);
+            if (!merged.has(key)) {
+                merged.add(key, targetEvent);
+                continue;
+            }
+
+            if (targetEvent.isJsonObject()) {
+                JsonObject targetObj = targetEvent.getAsJsonObject();
+                boolean replace = targetObj.has("replace") && targetObj.get("replace").getAsBoolean();
+
+                if (replace) {
+                    merged.add(key, targetEvent);
+                } else {
+                    JsonObject sourceObj = merged.get(key).isJsonObject()
+                            ? merged.get(key).getAsJsonObject() : new JsonObject();
+                    JsonObject mergedEvent = new JsonObject();
+
+                    JsonArray mergedSounds = new JsonArray();
+                    if (sourceObj.has("sounds")) {
+                        mergedSounds.addAll(sourceObj.getAsJsonArray("sounds"));
+                    }
+                    if (targetObj.has("sounds")) {
+                        mergedSounds.addAll(targetObj.getAsJsonArray("sounds"));
+                    }
+                    mergedEvent.add("sounds", mergedSounds);
+
+                    for (String prop : sourceObj.keySet()) {
+                        if (!prop.equals("sounds") && !prop.equals("replace")) {
+                            mergedEvent.add(prop, sourceObj.get(prop));
+                        }
+                    }
+                    for (String prop : targetObj.keySet()) {
+                        if (!prop.equals("sounds") && !prop.equals("replace")) {
+                            mergedEvent.add(prop, targetObj.get(prop));
+                        }
+                    }
+
+                    merged.add(key, mergedEvent);
+                }
+            } else {
+                merged.add(key, targetEvent);
+            }
+        }
+
+        return merged;
     }
 
 }
