@@ -107,7 +107,7 @@
                                 </relocation>
                                 <relocation>
                                     <pattern>org.bstats</pattern>
-                                    <shadedPattern>com.magmaguy.freeminecraftmodels</shadedPattern>
+                                    <shadedPattern>com.magmaguy.resourcepackmanager.bstats</shadedPattern>
                                 </relocation>
                             </relocations>
                         </configuration>

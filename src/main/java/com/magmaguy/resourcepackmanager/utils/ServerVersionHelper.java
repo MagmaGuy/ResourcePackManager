@@ -8,25 +8,22 @@ public class ServerVersionHelper {
     private static final boolean supportsMultipleResourcePacks;
 
     static {
-        String version = Bukkit.getBukkitVersion(); // e.g., "1.20.4-R0.1-SNAPSHOT"
+        String version = Bukkit.getBukkitVersion(); // e.g., "1.20.4-R0.1-SNAPSHOT" or "26.1-R0.1-SNAPSHOT"
         String[] parts = version.split("-")[0].split("\\.");
-        majorVersion = Integer.parseInt(parts[0]);
-        minorVersion = Integer.parseInt(parts[1]);
 
-        // addResourcePack was added in 1.20.3
-        supportsMultipleResourcePacks = majorVersion > 1 || (majorVersion == 1 && minorVersion >= 20 && getRevision(version) >= 3);
-    }
-
-    private static int getRevision(String version) {
-        String[] parts = version.split("-")[0].split("\\.");
-        if (parts.length >= 3) {
-            try {
-                return Integer.parseInt(parts[2]);
-            } catch (NumberFormatException e) {
-                return 0;
-            }
+        if (parts[0].equals("1")) {
+            // Legacy format: 1.MAJOR.MINOR
+            majorVersion = Integer.parseInt(parts[1]);
+            minorVersion = parts.length >= 3 ? Integer.parseInt(parts[2]) : 0;
+        } else {
+            // New year.drop format: MAJOR.MINOR (e.g. 26.1)
+            majorVersion = Integer.parseInt(parts[0]);
+            minorVersion = parts.length >= 2 ? Integer.parseInt(parts[1]) : 0;
         }
-        return 0;
+
+        // addResourcePack was added in 1.20.3 (majorVersion=20, minorVersion>=3)
+        // All versions >= 26 support it
+        supportsMultipleResourcePacks = majorVersion > 20 || (majorVersion == 20 && minorVersion >= 3);
     }
 
     public static boolean supportsMultipleResourcePacks() {

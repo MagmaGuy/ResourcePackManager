@@ -24,8 +24,6 @@ public class ReloadCommand extends AdvancedCommand {
 
     @Override
     public void execute(CommandData commandData) {
-        ResourcePackManager.plugin.onDisable();
-        ResourcePackManager.plugin.onEnable();
-        Logger.sendMessage(commandData.getCommandSender(), "Reloaded the plugin!");
+        reloadPlugin(commandData.getCommandSender());
     }
 }

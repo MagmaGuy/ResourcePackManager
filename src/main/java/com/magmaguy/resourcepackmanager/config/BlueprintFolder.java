@@ -20,8 +20,7 @@ public class BlueprintFolder {
         Logger.info("Copying image");
         File imageFile = new File(blueprintDirectory.getAbsolutePath() + File.separatorChar + "pack.png");
         if (!imageFile.exists()) {
-            try {
-                InputStream inputStream = ResourcePackManager.plugin.getResource("pack.png");
+            try (InputStream inputStream = ResourcePackManager.plugin.getResource("pack.png")) {
                 Files.copy(inputStream, imageFile.toPath());
             } catch (IOException e) {
                 e.printStackTrace();
@@ -30,10 +29,8 @@ public class BlueprintFolder {
         Logger.info("Copying mcmeta");
         File mcmetaFile = new File(blueprintDirectory.getAbsolutePath() + File.separatorChar + "pack.mcmeta");
         if (!mcmetaFile.exists()) {
-            try {
-                InputStream inputStream = ResourcePackManager.plugin.getResource("pack.mcmeta");
+            try (InputStream inputStream = ResourcePackManager.plugin.getResource("pack.mcmeta")) {
                 Files.copy(inputStream, mcmetaFile.toPath());
-                inputStream.close();
             } catch (IOException e) {
                 e.printStackTrace();
             }

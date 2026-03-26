@@ -28,7 +28,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.HashSet;
 import java.util.Objects;
 
-public class ThirdPartyResourcePack implements GeneratorInterface {
+public class ThirdPartyResourcePack {
     public static HashSet<ThirdPartyResourcePack> thirdPartyResourcePacks = new HashSet<>();
 
     @Getter
@@ -39,8 +39,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     private final String url;
     @Getter
     private File file = null;
-    private boolean encrypts;
-    private boolean distributes;
     private boolean zips;
     private boolean cluster;
     private String reloadCommand;
@@ -59,7 +57,7 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     @Setter
     private boolean stableResourcePackSent = false;
 
-    public ThirdPartyResourcePack(String pluginName, String localPath, String url, boolean encrypts, boolean distributes, boolean zips, boolean cluster, String reloadCommand) {
+    public ThirdPartyResourcePack(String pluginName, String localPath, String url, boolean zips, boolean cluster, String reloadCommand) {
         this.pluginName = pluginName;
         this.mixerFilename = pluginName + "_resource_pack.zip";
         this.url = url;
@@ -81,8 +79,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
             return;
         }
 
-        this.encrypts = encrypts;
-        this.distributes = distributes;
         this.reloadCommand = reloadCommand;
         this.zips = zips;
         this.cluster = cluster;
@@ -118,13 +114,55 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
 
     private static BukkitTask resourcePackChangeWatcher = null;
 
+    /**
+     * Checks whether a monitored plugin has finished its Magmacore initialization.
+     * Uses System properties published by each plugin's shaded Magmacore instance.
+     */
+    private static boolean isPluginInitialized(String pluginName) {
+        String state = System.getProperty("magmacore.init." + pluginName);
+        // If no state is published, the plugin doesn't use Magmacore — treat as ready
+        if (state == null) return true;
+        return "INITIALIZED".equals(state);
+    }
+
     public static void startResourcePackChangeWatchdog() {
         if (resourcePackChangeWatcher != null) {
             resourcePackChangeWatcher.cancel();
         }
         resourcePackChangeWatcher = new BukkitRunnable() {
+            private boolean allPluginsReady = false;
+
             @Override
             public void run() {
+                // Phase 1: Wait for all monitored plugins to finish initializing
+                if (!allPluginsReady) {
+                    for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
+                        if (!thirdPartyResourcePack.isEnabled) continue;
+                        if (!isPluginInitialized(thirdPartyResourcePack.pluginName)) {
+                            return; // Still waiting — check again next tick
+                        }
+                    }
+                    allPluginsReady = true;
+                    Logger.info("All monitored plugins are initialized. Starting resource pack stability checks.");
+                }
+
+                // Check if any monitored plugin has gone back to initializing (reload detected)
+                for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
+                    if (!thirdPartyResourcePack.isEnabled) continue;
+                    if (!isPluginInitialized(thirdPartyResourcePack.pluginName)) {
+                        Logger.info("Plugin " + thirdPartyResourcePack.pluginName + " is reloading. Pausing resource pack processing.");
+                        allPluginsReady = false;
+                        // Reset stability for all packs since a reload may change them
+                        for (ThirdPartyResourcePack pack : thirdPartyResourcePacks) {
+                            pack.consideredStable = false;
+                            pack.stableResourcePackSent = false;
+                            pack.ticksWithoutChange = 0;
+                        }
+                        return;
+                    }
+                }
+
+                // Phase 2: SHA1 stability checks (same logic, but no arbitrary extra delay)
                 boolean readyToSend = true;
                 boolean stableAlreadySent = true;
                 for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
@@ -143,7 +181,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                     if (thirdPartyResourcePack.consideredStable) continue;
                     thirdPartyResourcePack.ticksWithoutChange++;
                     if (thirdPartyResourcePack.ticksWithoutChange == 3) {
-                        //If nothing has changed for 3 seconds, then it should be considered to be stable
                         thirdPartyResourcePack.consideredStable = true;
                         Logger.info("Resource pack for " + thirdPartyResourcePack.pluginName + " has not changed for 3 seconds, considering it stable.");
                     }
@@ -152,14 +189,8 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                 if (!stableAlreadySent && readyToSend) {
                     notifyResourcePackSending();
                     tagAsResourcePackSent();
-                    // Delay 1 second before actually mixing and sending
-                    new BukkitRunnable() {
-                        @Override
-                        public void run() {
-                            Logger.info("Sending resource pack now.");
-                            Mix.mixResourcePacks();
-                        }
-                    }.runTaskLaterAsynchronously(ResourcePackManager.plugin, 20L);
+                    Logger.info("Sending resource pack now.");
+                    Bukkit.getScheduler().runTaskAsynchronously(ResourcePackManager.plugin, Mix::mixResourcePacks);
                 }
             }
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 20, 20);
@@ -172,8 +203,8 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
     }
 
     private static void notifyResourcePackSending() {
-        String message = "&eAll resource packs are stable. Resource pack will be sent in 1 second.";
-        Logger.info("All resource packs are stable. Resource pack will be sent in 1 second.");
+        String message = "&eAll resource packs are stable. Mixing and sending now.";
+        Logger.info("All resource packs are stable. Mixing and sending now.");
         // Notify all online OPs
         for (org.bukkit.entity.Player player : Bukkit.getOnlinePlayers()) {
             if (player.isOp()) {
@@ -195,8 +226,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                 compatiblePluginConfigFields.getPluginName(),
                 compatiblePluginConfigFields.getLocalPath(),
                 compatiblePluginConfigFields.getUrl(),
-                compatiblePluginConfigFields.isEncrypts(),
-                compatiblePluginConfigFields.isDistributes(),
                 compatiblePluginConfigFields.isZips(),
                 compatiblePluginConfigFields.isCluster(),
                 compatiblePluginConfigFields.getReloadCommand());
@@ -225,6 +254,11 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         File mixerDir = new File(ResourcePackManager.plugin.getDataFolder().toString() + File.separatorChar + "mixer");
         if (!mixerDir.exists()) mixerDir.mkdir();
 
+        // Merge all cluster sub-packs into a temporary directory
+        File clusterTemp = new File(mixerDir.getPath() + File.separatorChar + pluginName + "_cluster_temp");
+        if (clusterTemp.exists()) Mix.recursivelyDeleteDirectory(clusterTemp);
+        clusterTemp.mkdir();
+
         Logger.info("Processing cluster for " + pluginName + " with " + clusterContents.length + " resource packs");
 
         for (File resourcePackFolder : clusterContents) {
@@ -233,52 +267,34 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
                 continue;
             }
 
-            // Each folder in the cluster is a resource pack - copy its contents to mixer
             File[] resourcePackContents = resourcePackFolder.listFiles();
             if (resourcePackContents == null) continue;
 
             for (File contentFolder : resourcePackContents) {
                 if (!contentFolder.isDirectory()) continue;
 
-                File targetFolder = new File(mixerDir.getPath() + File.separatorChar + contentFolder.getName());
                 try {
-                    recursivelyCloneDirectory(contentFolder, targetFolder);
-                    Logger.info("Copied " + contentFolder.getName() + " from " + resourcePackFolder.getName() + " to mixer folder");
+                    Mix.recursivelyCopyDirectory(contentFolder, clusterTemp);
                 } catch (Exception e) {
-                    Logger.warn("Failed to copy " + contentFolder.getPath() + " to mixer folder");
+                    Logger.warn("Failed to copy " + contentFolder.getPath() + " to cluster temp");
                     e.printStackTrace();
                 }
             }
         }
 
-        // For clusters, we don't track a single mixerResourcePack since they get copied directly
-        // Set isEnabled to false so it doesn't try to process further as a single pack
-        isEnabled = false;
-        Logger.info("Finished processing cluster for " + pluginName);
-    }
-
-    private void recursivelyCloneDirectory(File source, File target) {
-        if (source.isDirectory()) {
-            if (!target.exists()) target.mkdir();
-            File[] files = source.listFiles();
-            if (files != null) {
-                for (File child : files) {
-                    recursivelyCloneDirectory(child, new File(target.getPath() + File.separatorChar + child.getName()));
-                }
-            }
+        // Zip the merged cluster content so it participates in priority ordering like any other pack
+        File targetZip = getTarget().toFile();
+        if (ZipFile.zip(clusterTemp, targetZip.getAbsolutePath())) {
+            mixerResourcePack = targetZip;
+            Logger.info("Created merged cluster pack: " + targetZip.getAbsolutePath());
         } else {
-            try {
-                // Check if target exists - if so, use Mix.resolveFileCollision to handle merging
-                if (target.exists()) {
-                    Mix.resolveFileCollision(source, target);
-                } else {
-                    target.getParentFile().mkdirs();
-                    Files.copy(source.toPath(), target.toPath());
-                }
-            } catch (Exception e) {
-                Logger.warn("Failed to copy file " + source.getPath() + " to " + target.getPath());
-            }
+            Logger.warn("Failed to zip merged cluster for " + pluginName);
+            isEnabled = false;
         }
+
+        // Clean up temp directory
+        Mix.recursivelyDeleteDirectory(clusterTemp);
+        Logger.info("Finished processing cluster for " + pluginName);
     }
 
     private boolean processLocal(String localPath) {
@@ -307,9 +323,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
             }
         }
 
-        if (encrypts) decrypt();
-        if (distributes) unpublish();
-
         cloneResourcePackFile();
     }
 
@@ -322,17 +335,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         }
     }
 
-    @Override
-    public void decrypt() {
-        //Implementation depends on extended classes
-    }
-
-    @Override
-    public void unpublish() {
-        //Implementation depends on extended classes
-    }
-
-    @Override
     public void cloneResourcePackFile() {
         if (localPath != null) cloneLocalRSP();
         else cloneRemoteRSP();
@@ -409,7 +411,6 @@ public class ThirdPartyResourcePack implements GeneratorInterface {
         }
     }
 
-    @Override
     public void reload() {
         Bukkit.dispatchCommand(Bukkit.getConsoleSender(), reloadCommand);
     }
