@@ -167,6 +167,8 @@ public class ThirdPartyResourcePack {
                 boolean stableAlreadySent = true;
                 for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
                     if (!thirdPartyResourcePack.isEnabled || thirdPartyResourcePack.file == null) continue;
+                    // Cluster packs have a directory as their source file — can't hash, skip SHA1 check
+                    if (thirdPartyResourcePack.cluster) continue;
                     if (!Objects.equals(thirdPartyResourcePack.getSHA1(thirdPartyResourcePack.file), thirdPartyResourcePack.SHA1)) {
                         thirdPartyResourcePack.ticksWithoutChange = 0;
                         thirdPartyResourcePack.SHA1 = thirdPartyResourcePack.getSHA1(thirdPartyResourcePack.file);
