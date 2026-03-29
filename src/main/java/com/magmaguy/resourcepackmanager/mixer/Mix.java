@@ -558,6 +558,17 @@ public class Mix {
         }
 
         if (mergedEntries.size() > 0) {
+            // Defensive normalization: ensure overlay entries have min_format/max_format fields.
+            // Starting with resource pack format 65 (Minecraft 1.21.9+), overlay entries MUST include
+            // min_format and max_format as separate fields — the old "formats" field alone is no longer
+            // sufficient. If an overlay's format range covers 65+, the client rejects entries missing
+            // these fields with: "declares support for version newer than 64, but is missing mandatory
+            // fields min_format and max_format".
+            // This is NOT an RSPM bug — the source packs (e.g. ModelEngine) are generating overlay entries
+            // without these fields. Ideally those packs should fix their own pack.mcmeta output.
+            // We patch it here because RSPM gets the bug reports when the merged pack fails to load.
+            normalizeOverlayEntries(mergedEntries);
+
             JsonObject overlays = new JsonObject();
             overlays.add("entries", mergedEntries);
             target.add("overlays", overlays);
@@ -575,6 +586,41 @@ public class Mix {
         }
 
         logCollision("Merged pack.mcmeta: " + targetFile.getPath());
+    }
+
+    /**
+     * Patches overlay entries that are missing min_format/max_format fields.
+     * See comment at call site for full rationale — this works around third-party packs
+     * that haven't updated their pack.mcmeta to the 1.21.9+ overlay format.
+     */
+    private static void normalizeOverlayEntries(JsonArray entries) {
+        for (JsonElement element : entries) {
+            if (!element.isJsonObject()) continue;
+            JsonObject entry = element.getAsJsonObject();
+            if (entry.has("min_format") && entry.has("max_format")) continue;
+            if (!entry.has("formats")) continue;
+
+            int min, max;
+            JsonElement formats = entry.get("formats");
+            if (formats.isJsonArray()) {
+                JsonArray arr = formats.getAsJsonArray();
+                if (arr.size() < 2) continue;
+                min = arr.get(0).getAsInt();
+                max = arr.get(1).getAsInt();
+            } else if (formats.isJsonObject()) {
+                JsonObject obj = formats.getAsJsonObject();
+                if (!obj.has("min_inclusive") || !obj.has("max_inclusive")) continue;
+                min = obj.get("min_inclusive").getAsInt();
+                max = obj.get("max_inclusive").getAsInt();
+            } else if (formats.isJsonPrimitive()) {
+                min = max = formats.getAsInt();
+            } else {
+                continue;
+            }
+
+            if (!entry.has("min_format")) entry.addProperty("min_format", min);
+            if (!entry.has("max_format")) entry.addProperty("max_format", max);
+        }
     }
 
     private static boolean isLegacyItemModel(File file) {
