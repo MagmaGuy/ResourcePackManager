@@ -563,6 +563,13 @@ public class Mix {
             target.add("overlays", overlays);
         }
 
+        // Preserve any non-standard top-level keys from source (e.g. "sodium" with ignored_shaders)
+        for (String key : source.keySet()) {
+            if (!target.has(key)) {
+                target.add(key, source.get(key));
+            }
+        }
+
         try (FileWriter writer = new FileWriter(targetFile)) {
             new Gson().toJson(target, writer);
         }
