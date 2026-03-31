@@ -12,10 +12,12 @@ import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 
 import java.io.File;
 import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -78,6 +80,7 @@ public class BedrockConversion {
 
             // 3. Process each model group
             List<FmmGeyserMappingBuilder.BoneMapping> allMappings = new ArrayList<>();
+            Map<String, String> iconTextureMap = new LinkedHashMap<>(); // iconKey -> bedrockTexturePath
             int totalBones = 0;
             int convertedBones = 0;
 
@@ -118,6 +121,7 @@ public class BedrockConversion {
 
                     // Record mapping
                     String iconKey = "fmm." + modelName + "." + bone.getBoneName();
+                    iconTextureMap.put(iconKey, stitch.bedrockTexturePath());
                     allMappings.add(new FmmGeyserMappingBuilder.BoneMapping(
                             bone.getItemModelKey(),
                             bedrockId,
@@ -134,16 +138,19 @@ public class BedrockConversion {
                 return;
             }
 
-            // 4. Generate manifest
+            // 4. Generate item_texture.json (required by Geyser for icon resolution)
+            generateItemTexture(iconTextureMap, bedrockDir);
+
+            // 5. Generate manifest
             String contentHash = String.valueOf(System.currentTimeMillis());
             String pluginVersion = ResourcePackManager.plugin.getDescription().getVersion();
             BedrockManifest.write(bedrockDir, pluginVersion, contentHash);
 
-            // 5. Generate Geyser mappings
+            // 6. Generate Geyser mappings
             File mappingsFile = new File(outputDir, GEYSER_MAPPINGS_NAME);
             FmmGeyserMappingBuilder.generate(allMappings, mappingsFile);
 
-            // 6. Zip
+            // 7. Zip
             File bedrockZip = BedrockZip.zip(bedrockDir, outputDir, BEDROCK_PACK_NAME);
             if (bedrockZip == null) {
                 Logger.warn("Failed to zip Bedrock resource pack!");
@@ -151,7 +158,7 @@ public class BedrockConversion {
             }
             recursivelyDelete(bedrockDir);
 
-            // 7. Deploy to Geyser
+            // 8. Deploy to Geyser
             if (DefaultConfig.isBedrockAutoDeployToGeyser()) {
                 GeyserDeployer.deploy(bedrockZip, mappingsFile);
             }
@@ -165,6 +172,37 @@ public class BedrockConversion {
         } catch (Exception e) {
             Logger.warn("FMM Bedrock conversion failed: " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+
+    /**
+     * Generates item_texture.json in the Bedrock pack.
+     * Maps each bone's icon key to its model's atlas texture path.
+     * Required by Geyser to resolve item icons for custom items.
+     */
+    private static void generateItemTexture(Map<String, String> iconTextureMap, File bedrockDir) {
+        JsonObject textureData = new JsonObject();
+        for (Map.Entry<String, String> entry : iconTextureMap.entrySet()) {
+            JsonObject texEntry = new JsonObject();
+            texEntry.addProperty("textures", entry.getValue());
+            textureData.add(entry.getKey(), texEntry);
+        }
+
+        JsonObject root = new JsonObject();
+        root.addProperty("resource_pack_name", "ResourcePackManager_Bedrock");
+        root.addProperty("texture_name", "atlas.items");
+        root.add("texture_data", textureData);
+
+        File outputFile = new File(bedrockDir, "textures/item_texture.json");
+        try {
+            Files.createDirectories(outputFile.getParentFile().toPath());
+            try (FileWriter writer = new FileWriter(outputFile, StandardCharsets.UTF_8)) {
+                new com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
+                        .toJson(root, writer);
+            }
+            Logger.info("[BedrockConverter] Generated item_texture.json with " + iconTextureMap.size() + " entries.");
+        } catch (IOException e) {
+            Logger.warn("[BedrockConverter] Failed to write item_texture.json: " + e.getMessage());
         }
     }
 
