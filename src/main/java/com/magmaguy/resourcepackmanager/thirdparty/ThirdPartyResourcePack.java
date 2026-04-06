@@ -205,6 +205,15 @@ public class ThirdPartyResourcePack {
                 }
             }
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 20, 20);
+
+        if (!DefaultConfig.isAutoMixOnStartup()) {
+            if (Mix.loadExistingFinalResourcePack()) {
+                Logger.info("autoMixOnStartup is disabled, reusing the last merged resource pack from disk.");
+                AutoHost.initialize();
+            } else {
+                Logger.info("autoMixOnStartup is disabled and no existing merged resource pack was found. Waiting for changes.");
+            }
+        }
     }
 
     public static void tagAsResourcePackSent(){
