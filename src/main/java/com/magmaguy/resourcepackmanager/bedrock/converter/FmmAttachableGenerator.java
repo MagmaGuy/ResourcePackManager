@@ -20,8 +20,10 @@ public class FmmAttachableGenerator {
     // ========================================================================
     // HEAD SLOT TRANSFORM VALUES — TUNE THESE AGAINST TESTBED
     // ========================================================================
+    // Original values (19.5, 2.5) were "shockingly close" per testbed.
+    // User reported 3.5 pixels too high, so POS_Y adjusted from 19.5 to 16.0.
     private static final double HEAD_POS_X = 0.0;
-    private static final double HEAD_POS_Y = 19.5;
+    private static final double HEAD_POS_Y = 16.0;
     private static final double HEAD_POS_Z = 0.0;
     private static final double HEAD_ROT_X = 0.0;
     private static final double HEAD_ROT_Y = 0.0;

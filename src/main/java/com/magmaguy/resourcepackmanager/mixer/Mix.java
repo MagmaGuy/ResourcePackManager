@@ -7,6 +7,7 @@ import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.api.ResourcePackManagerAPI;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
@@ -56,12 +57,24 @@ public class Mix {
         Logger.info("Starting resource pack mixing...");
         collisionLog = new ArrayList<>();
         if (!initializeDefaultPluginFolders()) return;
+        if (shuttingDown()) return;
         initializeThirdPartyResourcePacks();
+        if (shuttingDown()) return;
         cloneToOutputAndUnzip();
+        if (shuttingDown()) return;
         createOutputDefaultElements();
+        if (shuttingDown()) return;
         writeCollisionLog();
         Logger.info("Resource pack mixing complete.");
+        if (shuttingDown()) return;
         AutoHost.initialize();
+    }
+
+    // Bail out of the mix pipeline as soon as the plugin disables, so Bukkit
+    // doesn't nag about un-shutdown async tasks. Each phase below can take
+    // multiple seconds (file I/O on potentially many resource packs).
+    private static boolean shuttingDown() {
+        return com.magmaguy.magmacore.MagmaCore.isShutdownRequested(ResourcePackManager.plugin);
     }
 
     private static boolean initializeDefaultPluginFolders() {
@@ -216,6 +229,9 @@ public class Mix {
             }
         }
 
+        // Merge base atlas sources into overlay atlas files so overlays don't shadow base entries
+        mergeBaseAtlasSourcesIntoOverlays(getOutputResourcePackFolder());
+
         if (!ZipFile.zip(getOutputResourcePackFolder(), getOutputResourcePackFolder().getPath() + ".zip")) {
             Logger.warn("Failed to zip merged resource pack!");
             return;
@@ -237,6 +253,11 @@ public class Mix {
             }
         }
 
+        // Generate Bedrock resource pack for GeyserMC
+        if (DefaultConfig.isBedrockConversionEnabled()) {
+            BedrockConversion.generate(getOutputResourcePackFolder(), getOutputFolder());
+        }
+
         for (File file : getOutputFolder().listFiles()) {
             if (file.getName().equals(resourcePackName + ".zip")) {
                 finalResourcePack = file;
@@ -252,8 +273,6 @@ public class Mix {
             recursivelyDeleteDirectory(file);
         }
 
-//        // ADD THE BEDROCK CONVERSION CALL HERE - AFTER finalResourcePack IS SET:
-//            generateBedrockResourcePack();
     }
 
     private static File getOutputFolder() {
@@ -488,6 +507,108 @@ public class Mix {
         if (collisionLog != null) {
             collisionLog.add(message);
         }
+    }
+
+    /**
+     * After all packs are merged, overlay directories may contain atlas files that shadow the base atlas.
+     * When Minecraft activates an overlay, its atlas file replaces the base — so any sources defined only
+     * in the base are lost. This method copies base atlas sources into each overlay atlas file to prevent that.
+     */
+    private static void mergeBaseAtlasSourcesIntoOverlays(File resourcePackRoot) {
+        File packMcmeta = new File(resourcePackRoot, "pack.mcmeta");
+        if (!packMcmeta.exists()) return;
+
+        JsonObject mcmeta = readJsonFile(packMcmeta);
+        if (mcmeta == null || !mcmeta.has("overlays")) return;
+
+        JsonObject overlays = mcmeta.getAsJsonObject("overlays");
+        if (!overlays.has("entries")) return;
+
+        for (JsonElement entry : overlays.getAsJsonArray("entries")) {
+            if (!entry.isJsonObject()) continue;
+            JsonObject overlayEntry = entry.getAsJsonObject();
+            if (!overlayEntry.has("directory")) continue;
+            String overlayDir = overlayEntry.get("directory").getAsString();
+
+            File overlayRoot = new File(resourcePackRoot, overlayDir);
+            if (!overlayRoot.exists() || !overlayRoot.isDirectory()) continue;
+
+            // Find all atlas files in this overlay and merge base sources into them
+            mergeBaseAtlasesForOverlay(resourcePackRoot, overlayRoot);
+        }
+    }
+
+    private static void mergeBaseAtlasesForOverlay(File resourcePackRoot, File overlayRoot) {
+        // Scan for atlas files under the overlay: <overlay>/assets/*/atlases/*.json
+        File overlayAssets = new File(overlayRoot, "assets");
+        if (!overlayAssets.exists() || !overlayAssets.isDirectory()) return;
+
+        File[] namespaces = overlayAssets.listFiles(File::isDirectory);
+        if (namespaces == null) return;
+
+        for (File namespace : namespaces) {
+            File atlasesDir = new File(namespace, "atlases");
+            if (!atlasesDir.exists() || !atlasesDir.isDirectory()) continue;
+
+            File[] atlasFiles = atlasesDir.listFiles((dir, name) -> name.endsWith(".json"));
+            if (atlasFiles == null) continue;
+
+            for (File overlayAtlas : atlasFiles) {
+                // Find the corresponding base atlas: assets/<namespace>/atlases/<name>.json
+                String relativePath = "assets" + File.separatorChar + namespace.getName()
+                        + File.separatorChar + "atlases" + File.separatorChar + overlayAtlas.getName();
+                File baseAtlas = new File(resourcePackRoot, relativePath);
+
+                if (!baseAtlas.exists()) continue;
+
+                mergeBaseSourcesIntoOverlayAtlas(baseAtlas, overlayAtlas);
+            }
+        }
+    }
+
+    private static void mergeBaseSourcesIntoOverlayAtlas(File baseAtlas, File overlayAtlas) {
+        JsonObject baseJson = readJsonFile(baseAtlas);
+        JsonObject overlayJson = readJsonFile(overlayAtlas);
+
+        if (baseJson == null || overlayJson == null) return;
+        if (!baseJson.has("sources") || !overlayJson.has("sources")) return;
+
+        JsonArray baseSources = baseJson.getAsJsonArray("sources");
+        JsonArray overlaySources = overlayJson.getAsJsonArray("sources");
+
+        // Build a set of source signatures already in the overlay to avoid duplicates
+        Set<String> existingSignatures = new HashSet<>();
+        for (JsonElement e : overlaySources) {
+            existingSignatures.add(e.toString());
+        }
+
+        // Prepend base sources that aren't already in the overlay
+        JsonArray merged = new JsonArray();
+        int addedCount = 0;
+        for (JsonElement baseSource : baseSources) {
+            if (!existingSignatures.contains(baseSource.toString())) {
+                merged.add(baseSource);
+                addedCount++;
+            }
+        }
+
+        // Append all existing overlay sources after the base sources
+        for (JsonElement overlaySource : overlaySources) {
+            merged.add(overlaySource);
+        }
+
+        if (addedCount == 0) return;
+
+        overlayJson.add("sources", merged);
+
+        try (FileWriter writer = new FileWriter(overlayAtlas)) {
+            new Gson().toJson(overlayJson, writer);
+        } catch (IOException e) {
+            Logger.warn("Failed to merge base atlas sources into overlay atlas: " + overlayAtlas.getPath());
+        }
+
+        logCollision("Merged base atlas sources into overlay: " + overlayAtlas.getPath()
+                + " (" + addedCount + " sources added from base)");
     }
 
     private static void mergePackMcmeta(File sourceFile, File targetFile) throws IOException {
