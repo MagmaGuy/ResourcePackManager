@@ -51,6 +51,13 @@ public class AutoHost {
     @Setter
     private static boolean firstUpload = true;
 
+    // Tracks the HTTP client currently in flight (initializeLink / sendSHA1 /
+    // uploadFile). On plugin disable we close it to abort the blocking request
+    // immediately — otherwise a multi-MB upload can keep the async task alive
+    // for tens of seconds past onDisable, triggering Bukkit's "not properly
+    // shutting down its async tasks" nag.
+    private static volatile CloseableHttpClient inFlightClient = null;
+
     // Timeout settings for HTTP requests (in seconds)
     private static final int DEFAULT_CONNECT_TIMEOUT = 30;
     private static final int DEFAULT_SOCKET_TIMEOUT = 60;
@@ -123,6 +130,14 @@ public class AutoHost {
 
             @Override
             public void run() {
+                // Bail before doing any blocking HTTP work if the plugin is
+                // disabling. cancel() alone doesn't interrupt a task that's
+                // already mid-execution; without this check, an in-flight
+                // upload (10s+ blocking) keeps the task alive past onDisable
+                // and Bukkit nags about un-shutdown async tasks.
+                if (com.magmaguy.magmacore.MagmaCore.isShutdownRequested(ResourcePackManager.plugin)
+                        || isCancelled()) return;
+
                 if (rspUUID != null) {
                     counter = 0;
                     try {
@@ -164,6 +179,7 @@ public class AutoHost {
 
     public static void initializeLink() {
         try (CloseableHttpClient httpClient = createHttpClient()) {
+            inFlightClient = httpClient;
             HttpPost httpPost = new HttpPost(finalURL + "initialize");
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
             builder.addTextBody("uuid", DataConfig.getRspUUID(), ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
@@ -224,6 +240,7 @@ public class AutoHost {
         Logger.info("Uploading resource!");
 
         try (CloseableHttpClient httpClient = createHttpClient(UPLOAD_SOCKET_TIMEOUT)) {
+            inFlightClient = httpClient;
             HttpPost uploadFile = new HttpPost(finalURL + "upload");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
@@ -260,6 +277,7 @@ public class AutoHost {
 
     private static boolean sendSHA1() {
         try (CloseableHttpClient httpClient = createHttpClient()) {
+            inFlightClient = httpClient;
             HttpPost httpPost = new HttpPost(finalURL + "sha1");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
@@ -330,6 +348,7 @@ public class AutoHost {
 
     private static void sendStillAlive() throws IOException {
         try (CloseableHttpClient httpClient = createHttpClient()) {
+            inFlightClient = httpClient;
             HttpPost httpPost = new HttpPost(finalURL + "still_alive");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
@@ -358,6 +377,7 @@ public class AutoHost {
 
     public static void dataComplianceRequest() throws IOException {
         try (CloseableHttpClient httpClient = createHttpClient()) {
+            inFlightClient = httpClient;
             HttpPost httpPost = new HttpPost(finalURL + "data_compliance");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
@@ -393,6 +413,18 @@ public class AutoHost {
 
     public static void shutdown() {
         if (keepAlive != null) keepAlive.cancel();
+        // Abort any in-flight HTTP request (initialize / sha1 / upload). Without
+        // this, a multi-MB upload can keep the async task alive past onDisable
+        // and Bukkit nags about un-shutdown async tasks.
+        CloseableHttpClient client = inFlightClient;
+        if (client != null) {
+            try {
+                client.close();
+            } catch (Exception ignored) {
+                // expected — abort during in-flight write may throw
+            }
+            inFlightClient = null;
+        }
         done = false;
         rspUUID = null;
     }

@@ -10,6 +10,7 @@ import com.magmaguy.magmacore.nightbreak.NightbreakPluginHooks;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginSpec;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
 import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
 import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
 import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
@@ -104,6 +105,9 @@ public class ResourcePackManager extends JavaPlugin {
 
         initializationContext.step("Default Config");
         new DefaultConfig();
+
+        initializationContext.step("Bedrock Pre-deploy");
+        BedrockConversion.deployPreviousIfNeeded();
 
         initializationContext.step("ItemsAdder Config");
         new ItemsAdderDismissedConfig();
