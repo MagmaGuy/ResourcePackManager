@@ -7,6 +7,7 @@ import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.api.ResourcePackManagerAPI;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
 import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
@@ -56,12 +57,24 @@ public class Mix {
         Logger.info("Starting resource pack mixing...");
         collisionLog = new ArrayList<>();
         if (!initializeDefaultPluginFolders()) return;
+        if (shuttingDown()) return;
         initializeThirdPartyResourcePacks();
+        if (shuttingDown()) return;
         cloneToOutputAndUnzip();
+        if (shuttingDown()) return;
         createOutputDefaultElements();
+        if (shuttingDown()) return;
         writeCollisionLog();
         Logger.info("Resource pack mixing complete.");
+        if (shuttingDown()) return;
         AutoHost.initialize();
+    }
+
+    // Bail out of the mix pipeline as soon as the plugin disables, so Bukkit
+    // doesn't nag about un-shutdown async tasks. Each phase below can take
+    // multiple seconds (file I/O on potentially many resource packs).
+    private static boolean shuttingDown() {
+        return com.magmaguy.magmacore.MagmaCore.isShutdownRequested(ResourcePackManager.plugin);
     }
 
     private static boolean initializeDefaultPluginFolders() {
@@ -216,6 +229,11 @@ public class Mix {
             }
         }
 
+        // Merge base atlas sources into overlay atlas files so overlays don't shadow base entries.
+        // When an overlay activates (e.g. ItemsAdder's ia_overlay_modern_atlas / ia_overlay_legacy_atlas),
+        // its atlas file replaces the base — without this, sources defined only in the base are lost.
+        mergeBaseAtlasSourcesIntoOverlays(getOutputResourcePackFolder());
+
         if (!ZipFile.zip(getOutputResourcePackFolder(), getOutputResourcePackFolder().getPath() + ".zip")) {
             Logger.warn("Failed to zip merged resource pack!");
             return;
@@ -237,6 +255,21 @@ public class Mix {
             }
         }
 
+        // Generate Bedrock resource pack for GeyserMC
+        if (DefaultConfig.isBedrockConversionEnabled()) {
+            BedrockConversion.generate(getOutputResourcePackFolder(), getOutputFolder());
+        }
+
+        // Files in output/ that must be preserved across cleanup. The Bedrock conversion
+        // outputs (zip + Geyser mappings) need to survive so deployPreviousIfNeeded() can
+        // pre-deploy them on the next startup — otherwise Geyser registers items from
+        // stale in-place mappings before the new regen finishes, and the on-disk pack /
+        // mapping mismatch causes invisible custom items on Bedrock for the whole session.
+        java.util.Set<String> preservedOutputs = java.util.Set.of(
+                resourcePackName + ".zip",
+                "ResourcePackManager_Bedrock.zip",
+                "rspm_geyser_mappings.json"
+        );
         for (File file : getOutputFolder().listFiles()) {
             if (file.getName().equals(resourcePackName + ".zip")) {
                 finalResourcePack = file;
@@ -249,11 +282,10 @@ public class Mix {
                 }
                 continue;
             }
+            if (preservedOutputs.contains(file.getName())) continue;
             recursivelyDeleteDirectory(file);
         }
 
-//        // ADD THE BEDROCK CONVERSION CALL HERE - AFTER finalResourcePack IS SET:
-//            generateBedrockResourcePack();
     }
 
     private static File getOutputFolder() {
@@ -398,10 +430,15 @@ public class Mix {
             return true;
         }
 
-        // Vanilla item model overrides should be merged (for custom model data)
-        if (path.contains("/minecraft/models/item/")) {
-            return true;
-        }
+        // Vanilla item model files (models/item/*.json) are NOT mergeable in 1.21.4+.
+        // They contain fixed-length numeric arrays in `display.<context>.translation/rotation/scale`
+        // and atomic `textures` references, which our recursive merge corrupts (translation
+        // [10,6,-4] + [0,0,0] -> [10,6,-4,0,0,0] for shield, and textures get wedged for
+        // crossbow leading to the missing-texture purple/black). The original justification
+        // for merging these was to combine `overrides` arrays for custom_model_data — but
+        // `overrides` was removed in 24w45a / 1.21.4+, replaced by assets/<ns>/items/*.json
+        // dispatch. So the merge benefit is gone, the corruption risk remains; higher-priority
+        // pack wins atomically, like blockstates.
 
         // Atlas files should be merged (sources array)
         if (path.contains("/atlases/")) {
@@ -490,6 +527,99 @@ public class Mix {
         }
     }
 
+    /**
+     * After all packs are merged, overlay directories may contain atlas files that shadow the base atlas.
+     * When Minecraft activates an overlay, its atlas file replaces the base — so any sources defined only
+     * in the base are lost. This method copies base atlas sources into each overlay atlas file to prevent that.
+     */
+    private static void mergeBaseAtlasSourcesIntoOverlays(File resourcePackRoot) {
+        File packMcmeta = new File(resourcePackRoot, "pack.mcmeta");
+        if (!packMcmeta.exists()) return;
+
+        JsonObject mcmeta = readJsonFile(packMcmeta);
+        if (mcmeta == null || !mcmeta.has("overlays")) return;
+
+        JsonObject overlays = mcmeta.getAsJsonObject("overlays");
+        if (!overlays.has("entries")) return;
+
+        for (JsonElement entry : overlays.getAsJsonArray("entries")) {
+            if (!entry.isJsonObject()) continue;
+            JsonObject overlayEntry = entry.getAsJsonObject();
+            if (!overlayEntry.has("directory")) continue;
+            String overlayDir = overlayEntry.get("directory").getAsString();
+
+            File overlayRoot = new File(resourcePackRoot, overlayDir);
+            if (!overlayRoot.exists() || !overlayRoot.isDirectory()) continue;
+
+            mergeBaseAtlasesForOverlay(resourcePackRoot, overlayRoot);
+        }
+    }
+
+    private static void mergeBaseAtlasesForOverlay(File resourcePackRoot, File overlayRoot) {
+        File overlayAssets = new File(overlayRoot, "assets");
+        if (!overlayAssets.exists() || !overlayAssets.isDirectory()) return;
+
+        File[] namespaces = overlayAssets.listFiles(File::isDirectory);
+        if (namespaces == null) return;
+
+        for (File namespace : namespaces) {
+            File atlasesDir = new File(namespace, "atlases");
+            if (!atlasesDir.exists() || !atlasesDir.isDirectory()) continue;
+
+            File[] atlasFiles = atlasesDir.listFiles((dir, name) -> name.endsWith(".json"));
+            if (atlasFiles == null) continue;
+
+            for (File overlayAtlas : atlasFiles) {
+                String relativePath = "assets" + File.separatorChar + namespace.getName()
+                        + File.separatorChar + "atlases" + File.separatorChar + overlayAtlas.getName();
+                File baseAtlas = new File(resourcePackRoot, relativePath);
+                if (!baseAtlas.exists()) continue;
+                mergeBaseSourcesIntoOverlayAtlas(baseAtlas, overlayAtlas);
+            }
+        }
+    }
+
+    private static void mergeBaseSourcesIntoOverlayAtlas(File baseAtlas, File overlayAtlas) {
+        JsonObject baseJson = readJsonFile(baseAtlas);
+        JsonObject overlayJson = readJsonFile(overlayAtlas);
+
+        if (baseJson == null || overlayJson == null) return;
+        if (!baseJson.has("sources") || !overlayJson.has("sources")) return;
+
+        JsonArray baseSources = baseJson.getAsJsonArray("sources");
+        JsonArray overlaySources = overlayJson.getAsJsonArray("sources");
+
+        Set<String> existingSignatures = new HashSet<>();
+        for (JsonElement e : overlaySources) {
+            existingSignatures.add(e.toString());
+        }
+
+        JsonArray merged = new JsonArray();
+        int addedCount = 0;
+        for (JsonElement baseSource : baseSources) {
+            if (!existingSignatures.contains(baseSource.toString())) {
+                merged.add(baseSource);
+                addedCount++;
+            }
+        }
+        for (JsonElement overlaySource : overlaySources) {
+            merged.add(overlaySource);
+        }
+
+        if (addedCount == 0) return;
+
+        overlayJson.add("sources", merged);
+
+        try (FileWriter writer = new FileWriter(overlayAtlas)) {
+            new Gson().toJson(overlayJson, writer);
+        } catch (IOException e) {
+            Logger.warn("Failed to merge base atlas sources into overlay atlas: " + overlayAtlas.getPath());
+        }
+
+        logCollision("Merged base atlas sources into overlay: " + overlayAtlas.getPath()
+                + " (" + addedCount + " sources added from base)");
+    }
+
     private static void mergePackMcmeta(File sourceFile, File targetFile) throws IOException {
         JsonObject source = readJsonFile(sourceFile);
         JsonObject target = readJsonFile(targetFile);
@@ -509,22 +639,51 @@ public class Mix {
                 int targetFormat = targetPack.get("pack_format").getAsInt();
                 targetPack.addProperty("pack_format", Math.max(sourceFormat, targetFormat));
             }
+            // 1.21.9+: widen pack.min_format and pack.max_format to cover both packs' supported range.
+            // These supersede the older pack.supported_formats. Either side can declare them; missing
+            // values default to pack_format so a one-sided declaration still widens correctly.
+            int sourceMin = readFormatRangeMin(sourcePack);
+            int sourceMax = readFormatRangeMax(sourcePack);
+            int targetMin = readFormatRangeMin(targetPack);
+            int targetMax = readFormatRangeMax(targetPack);
+            if (sourcePack.has("min_format") || targetPack.has("min_format")
+                    || sourcePack.has("max_format") || targetPack.has("max_format")) {
+                if (sourceMin != Integer.MAX_VALUE || targetMin != Integer.MAX_VALUE) {
+                    int min = Math.min(
+                            sourceMin == Integer.MAX_VALUE ? targetMin : sourceMin,
+                            targetMin == Integer.MAX_VALUE ? sourceMin : targetMin);
+                    targetPack.addProperty("min_format", min);
+                }
+                if (sourceMax != Integer.MIN_VALUE || targetMax != Integer.MIN_VALUE) {
+                    int max = Math.max(
+                            sourceMax == Integer.MIN_VALUE ? targetMax : sourceMax,
+                            targetMax == Integer.MIN_VALUE ? sourceMax : targetMax);
+                    targetPack.addProperty("max_format", max);
+                }
+            }
         }
 
-        // Merge supported_formats to widest range
-        if (source.has("supported_formats") && target.has("supported_formats")) {
-            JsonArray sourceFormats = source.getAsJsonArray("supported_formats");
-            JsonArray targetFormats = target.getAsJsonArray("supported_formats");
-            if (sourceFormats.size() >= 2 && targetFormats.size() >= 2) {
-                int min = Math.min(sourceFormats.get(0).getAsInt(), targetFormats.get(0).getAsInt());
-                int max = Math.max(sourceFormats.get(1).getAsInt(), targetFormats.get(1).getAsInt());
+        // Merge supported_formats to widest range.
+        // Per minecraft.wiki/w/Pack.mcmeta, supported_formats can be: a 2-int array [min, max],
+        // a single int (a single format version), or an object {min_inclusive, max_inclusive}.
+        // We parse whichever shape each side ships and emit the widened result as a 2-int array.
+        // (Deprecated/removed in 1.21.9+ in favour of pack.min_format/max_format above, but
+        // still seen on older packs in the wild.)
+        if (source.has("supported_formats") || target.has("supported_formats")) {
+            int[] sourceRange = parseSupportedFormatsRange(source.get("supported_formats"));
+            int[] targetRange = parseSupportedFormatsRange(target.get("supported_formats"));
+            if (sourceRange != null && targetRange != null) {
                 JsonArray merged = new JsonArray();
-                merged.add(min);
-                merged.add(max);
+                merged.add(Math.min(sourceRange[0], targetRange[0]));
+                merged.add(Math.max(sourceRange[1], targetRange[1]));
+                target.add("supported_formats", merged);
+            } else if (sourceRange != null) {
+                JsonArray merged = new JsonArray();
+                merged.add(sourceRange[0]);
+                merged.add(sourceRange[1]);
                 target.add("supported_formats", merged);
             }
-        } else if (source.has("supported_formats") && !target.has("supported_formats")) {
-            target.add("supported_formats", source.get("supported_formats"));
+            // else: only target had a parseable value → keep target's untouched.
         }
 
         // Merge overlay entries from both packs
@@ -586,6 +745,56 @@ public class Mix {
         }
 
         logCollision("Merged pack.mcmeta: " + targetFile.getPath());
+    }
+
+    /**
+     * Read pack.min_format from a `pack` block. Accepts int form or 2-int array form
+     * (some pre-1.21.9 packs shipped min_format as the same shape as supported_formats).
+     * Returns Integer.MAX_VALUE if the field is missing or unreadable so callers can
+     * detect "not declared" and skip widening.
+     */
+    private static int readFormatRangeMin(JsonObject pack) {
+        if (!pack.has("min_format")) return Integer.MAX_VALUE;
+        JsonElement el = pack.get("min_format");
+        if (el.isJsonPrimitive()) return el.getAsInt();
+        if (el.isJsonArray() && el.getAsJsonArray().size() >= 1) return el.getAsJsonArray().get(0).getAsInt();
+        return Integer.MAX_VALUE;
+    }
+
+    private static int readFormatRangeMax(JsonObject pack) {
+        if (!pack.has("max_format")) return Integer.MIN_VALUE;
+        JsonElement el = pack.get("max_format");
+        if (el.isJsonPrimitive()) return el.getAsInt();
+        if (el.isJsonArray() && el.getAsJsonArray().size() >= 1) {
+            JsonArray arr = el.getAsJsonArray();
+            return arr.get(arr.size() - 1).getAsInt();
+        }
+        return Integer.MIN_VALUE;
+    }
+
+    /**
+     * Parse `supported_formats` in any of its three documented shapes (int, 2-int array,
+     * {min_inclusive, max_inclusive} object) into a [min, max] pair. Returns null when
+     * the field is missing or malformed so the caller can fall back to "use the other
+     * side's value" instead of corrupting the field.
+     */
+    private static int[] parseSupportedFormatsRange(JsonElement el) {
+        if (el == null) return null;
+        if (el.isJsonPrimitive()) {
+            int v = el.getAsInt();
+            return new int[]{v, v};
+        }
+        if (el.isJsonArray()) {
+            JsonArray arr = el.getAsJsonArray();
+            if (arr.size() >= 2) return new int[]{arr.get(0).getAsInt(), arr.get(1).getAsInt()};
+            return null;
+        }
+        if (el.isJsonObject()) {
+            JsonObject obj = el.getAsJsonObject();
+            if (!obj.has("min_inclusive") || !obj.has("max_inclusive")) return null;
+            return new int[]{obj.get("min_inclusive").getAsInt(), obj.get("max_inclusive").getAsInt()};
+        }
+        return null;
     }
 
     /**
@@ -661,8 +870,24 @@ public class Mix {
     }
 
     private static JsonObject mergeItemsModels(JsonObject source, JsonObject target) {
+        // Items definitions (assets/<ns>/items/*.json, 1.21.4+) are only safely
+        // mergeable when both files have a `model` block of the SAME dispatch
+        // type (range_dispatch or select) with the same property. Those have a
+        // documented "entries/cases" array semantics that can combine across packs.
+        //
+        // Every other shape — plain `model`, `composite`, `bundle/selected_item`,
+        // `special`, `empty`, or two dispatch types that don't match — is NOT
+        // safely mergeable. Falling through to a generic deep-merge would:
+        //   - concatenate `transformation.translation/scale/rotation` (fixed-length
+        //     numeric arrays) into invalid 6-element arrays,
+        //   - concatenate `tints` RGB triplets into double-length nonsense,
+        //   - concatenate `composite.models` arrays, stacking layers from the
+        //     lower-priority pack on top of the higher one (wrong render order).
+        // In all those cases the higher-priority pack wins atomically — the same
+        // policy vanilla itself uses for stacked-pack collisions.
+
         if (!source.has("model") || !target.has("model")) {
-            return mergeJsonObjects(source, target);
+            return target;
         }
 
         JsonObject sourceModel = source.getAsJsonObject("model");
@@ -672,6 +897,9 @@ public class Mix {
         String targetType = targetModel.has("type") ? targetModel.get("type").getAsString().replace("minecraft:", "") : "";
 
         if (sourceType.equals("range_dispatch") && targetType.equals("range_dispatch")) {
+            String sourceProp = sourceModel.has("property") ? sourceModel.get("property").getAsString() : "";
+            String targetProp = targetModel.has("property") ? targetModel.get("property").getAsString() : "";
+            if (!sourceProp.equals(targetProp)) return target;
             mergeRangeDispatchEntries(sourceModel, targetModel);
             target.add("model", targetModel);
             for (String key : source.keySet()) {
@@ -697,8 +925,8 @@ public class Mix {
             }
         }
 
-        // Incompatible types: higher priority (target) wins
-        return mergeJsonObjects(source, target);
+        // Incompatible types or non-dispatch model: higher priority (target) wins atomically.
+        return target;
     }
 
     private static void mergeRangeDispatchEntries(JsonObject sourceModel, JsonObject targetModel) {

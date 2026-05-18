@@ -1,7 +1,7 @@
 name: ResourcePackManager
 main: com.magmaguy.resourcepackmanager.ResourcePackManager
-version: 1.7.6
-api-version: 1.14
+version: 1.8.0
+api-version: '1.21.4'
 author: MagmaGuy
 softdepend:
   - EliteMobs
@@ -19,6 +19,7 @@ softdepend:
   - ValhallaMMO
   - vane-core
   - RealisticSurvival
+  - Geyser-Spigot
 
 commands:
   resourcepackmanager:
