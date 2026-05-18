@@ -18,6 +18,12 @@ public class DefaultConfig extends ConfigurationFile {
     private static String resourcePackPrompt;
     @Getter
     private static String resourcePackRerouting;
+    @Getter
+    private static boolean bedrockConversionEnabled = true;
+    @Getter
+    private static boolean bedrockAutoDeployToGeyser = true;
+    @Getter
+    private static String bedrockGeyserFolder = "";
 
 
     public DefaultConfig() {
@@ -66,5 +72,15 @@ public class DefaultConfig extends ConfigurationFile {
                         "ResourcePackManage/output",
                         "If you don't know what any of what is written here means, just don't touch this setting!"),
                 fileConfiguration, "resourcePackRerouting", "");
+
+        bedrockConversionEnabled = ConfigurationEngine.setBoolean(
+                List.of("Enables automatic conversion of the merged Java resource pack to a Bedrock resource pack for GeyserMC."),
+                fileConfiguration, "bedrockConversionEnabled", true);
+        bedrockAutoDeployToGeyser = ConfigurationEngine.setBoolean(
+                List.of("Automatically deploy the converted Bedrock resource pack to the Geyser packs folder."),
+                fileConfiguration, "bedrockAutoDeployToGeyser", true);
+        bedrockGeyserFolder = ConfigurationEngine.setString(
+                List.of("Path to the Geyser packs folder. Leave empty to auto-detect."),
+                fileConfiguration, "bedrockGeyserFolder", "");
     }
 }

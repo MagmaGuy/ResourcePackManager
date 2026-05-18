@@ -43,3 +43,8 @@ docs/plans/
 
 ### Generated ###
 dependency-reduced-pom.xml
+$TMPDIR/
+
+### Research / debugging workspaces ###
+.rainbow-audit/
+iconrender_test/

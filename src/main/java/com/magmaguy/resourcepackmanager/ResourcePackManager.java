@@ -10,8 +10,11 @@ import com.magmaguy.magmacore.nightbreak.NightbreakPluginHooks;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginSpec;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
+import com.magmaguy.resourcepackmanager.bedrock.GeyserPackProvider;
 import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
 import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
+import com.magmaguy.resourcepackmanager.config.BedrockDisplayOffsetsConfig;
 import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderCommand;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderDismissedConfig;
@@ -87,6 +90,7 @@ public class ResourcePackManager extends JavaPlugin {
             Logger.info("Disabling ResourcePackManager during initialization");
             ThirdPartyResourcePack.shutdown();
             AutoHost.shutdown();
+            GeyserPackProvider.unregister();
             HandlerList.unregisterAll(this);
             MagmaCore.shutdown(this);
             return;
@@ -94,6 +98,7 @@ public class ResourcePackManager extends JavaPlugin {
         Logger.info("Disabling ResourcePackManager");
         ThirdPartyResourcePack.shutdown();
         AutoHost.shutdown();
+        GeyserPackProvider.unregister();
         HandlerList.unregisterAll(this);
         MagmaCore.shutdown(this);
     }
@@ -104,6 +109,12 @@ public class ResourcePackManager extends JavaPlugin {
 
         initializationContext.step("Default Config");
         new DefaultConfig();
+
+        initializationContext.step("Bedrock Display Offsets Config");
+        new BedrockDisplayOffsetsConfig();
+
+        initializationContext.step("Bedrock Mappings Pre-deploy");
+        BedrockConversion.deployPreviousMappingsIfNeeded();
 
         initializationContext.step("ItemsAdder Config");
         new ItemsAdderDismissedConfig();
@@ -136,6 +147,9 @@ public class ResourcePackManager extends JavaPlugin {
             Bukkit.getPluginManager().registerEvents(new PlayerManager(), this);
         }
         Bukkit.getPluginManager().registerEvents(new ItemsAdderWarningListener(), this);
+
+        initializationContext.step("Geyser Pack Provider");
+        GeyserPackProvider.register();
 
         initializationContext.step("Commands");
         CommandManager commandManager = new CommandManager(this, "resourcepackmanager");
