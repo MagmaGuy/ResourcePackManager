@@ -89,7 +89,10 @@ public class AutoHost {
             } catch (Exception ignored) {
             }
         }
-        client = new MagmaguyRspClient(DEFAULT_SOCKET_TIMEOUT, UPLOAD_SOCKET_TIMEOUT);
+        client = new MagmaguyRspClient(
+                ResourcePackManager.plugin.getLogger(),
+                DEFAULT_SOCKET_TIMEOUT,
+                UPLOAD_SOCKET_TIMEOUT);
 
         keepAlive = new BukkitRunnable() {
             int counter = 0;
@@ -146,11 +149,19 @@ public class AutoHost {
         DataConfig.setRspUUID(rspUUID);
 
         try {
-            if (client.sha1Matches(rspUUID, Mix.getFinalSHA1())) {
+            MagmaguyRspClient.Sha1Result sha1Result = client.sha1Check(rspUUID, Mix.getFinalSHA1());
+            if (sha1Result.matched()) {
                 // Remote server already has this resource pack
                 Logger.info("Remote server already has this resource pack!");
                 done = true;
                 sendToOnlinePlayersIfFirstUpload();
+            } else if (sha1Result.errorOrNull() != null) {
+                // Server returned a structured error during sha1 check — react
+                // before wasting a multi-MB upload. SESSION_NOT_FOUND in
+                // particular clears rspUUID so the next keep-alive tick
+                // reinitializes; uploading against a dead session would just
+                // burn bandwidth and fail.
+                handleUploadError(sha1Result.errorOrNull());
             } else {
                 uploadFile();
             }
@@ -204,7 +215,10 @@ public class AutoHost {
         MagmaguyRspClient activeClient = client;
         boolean ownsClient = false;
         if (activeClient == null) {
-            activeClient = new MagmaguyRspClient(DEFAULT_SOCKET_TIMEOUT, UPLOAD_SOCKET_TIMEOUT);
+            activeClient = new MagmaguyRspClient(
+                    ResourcePackManager.plugin.getLogger(),
+                    DEFAULT_SOCKET_TIMEOUT,
+                    UPLOAD_SOCKET_TIMEOUT);
             ownsClient = true;
         }
 

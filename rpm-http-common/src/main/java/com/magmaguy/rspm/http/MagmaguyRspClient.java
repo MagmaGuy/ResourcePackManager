@@ -45,8 +45,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
 
     private static final int DEFAULT_CONNECT_TIMEOUT = 30;
 
-    private static final Logger LOG = Logger.getLogger(MagmaguyRspClient.class.getName());
-
+    private final Logger log;
     private final CloseableHttpClient httpClient;
     private final int uploadSocketTimeoutSeconds;
 
@@ -59,10 +58,15 @@ public final class MagmaguyRspClient implements AutoCloseable {
     private volatile CloseableHttpClient inFlight;
 
     /**
+     * @param logger                      JUL logger used for all status/error output. Plugin
+     *                                    callers should pass {@code plugin.getLogger()} so that
+     *                                    Bukkit's {@code PluginLogger} prefixes each line with
+     *                                    {@code [ResourcePackManager]}.
      * @param defaultSocketTimeoutSeconds applied to initialize/sha1/still_alive calls
      * @param uploadSocketTimeoutSeconds  applied to upload calls (file transfers can take minutes)
      */
-    public MagmaguyRspClient(int defaultSocketTimeoutSeconds, int uploadSocketTimeoutSeconds) {
+    public MagmaguyRspClient(Logger logger, int defaultSocketTimeoutSeconds, int uploadSocketTimeoutSeconds) {
+        this.log = logger != null ? logger : Logger.getLogger(MagmaguyRspClient.class.getName());
         this.httpClient = buildClient(defaultSocketTimeoutSeconds);
         this.uploadSocketTimeoutSeconds = uploadSocketTimeoutSeconds;
     }
@@ -123,10 +127,10 @@ public final class MagmaguyRspClient implements AutoCloseable {
                         String message = jsonResponse.has("message")
                                 ? jsonResponse.get("message").getAsString()
                                 : "";
-                        LOG.info("Server initialized successfully: " + message);
+                        log.info("Server initialized successfully: " + message);
                         return Optional.of(uuid);
                     } else {
-                        LOG.warning("Server returned error in response: " + responseString);
+                        log.warning("Server returned error in response: " + responseString);
                         return Optional.empty();
                     }
                 } catch (Exception e) {
@@ -134,10 +138,10 @@ public final class MagmaguyRspClient implements AutoCloseable {
                     String trimmedResponse = responseString.trim();
                     try {
                         UUID.fromString(trimmedResponse);
-                        LOG.info("Server initialized with UUID: " + trimmedResponse);
+                        log.info("Server initialized with UUID: " + trimmedResponse);
                         return Optional.of(trimmedResponse);
                     } catch (IllegalArgumentException ignored) {
-                        LOG.warning("Invalid response format from server: " + responseString);
+                        log.warning("Invalid response format from server: " + responseString);
                         return Optional.empty();
                     }
                 }
@@ -151,14 +155,14 @@ public final class MagmaguyRspClient implements AutoCloseable {
     }
 
     /**
-     * POST {@code /rsp/sha1}. Returns true if server already has this sha1 (no
-     * upload needed), false if upload required.
+     * POST {@code /rsp/sha1}. Returns a structured {@link Sha1Result} describing
+     * whether the server already has this pack and, on failure, the parsed
+     * {@link RspError} (so callers can react to e.g. {@code SESSION_NOT_FOUND}
+     * before wasting a multi-MB upload).
      *
-     * @return true if server already has the pack; false if upload required or
-     *         on any non-2xx response (which is logged).
      * @throws IOException on transport-level failures
      */
-    public boolean sha1Matches(String uuid, String sha1) throws IOException {
+    public Sha1Result sha1Check(String uuid, String sha1) throws IOException {
         HttpPost httpPost = new HttpPost(BASE_URL + "sha1");
 
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
@@ -180,28 +184,39 @@ public final class MagmaguyRspClient implements AutoCloseable {
 
                     if (jsonResponse.has("success") && jsonResponse.get("success").getAsBoolean()) {
                         boolean uploadNeeded = jsonResponse.get("uploadNeeded").getAsBoolean();
-                        return !uploadNeeded;
+                        return new Sha1Result(!uploadNeeded, null);
                     } else {
-                        LOG.warning("Server returned error in SHA1 response: " + responseString);
-                        return false;
+                        log.warning("Server returned error in SHA1 response: " + responseString);
+                        return new Sha1Result(false, null);
                     }
                 } catch (Exception e) {
                     // Fallback to boolean parsing (backward compatibility)
                     String trimmedResponse = responseString.trim();
                     if (trimmedResponse.equals("true") || trimmedResponse.equals("false")) {
-                        return Boolean.valueOf(trimmedResponse);
+                        return new Sha1Result(Boolean.valueOf(trimmedResponse), null);
                     } else {
-                        LOG.warning("Invalid SHA1 response format from server: " + responseString);
-                        return false;
+                        log.warning("Invalid SHA1 response format from server: " + responseString);
+                        return new Sha1Result(false, null);
                     }
                 }
             } else {
-                logErrorResponse(responseString, statusCode, "SHA1 check");
-                return false;
+                RspError err = logErrorResponse(responseString, statusCode, "SHA1 check");
+                return new Sha1Result(false, err);
             }
         } finally {
             inFlight = null;
         }
+    }
+
+    /**
+     * @deprecated prefer {@link #sha1Check(String, String)} so callers can react
+     * to server-returned errors (notably {@code SESSION_NOT_FOUND}) before
+     * proceeding to upload. This thin wrapper preserves the previous boolean
+     * shape for callers that don't need the error detail.
+     */
+    @Deprecated
+    public boolean sha1Matches(String uuid, String sha1) throws IOException {
+        return sha1Check(uuid, sha1).matched();
     }
 
     /**
@@ -409,7 +424,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * AutoHost previously did), or {@code null} when the payload is not
      * recognizable — in which case a single fallback line is logged.
      */
-    private static RspError logErrorResponse(String responseString, int statusCode, String operation) {
+    private RspError logErrorResponse(String responseString, int statusCode, String operation) {
         try {
             Gson gson = new Gson();
             JsonObject errorResponse = gson.fromJson(responseString, JsonObject.class);
@@ -420,31 +435,31 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 String errorMessage = error.has("message") ? error.get("message").getAsString() : null;
                 String errorType = error.has("type") ? error.get("type").getAsString() : null;
 
-                LOG.warning("=== Resource Pack " + operation.toUpperCase() + " ERROR ===");
-                LOG.warning("Error Code: " + errorCode);
-                LOG.warning("Error Type: " + errorType);
-                LOG.warning("Message: " + errorMessage);
-                LOG.warning("HTTP Status: " + statusCode);
-                LOG.warning("=====================================");
+                log.warning("=== Resource Pack " + operation.toUpperCase() + " ERROR ===");
+                log.warning("Error Code: " + errorCode);
+                log.warning("Error Type: " + errorType);
+                log.warning("Message: " + errorMessage);
+                log.warning("HTTP Status: " + statusCode);
+                log.warning("=====================================");
 
                 // Mirror the human-readable hints AutoHost previously emitted.
                 if (errorCode != null) {
                     switch (errorCode) {
                         case "MISSING_REQUIRED_FILES":
-                            LOG.warning("Your resource pack structure is incorrect!");
-                            LOG.warning("Make sure pack.png and pack.mcmeta are in the root of your zip file.");
+                            log.warning("Your resource pack structure is incorrect!");
+                            log.warning("Make sure pack.png and pack.mcmeta are in the root of your zip file.");
                             break;
                         case "FILE_TOO_LARGE":
-                            LOG.warning("Your resource pack is too large! Please reduce the file size.");
+                            log.warning("Your resource pack is too large! Please reduce the file size.");
                             break;
                         case "INVALID_FILE_FORMAT":
-                            LOG.warning("Your resource pack file is corrupted or not a valid zip file.");
+                            log.warning("Your resource pack file is corrupted or not a valid zip file.");
                             break;
                         case "SESSION_NOT_FOUND":
-                            LOG.warning("Server session expired. Will attempt to reinitialize...");
+                            log.warning("Server session expired. Will attempt to reinitialize...");
                             break;
                         case "SERVER_UNAVAILABLE":
-                            LOG.warning("Remote server is temporarily unavailable. Will retry later.");
+                            log.warning("Remote server is temporarily unavailable. Will retry later.");
                             break;
                         default:
                             break;
@@ -453,11 +468,11 @@ public final class MagmaguyRspClient implements AutoCloseable {
 
                 return new RspError(errorCode, errorType, errorMessage, statusCode);
             } else {
-                LOG.warning("Server error during " + operation + " (HTTP " + statusCode + "): " + responseString);
+                log.warning("Server error during " + operation + " (HTTP " + statusCode + "): " + responseString);
                 return null;
             }
         } catch (Exception e) {
-            LOG.log(Level.WARNING,
+            log.log(Level.WARNING,
                     "Server error during " + operation + " (HTTP " + statusCode + "): " + responseString, e);
             return null;
         }
@@ -468,6 +483,16 @@ public final class MagmaguyRspClient implements AutoCloseable {
     // ------------------------------------------------------------------
 
     public record UploadResult(boolean success, String urlOrNull, RspError errorOrNull) {
+    }
+
+    /**
+     * Result of a {@link #sha1Check(String, String)} call.
+     *
+     * @param matched     true if the server already has this sha1 (no upload needed)
+     * @param errorOrNull populated when the server returned a structured error
+     *                    (notably {@code SESSION_NOT_FOUND}); null otherwise
+     */
+    public record Sha1Result(boolean matched, RspError errorOrNull) {
     }
 
     public record ManifestResult(List<Entry> entries) {
