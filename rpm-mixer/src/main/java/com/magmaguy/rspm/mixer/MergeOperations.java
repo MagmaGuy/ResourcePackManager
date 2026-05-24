@@ -217,6 +217,9 @@ public final class MergeOperations {
         } catch (IOException e) {
             logger.warn("Failed to merge base atlas sources into overlay atlas: " + overlayAtlas.getPath());
         }
+
+        logger.collision("Merged base atlas sources into overlay: " + overlayAtlas.getPath()
+                + " (" + addedCount + " sources added from base)");
     }
 
     public void mergePackMcmeta(File sourceFile, File targetFile) throws IOException {
@@ -342,6 +345,8 @@ public final class MergeOperations {
         try (FileWriter writer = new FileWriter(targetFile)) {
             new Gson().toJson(target, writer);
         }
+
+        logger.collision("Merged pack.mcmeta: " + targetFile.getPath());
     }
 
     /**
