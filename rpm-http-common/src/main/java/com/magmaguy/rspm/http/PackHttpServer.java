@@ -6,7 +6,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Minimal HTTP server that serves a single resource-pack zip with the headers
@@ -21,13 +23,13 @@ import java.util.concurrent.Executors;
 public final class PackHttpServer implements AutoCloseable {
 
     private final HttpServer server;
-    private final File pack;
     private final String pathPrefix;
+    private final ExecutorService executor;
 
-    private PackHttpServer(HttpServer server, File pack, String pathPrefix) {
+    private PackHttpServer(HttpServer server, String pathPrefix, ExecutorService executor) {
         this.server = server;
-        this.pack = pack;
         this.pathPrefix = pathPrefix;
+        this.executor = executor;
     }
 
     /**
@@ -44,9 +46,10 @@ public final class PackHttpServer implements AutoCloseable {
                 in.transferTo(out);
             }
         });
-        s.setExecutor(Executors.newCachedThreadPool());
+        ExecutorService exec = Executors.newCachedThreadPool();
+        s.setExecutor(exec);
         s.start();
-        return new PackHttpServer(s, packFile, pathPrefix);
+        return new PackHttpServer(s, pathPrefix, exec);
     }
 
     /** External URL for clients. Caller picks the public host. */
@@ -56,5 +59,16 @@ public final class PackHttpServer implements AutoCloseable {
 
     public int port() { return server.getAddress().getPort(); }
 
-    @Override public void close() { server.stop(0); }
+    @Override public void close() {
+        server.stop(0);
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 }
