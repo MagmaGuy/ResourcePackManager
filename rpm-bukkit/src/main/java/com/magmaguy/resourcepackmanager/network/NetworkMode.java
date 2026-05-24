@@ -1,5 +1,6 @@
 package com.magmaguy.resourcepackmanager.network;
 
+import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import org.bukkit.Bukkit;
@@ -41,6 +42,10 @@ public final class NetworkMode {
      * other backends in the same network. Resolution order:
      * <ol>
      *     <li>{@link DefaultConfig#getNetworkKey()} — admin override pinned in config.yml.</li>
+     *     <li>Derived from {@code plugins/floodgate/key.pem} via
+     *         {@link com.magmaguy.rspm.http.NetworkKeyResolver#deriveFromFloodgateKey} —
+     *         preferred default. Same key.pem on every component → same network-key,
+     *         zero admin config.</li>
      *     <li>{@link DataConfig#getNetworkKey()} — value persisted from a previous boot.</li>
      *     <li>Auto-generate a fresh {@link UUID}, persist it to {@code data.yml}, return it.</li>
      * </ol>
@@ -49,8 +54,20 @@ public final class NetworkMode {
      * proxy plugin.
      */
     public static String getNetworkKey() {
+        // 1. Admin override
         String override = DefaultConfig.getNetworkKey();
         if (override != null && !override.isBlank()) return override;
+
+        // 2. Derive from Floodgate key.pem — preferred default.
+        //    plugins/floodgate/key.pem (same on every backend that talks to the same proxy)
+        java.nio.file.Path keyPem = ResourcePackManager.plugin.getDataFolder()
+                .getParentFile().toPath()  // plugins/
+                .resolve("floodgate")
+                .resolve("key.pem");
+        String derived = com.magmaguy.rspm.http.NetworkKeyResolver.deriveFromFloodgateKey(keyPem);
+        if (derived != null) return derived;
+
+        // 3. Fallback: persisted UUID, auto-generated on first call.
         String persisted = DataConfig.getNetworkKey();
         if (persisted != null && !persisted.isBlank()) return persisted;
         String generated = UUID.randomUUID().toString();
