@@ -340,13 +340,14 @@ public final class MagmaguyRspClient implements AutoCloseable {
 
     /**
      * Upload tagged for a network. POST {@code /rsp/upload} with a {@code network-key}
-     * form field.
+     * form field added alongside the regular {@code uuid} + {@code file} fields.
      *
-     * @throws UnsupportedOperationException until the server adds network-key support
+     * <p>If the server does not yet recognize the {@code network-key} field (Phase 3
+     * server contract), it ignores the extra field and the upload still succeeds as
+     * a regular upload — the desired graceful-degradation behavior.</p>
      */
     public UploadResult uploadNetworkTagged(String uuid, File pack, String networkKey) throws IOException {
-        throw new UnsupportedOperationException(
-                "Network-tagged uploads not yet implemented server-side");
+        return doUpload(BASE_URL + "upload", uuid, pack, networkKey);
     }
 
     /**
