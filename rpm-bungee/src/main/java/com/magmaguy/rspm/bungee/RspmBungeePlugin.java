@@ -17,7 +17,7 @@ public final class RspmBungeePlugin extends Plugin {
     private MagmaguyRspClient httpClient;
     private NetworkSync sync;
     private GeyserBinder bedrock;
-    private ProtocolizeBinder protocolize;
+    private BungeeResourcePackPusher javaPushPacket;
 
     @Override
     public void onEnable() {
@@ -44,14 +44,6 @@ public final class RspmBungeePlugin extends Plugin {
         if (effectiveKey == null || effectiveKey.isBlank()) {
             getLogger().warning("[RSPM] No network-key. Floodgate key.pem missing from plugins/floodgate/ — install Floodgate on this proxy, or set network-key explicitly in config.yml. Plugin idle.");
             return;
-        }
-
-        // Soft-depend on Protocolize for Java pack push. If absent, we still
-        // ship the merged pack to Bedrock clients via Geyser, but Java clients
-        // won't see it until the admin installs Protocolize.
-        if (getProxy().getPluginManager().getPlugin("Protocolize") == null) {
-            getLogger().warning("[RSPM] Protocolize not detected. Bedrock pack delivery will still work via Geyser, but Java pack push requires Protocolize.");
-            getLogger().warning("[RSPM] Install Protocolize from https://www.spigotmc.org/resources/protocolize.63778/");
         }
 
         this.httpClient = new MagmaguyRspClient(
@@ -96,10 +88,16 @@ public final class RspmBungeePlugin extends Plugin {
             getLogger().warning("[RSPM] Geyser-BungeeCord not detected. Bedrock pack delivery disabled. Install Geyser-BungeeCord to deliver packs to Bedrock players.");
         }
 
-        if (getProxy().getPluginManager().getPlugin("Protocolize") != null) {
-            this.protocolize = new ProtocolizeBinder(logger, config.forceResourcePack());
-            getProxy().getPluginManager().registerListener(this, this.protocolize);
-            logger.info("[RSPM] Protocolize binder registered - Java clients will receive the merged pack on PostLoginEvent.");
+        // Register the clientbound resource-pack-push packet against
+        // BungeeCord's native protocol API (no Protocolize). Done once per
+        // JVM via a static guard inside ensureRegistered().
+        try {
+            BungeeResourcePackPusher.ensureRegistered();
+            this.javaPushPacket = new BungeeResourcePackPusher(logger, config.forceResourcePack());
+            getProxy().getPluginManager().registerListener(this, this.javaPushPacket);
+            logger.info("[RSPM] Java resource-pack push registered via native Bungee Protocol API - clients will receive the merged pack on PostLoginEvent.");
+        } catch (Throwable t) {
+            logger.warn("[RSPM] Failed to register Java resource-pack push via native Bungee API. Bedrock pack delivery via Geyser is unaffected; Java clients will not receive the merged pack on this proxy.", t);
         }
 
         // First poll after 5s so the rest of the proxy / Geyser finishes startup; then every 30s.
@@ -121,7 +119,7 @@ public final class RspmBungeePlugin extends Plugin {
 
     private void onMergedPackReady(MergedPack pack) {
         if (bedrock != null) bedrock.onMergedPackReady(pack);
-        if (protocolize != null) protocolize.onMergedPackReady(pack);
+        if (javaPushPacket != null) javaPushPacket.onMergedPackReady(pack);
         logger.info("Merged pack ready at " + pack.url() + " (sha1 " + pack.sha1Hex() + ")");
     }
 }

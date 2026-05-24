@@ -30,7 +30,6 @@
         <geyser.version>2.9.6-SNAPSHOT</geyser.version>
         <velocity.version>3.4.0-SNAPSHOT</velocity.version>
         <bungeecord.version>1.20-R0.2</bungeecord.version>
-        <protocolize.version>2.4.3</protocolize.version>
         <junit.version>5.10.2</junit.version>
     </properties>
 
@@ -59,10 +58,6 @@
         <repository>
             <id>papermc-repo</id>
             <url>https://repo.papermc.io/repository/maven-public/</url>
-        </repository>
-        <repository>
-            <id>exceptionflug-public</id>
-            <url>https://mvn.exceptionflug.de/repository/exceptionflug-public/</url>
         </repository>
     </repositories>
 
@@ -118,12 +113,6 @@
                 <groupId>net.md-5</groupId>
                 <artifactId>bungeecord-api</artifactId>
                 <version>${bungeecord.version}</version>
-                <scope>provided</scope>
-            </dependency>
-            <dependency>
-                <groupId>dev.simplix</groupId>
-                <artifactId>protocolize-api</artifactId>
-                <version>${protocolize.version}</version>
                 <scope>provided</scope>
             </dependency>
             <dependency>

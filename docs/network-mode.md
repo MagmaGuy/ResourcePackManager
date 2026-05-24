@@ -63,7 +63,7 @@ Drop the jars, restart, done. No config files to edit.
 
 2. **Proxy:** copy the appropriate proxy jar from any backend's `proxy-extension/` folder to your proxy's `plugins/`. Restart the proxy.
    - **Velocity:** `rpm-velocity.jar`
-   - **BungeeCord / Waterfall:** `rpm-bungee.jar`, plus [Protocolize](https://www.spigotmc.org/resources/protocolize.63778/) (Bungee has no native pack-push API).
+   - **BungeeCord / Waterfall:** `rpm-bungee.jar` (no extra plugins required — RPM registers the resource-pack-push packet directly against Bungee's protocol API).
 
 3. **Done.** RPM derives the network-key automatically from your Floodgate `key.pem` (the file you already shared between proxy and backends for Floodgate's own proxy-mode auth). Same key.pem → same network-key → all components on the same network. No config to edit.
 
@@ -106,5 +106,4 @@ Re-activating later derives the same network-key again from the same Floodgate `
 - **Network-key collision:** If two unrelated RPM installations accidentally use the same network-key, their packs get merged together. With the default Floodgate-derived key this is essentially impossible — separate Floodgate networks already have distinct `key.pem` files. If you override the key manually, treat it like a shared secret and pick something unique.
 - **Backend re-mixes:** when a backend re-uploads a different pack (different sha1), the proxy detects on its next poll and re-merges within ~30 seconds. New clients see the new pack; existing clients keep the pack they already downloaded until they reconnect.
 - **Self-host fallback:** see [`self-host.md`](self-host.md). The proxy automatically falls back to a local HTTP server when uploads to magmaguy.com fail.
-- **Protocolize on Bungee:** required, not bundled. The Bungee plugin will warn on startup and continue running with Bedrock-only delivery if Protocolize is missing.
-- **Bungee minimum Minecraft version:** the Bungee proxy plugin's Protocolize-driven Java pack push has packet-ID mappings for **Minecraft 1.8 through 1.21.4**. Clients on newer Minecraft versions (1.21.5+) will not receive the Java pack push from a Bungee proxy until the Protocolize dependency bundled with this plugin is updated to cover the new protocol IDs. Velocity has no such cap — Velocity uses its native `sendResourcePackOffer` API which is version-agnostic.
+- **Bungee minimum Minecraft version:** the Bungee proxy plugin's Java pack push registers packet IDs for **Minecraft 1.8 through 1.21.4** against Bungee's native protocol API (no Protocolize dependency). Clients on newer Minecraft versions (1.21.5+) will not receive the Java pack push from a Bungee proxy until the bundled packet-ID table is updated to cover the new protocol IDs. Velocity has no such cap — Velocity uses its native `sendResourcePackOffer` API which is version-agnostic.
