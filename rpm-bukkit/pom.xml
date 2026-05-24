@@ -50,6 +50,18 @@
             <artifactId>rpm-http-common</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.magmaguy</groupId>
+            <artifactId>rpm-velocity</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.magmaguy</groupId>
+            <artifactId>rpm-bungee</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -58,6 +70,38 @@
         <plugins>
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>copy-proxy-jars</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>com.magmaguy</groupId>
+                                    <artifactId>rpm-velocity</artifactId>
+                                    <version>${project.version}</version>
+                                    <destFileName>rpm-velocity.jar</destFileName>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>com.magmaguy</groupId>
+                                    <artifactId>rpm-bungee</artifactId>
+                                    <version>${project.version}</version>
+                                    <destFileName>rpm-bungee.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>${project.build.outputDirectory}/proxy-extension</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
 
             <plugin>
