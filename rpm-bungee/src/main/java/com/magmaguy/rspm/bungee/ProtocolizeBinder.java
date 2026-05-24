@@ -137,11 +137,11 @@ public final class ProtocolizeBinder implements Listener {
                 AbstractProtocolMapping.rangedIdMapping(MINECRAFT_1_20_2, MINECRAFT_1_20_2, 0x42),
                 AbstractProtocolMapping.rangedIdMapping(MINECRAFT_1_20_3, MINECRAFT_1_20_4, 0x44),
                 AbstractProtocolMapping.rangedIdMapping(MINECRAFT_1_20_5, MINECRAFT_1_21_1, 0x46),
-                AbstractProtocolMapping.rangedIdMapping(MINECRAFT_1_21_2, MINECRAFT_LATEST, 0x4B)
-                // Note: Minecraft 1.21.4+ (packet ID 0x4A) requires a newer
-                // Protocolize jar whose ProtocolVersions exposes MINECRAFT_1_21_4+
-                // constants. The version 2.4.2 jar we build against tops out at
-                // MINECRAFT_LATEST = 1.21.3.
+                AbstractProtocolMapping.rangedIdMapping(MINECRAFT_1_21_2, MINECRAFT_1_21_3, 0x4B),
+                AbstractProtocolMapping.rangedIdMapping(MINECRAFT_1_21_4, MINECRAFT_LATEST, 0x4A)
+                // Minecraft 1.21.4 (protocol 769) renumbered the clientbound
+                // resource-pack-push packet to 0x4A in PLAY. Protocolize 2.4.3
+                // exposes MINECRAFT_1_21_4 and bumps MINECRAFT_LATEST to 769.
         );
 
         /**
