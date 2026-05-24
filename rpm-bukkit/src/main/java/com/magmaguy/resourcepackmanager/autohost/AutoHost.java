@@ -1,49 +1,47 @@
 package com.magmaguy.resourcepackmanager.autohost;
 
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
+import com.magmaguy.rspm.http.MagmaguyRspClient;
+import com.magmaguy.rspm.http.MagmaguyRspClient.UploadResult;
+import com.magmaguy.rspm.http.RspError;
 import lombok.Getter;
 import lombok.Setter;
-import org.apache.hc.client5.http.classic.methods.HttpPost;
-import org.apache.hc.client5.http.config.ConnectionConfig;
-import org.apache.hc.client5.http.config.RequestConfig;
-import org.apache.hc.client5.http.entity.mime.MultipartEntityBuilder;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
-import org.apache.hc.client5.http.impl.classic.HttpClients;
-import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
-import org.apache.hc.client5.http.io.HttpClientConnectionManager;
-import org.apache.hc.core5.http.ContentType;
-import org.apache.hc.core5.http.HttpEntity;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
-import org.apache.hc.core5.util.Timeout;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * Bukkit-side orchestration for the magmaguy.com auto-hosting flow.
+ *
+ * <p>This class owns session state ({@link #rspUUID}, {@link #firstUpload},
+ * {@link #done}), the keep-alive scheduler, and the Bukkit-specific player
+ * notification path. The HTTP request/response plumbing is delegated to a
+ * shared {@link MagmaguyRspClient} from {@code rpm-http-common}.</p>
+ */
 public class AutoHost {
-    private static final String finalURL = "https://magmaguy.com/rsp/";
     // Consistent UUID for identifying ResourcePackManager's pack when using multiple resource packs
     private static final UUID RESOURCE_PACK_UUID = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d");
+
+    // Timeout settings for HTTP requests (in seconds)
+    private static final int DEFAULT_SOCKET_TIMEOUT = 60;
+    private static final int UPLOAD_SOCKET_TIMEOUT = 300; // 5 minutes for file uploads
+
     @Setter
     private static boolean done = false;
-//    private static final String finalURL = "https://localhost:50000/";
 
     private static BukkitTask keepAlive = null;
     @Getter
@@ -51,58 +49,17 @@ public class AutoHost {
     @Setter
     private static boolean firstUpload = true;
 
-    // Tracks the HTTP client currently in flight (initializeLink / sendSHA1 /
-    // uploadFile). On plugin disable we close it to abort the blocking request
-    // immediately — otherwise a multi-MB upload can keep the async task alive
-    // for tens of seconds past onDisable, triggering Bukkit's "not properly
-    // shutting down its async tasks" nag.
-    private static volatile CloseableHttpClient inFlightClient = null;
-
-    // Timeout settings for HTTP requests (in seconds)
-    private static final int DEFAULT_CONNECT_TIMEOUT = 30;
-    private static final int DEFAULT_SOCKET_TIMEOUT = 60;
-    private static final int UPLOAD_SOCKET_TIMEOUT = 300; // 5 minutes for file uploads
+    /** Shared HTTP client. Reconstructed on each {@link #initialize()} call. */
+    private static volatile MagmaguyRspClient client = null;
 
     private AutoHost() {
-    }
-
-    /**
-     * Creates an HTTP client with custom timeouts suitable for regular requests.
-     */
-    private static CloseableHttpClient createHttpClient() {
-        return createHttpClient(DEFAULT_SOCKET_TIMEOUT);
-    }
-
-    /**
-     * Creates an HTTP client with custom timeouts.
-     * @param socketTimeoutSeconds The socket (read) timeout in seconds
-     */
-    private static CloseableHttpClient createHttpClient(int socketTimeoutSeconds) {
-        ConnectionConfig connectionConfig = ConnectionConfig.custom()
-                .setConnectTimeout(Timeout.ofSeconds(DEFAULT_CONNECT_TIMEOUT))
-                .setSocketTimeout(Timeout.ofSeconds(socketTimeoutSeconds))
-                .build();
-
-        HttpClientConnectionManager connectionManager = PoolingHttpClientConnectionManagerBuilder.create()
-                .setDefaultConnectionConfig(connectionConfig)
-                .build();
-
-        RequestConfig requestConfig = RequestConfig.custom()
-                .setConnectionRequestTimeout(Timeout.ofSeconds(DEFAULT_CONNECT_TIMEOUT))
-                .setResponseTimeout(Timeout.ofSeconds(socketTimeoutSeconds))
-                .build();
-
-        return HttpClients.custom()
-                .setConnectionManager(connectionManager)
-                .setDefaultRequestConfig(requestConfig)
-                .build();
     }
 
     public static void sendResourcePack(Player player) {
         if (rspUUID == null || !done) return;
         Logger.info("Sending resource pack to " + player.getName());
 
-        String url = finalURL + rspUUID;
+        String url = MagmaguyRspClient.BASE_URL + rspUUID;
         byte[] hash = Mix.getFinalSHA1Bytes();
         String prompt = DefaultConfig.getResourcePackPrompt();
         boolean force = DefaultConfig.isForceResourcePack();
@@ -124,6 +81,15 @@ public class AutoHost {
         done = false;
         rspUUID = null;
         if (keepAlive != null) keepAlive.cancel();
+
+        // Close any client lingering from a previous initialize() (e.g. /rspm reload).
+        if (client != null) {
+            try {
+                client.close();
+            } catch (Exception ignored) {
+            }
+        }
+        client = new MagmaguyRspClient(DEFAULT_SOCKET_TIMEOUT, UPLOAD_SOCKET_TIMEOUT);
 
         keepAlive = new BukkitRunnable() {
             int counter = 0;
@@ -159,254 +125,115 @@ public class AutoHost {
     }
 
     private static void checkFileExistence() {
-        initializeLink();
-        if (rspUUID == null) {
+        if (client == null) return;
+
+        Optional<String> initResult;
+        try {
+            initResult = client.initialize(DataConfig.getRspUUID());
+        } catch (IOException e) {
+            Logger.warn("Failed to communicate with remote server!");
+            e.printStackTrace();
+            rspUUID = null;
+            return;
+        }
+
+        if (initResult.isEmpty()) {
+            rspUUID = null;
             Logger.info("No resource pack found on the server! Uploading resource pack to the server...");
             return;
         }
-        if (!sendSHA1()) uploadFile();
-        else {
-            //Case if the remote server already has the resource pack
-            done = true;
-            if (firstUpload) {
-                //Recover from a reload by sending the pack to online players
-                for (Player player : Bukkit.getOnlinePlayers())
-                    AutoHost.sendResourcePack(player);
-            }
-            firstUpload = false;
-        }
-    }
+        rspUUID = initResult.get();
+        DataConfig.setRspUUID(rspUUID);
 
-    public static void initializeLink() {
-        try (CloseableHttpClient httpClient = createHttpClient()) {
-            inFlightClient = httpClient;
-            HttpPost httpPost = new HttpPost(finalURL + "initialize");
-            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-            builder.addTextBody("uuid", DataConfig.getRspUUID(), ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
-            httpPost.setEntity(builder.build());
-
-            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-                String responseString = EntityUtils.toString(response.getEntity());
-                int statusCode = response.getCode();
-
-                if (statusCode >= 200 && statusCode < 300) {
-                    // Success - parse JSON response
-                    try {
-                        Gson gson = new Gson();
-                        JsonObject jsonResponse = gson.fromJson(responseString, JsonObject.class);
-
-                        // Check if response indicates success
-                        if (jsonResponse.has("success") && jsonResponse.get("success").getAsBoolean()) {
-                            rspUUID = jsonResponse.get("uuid").getAsString();
-                            DataConfig.setRspUUID(rspUUID);
-                            Logger.info("Server initialized successfully: " + jsonResponse.get("message").getAsString());
-                        } else {
-                            // Server returned error in success status code
-                            Logger.warn("Server returned error in response: " + responseString);
-                            rspUUID = null;
-                        }
-                    } catch (Exception e) {
-                        // JSON parsing failed - validate if it looks like a UUID before using it
-                        String trimmedResponse = responseString.trim();
-                        try {
-                            UUID.fromString(trimmedResponse);
-                            rspUUID = trimmedResponse;
-                            DataConfig.setRspUUID(rspUUID);
-                            Logger.info("Server initialized with UUID: " + rspUUID);
-                        } catch (IllegalArgumentException ignored) {
-                            Logger.warn("Invalid response format from server: " + responseString);
-                            rspUUID = null;
-                        }
-                    }
-                } else {
-                    // Error - parse and log detailed error message
-                    handleErrorResponse(responseString, statusCode, "initialization");
-                    rspUUID = null;
-                }
-            } catch (Exception e) {
-                Logger.warn("Failed to communicate with remote server!");
-                e.printStackTrace();
-                rspUUID = null;
-            }
-        } catch (Exception e) {
-            rspUUID = null;
-            Logger.warn("Failed remote server initialization.");
-            e.printStackTrace();
-        }
-    }
-
-
-    public static void uploadFile() {
-        Logger.info("Uploading resource!");
-
-        try (CloseableHttpClient httpClient = createHttpClient(UPLOAD_SOCKET_TIMEOUT)) {
-            inFlightClient = httpClient;
-            HttpPost uploadFile = new HttpPost(finalURL + "upload");
-
-            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-            builder.addTextBody("uuid", rspUUID, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
-            builder.addBinaryBody("file", Mix.getFinalResourcePack(), ContentType.APPLICATION_OCTET_STREAM, Mix.getFinalResourcePack().getName());
-
-            uploadFile.setEntity(builder.build());
-
-            try (CloseableHttpResponse response = httpClient.execute(uploadFile)) {
-                String responseString = EntityUtils.toString(response.getEntity());
-                int statusCode = response.getCode();
-
-                if (statusCode >= 200 && statusCode < 300) {
-                    Logger.info("Uploaded resource pack for automatic hosting! url: " + finalURL + rspUUID);
-                    done = true;
-                    if (firstUpload) {
-                        //Recover from a reload by sending the pack to online players
-                        for (Player player : Bukkit.getOnlinePlayers())
-                            AutoHost.sendResourcePack(player);
-                    }
-                    firstUpload = false;
-                } else {
-                    // Handle detailed error messages from server
-                    handleErrorResponse(responseString, statusCode, "upload");
-                }
-            } catch (Exception e) {
-                Logger.warn("Failed to communicate with remote server during upload!");
-                e.printStackTrace();
+        try {
+            if (client.sha1Matches(rspUUID, Mix.getFinalSHA1())) {
+                // Remote server already has this resource pack
+                Logger.info("Remote server already has this resource pack!");
+                done = true;
+                sendToOnlinePlayersIfFirstUpload();
+            } else {
+                uploadFile();
             }
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            Logger.warn("Failed to communicate with remote server during SHA1 check!");
+            e.printStackTrace();
         }
     }
 
-    private static boolean sendSHA1() {
-        try (CloseableHttpClient httpClient = createHttpClient()) {
-            inFlightClient = httpClient;
-            HttpPost httpPost = new HttpPost(finalURL + "sha1");
+    public static void uploadFile() {
+        if (client == null || rspUUID == null) return;
+        Logger.info("Uploading resource!");
 
-            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-            builder.addTextBody("uuid", rspUUID, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
-            builder.addTextBody("sha1", Mix.getFinalSHA1(), ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
-
-            HttpEntity entity = builder.build();
-            httpPost.setEntity(entity);
-
-            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-                String responseString = EntityUtils.toString(response.getEntity());
-                int statusCode = response.getCode();
-
-                if (statusCode >= 200 && statusCode < 300) {
-                    try {
-                        // Parse JSON response
-                        Gson gson = new Gson();
-                        JsonObject jsonResponse = gson.fromJson(responseString, JsonObject.class);
-
-                        // Check if response indicates success
-                        if (jsonResponse.has("success") && jsonResponse.get("success").getAsBoolean()) {
-                            boolean uploadNeeded = jsonResponse.get("uploadNeeded").getAsBoolean();
-
-                            if (!uploadNeeded) {
-                                Logger.info("Remote server already has this resource pack!");
-                                done = true;
-                                if (firstUpload) {
-                                    //Recover from a reload by sending the pack to online players
-                                    for (Player player : Bukkit.getOnlinePlayers())
-                                        AutoHost.sendResourcePack(player);
-                                }
-                                firstUpload = false;
-                            }
-                            return !uploadNeeded; // Return true if no upload needed
-                        } else {
-                            // Server returned error in success status code
-                            Logger.warn("Server returned error in SHA1 response: " + responseString);
-                            return false;
-                        }
-                    } catch (Exception e) {
-                        // Fallback to boolean parsing (backward compatibility)
-                        String trimmedResponse = responseString.trim();
-                        if (trimmedResponse.equals("true") || trimmedResponse.equals("false")) {
-                            boolean result = Boolean.valueOf(trimmedResponse);
-                            Logger.info("Remote server already has this resource pack! Response: " + responseString);
-                            return result;
-                        } else {
-                            Logger.warn("Invalid SHA1 response format from server: " + responseString);
-                            return false;
-                        }
-                    }
-                } else {
-                    // Handle error response
-                    handleErrorResponse(responseString, statusCode, "SHA1 check");
-                    return false;
-                }
-            } catch (Exception e) {
-                Logger.warn("Failed to communicate with remote server during SHA1 check!");
-                e.printStackTrace();
-                return false;
-            }
-        } catch (Exception e) {
-            Logger.warn("Failed to create HTTP client for SHA1 check!");
+        UploadResult result;
+        try {
+            result = client.upload(rspUUID, Mix.getFinalResourcePack());
+        } catch (IOException e) {
+            Logger.warn("Failed to communicate with remote server during upload!");
             e.printStackTrace();
-            return false;
+            return;
+        }
+
+        if (result.success()) {
+            Logger.info("Uploaded resource pack for automatic hosting! url: " + result.urlOrNull());
+            done = true;
+            sendToOnlinePlayersIfFirstUpload();
+        } else {
+            handleUploadError(result.errorOrNull());
         }
     }
 
     private static void sendStillAlive() throws IOException {
-        try (CloseableHttpClient httpClient = createHttpClient()) {
-            inFlightClient = httpClient;
-            HttpPost httpPost = new HttpPost(finalURL + "still_alive");
-
-            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-            builder.addTextBody("uuid", rspUUID);
-            httpPost.setEntity(builder.build());
-
-            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-                String responseString = EntityUtils.toString(response.getEntity());
-                int statusCode = response.getCode();
-
-                if (statusCode >= 200 && statusCode < 300) {
-                    // Success - optionally log the success message
-                    // Logger.info("Still alive ping successful");
-                } else {
-                    // Handle error - this might indicate session expired
-                    handleErrorResponse(responseString, statusCode, "still alive");
-                    // Reset UUID to trigger re-initialization
-                    rspUUID = null;
-                }
-            } catch (Exception e) {
-                Logger.warn("Failed to communicate with remote server during still alive ping!");
-                e.printStackTrace();
+        if (client == null || rspUUID == null) return;
+        try {
+            if (!client.stillAlive(rspUUID)) {
+                // Non-2xx — session may have expired. Reset UUID to trigger re-initialization.
+                rspUUID = null;
             }
+        } catch (IOException e) {
+            Logger.warn("Failed to communicate with remote server during still alive ping!");
+            throw e;
         }
     }
 
     public static void dataComplianceRequest() throws IOException {
-        try (CloseableHttpClient httpClient = createHttpClient()) {
-            inFlightClient = httpClient;
-            HttpPost httpPost = new HttpPost(finalURL + "data_compliance");
+        if (rspUUID == null) return;
 
-            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-            builder.addTextBody("uuid", rspUUID);
-            httpPost.setEntity(builder.build());
+        // Use the shared client if available, otherwise spin up an ad-hoc one
+        // (e.g. command issued before initialize() ran). Ad-hoc clients are
+        // closed immediately after the call.
+        MagmaguyRspClient activeClient = client;
+        boolean ownsClient = false;
+        if (activeClient == null) {
+            activeClient = new MagmaguyRspClient(DEFAULT_SOCKET_TIMEOUT, UPLOAD_SOCKET_TIMEOUT);
+            ownsClient = true;
+        }
 
-            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-                HttpEntity responseEntity = response.getEntity();
+        try {
+            File zipFile = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath()
+                    + File.separatorChar + "data_compliance" + File.separatorChar + "data.zip");
+            if (!zipFile.getParentFile().exists()) zipFile.getParentFile().mkdirs();
+            if (zipFile.exists()) zipFile.delete();
+            zipFile.createNewFile();
 
-                if (responseEntity != null) {
-                    // Save the response as a zip file
-                    File zipFile = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "data_compliance" + File.separatorChar + "data.zip");
-                    if (!zipFile.getParentFile().exists()) zipFile.mkdirs();
-                    if (zipFile.exists()) zipFile.delete();
-                    zipFile.createNewFile();
-                    try (FileOutputStream outStream = new FileOutputStream(zipFile)) {
-                        responseEntity.writeTo(outStream);
-                    }
-                    InputStream inputStream = ResourcePackManager.plugin.getResource("ReadMe.md");
+            activeClient.downloadDataCompliance(rspUUID, zipFile);
 
-                    File readMe = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "data_compliance" + File.separatorChar + "ReadMe.md");
-                    if (!readMe.exists()) readMe.createNewFile();
-
-                    // Copy the InputStream to the file
-                    Files.copy(inputStream, readMe.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            InputStream inputStream = ResourcePackManager.plugin.getResource("ReadMe.md");
+            File readMe = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath()
+                    + File.separatorChar + "data_compliance" + File.separatorChar + "ReadMe.md");
+            if (!readMe.exists()) readMe.createNewFile();
+            // Copy the InputStream to the file
+            if (inputStream != null) {
+                Files.copy(inputStream, readMe.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Exception e) {
+            Logger.warn("Failed to communicate with remote server!");
+            e.printStackTrace();
+        } finally {
+            if (ownsClient) {
+                try {
+                    activeClient.close();
+                } catch (Exception ignored) {
                 }
-            } catch (Exception e) {
-                Logger.warn("Failed to communicate with remote server!");
-                e.printStackTrace();
             }
         }
     }
@@ -416,64 +243,48 @@ public class AutoHost {
         // Abort any in-flight HTTP request (initialize / sha1 / upload). Without
         // this, a multi-MB upload can keep the async task alive past onDisable
         // and Bukkit nags about un-shutdown async tasks.
-        CloseableHttpClient client = inFlightClient;
-        if (client != null) {
+        MagmaguyRspClient c = client;
+        if (c != null) {
+            c.abortInFlight();
             try {
-                client.close();
+                c.close();
             } catch (Exception ignored) {
-                // expected — abort during in-flight write may throw
             }
-            inFlightClient = null;
+            client = null;
         }
         done = false;
         rspUUID = null;
     }
 
-    private static void handleErrorResponse(String responseString, int statusCode, String operation) {
-        try {
-            Gson gson = new Gson();
-            JsonObject errorResponse = gson.fromJson(responseString, JsonObject.class);
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
 
-            if (errorResponse.has("error")) {
-                JsonObject error = errorResponse.getAsJsonObject("error");
-                String errorCode = error.get("code").getAsString();
-                String errorMessage = error.get("message").getAsString();
-                String errorType = error.get("type").getAsString();
-
-                Logger.warn("=== Resource Pack " + operation.toUpperCase() + " ERROR ===");
-                Logger.warn("Error Code: " + errorCode);
-                Logger.warn("Error Type: " + errorType);
-                Logger.warn("Message: " + errorMessage);
-                Logger.warn("HTTP Status: " + statusCode);
-                Logger.warn("=====================================");
-
-                // Handle specific error types
-                switch (errorCode) {
-                    case "MISSING_REQUIRED_FILES":
-                        Logger.warn("Your resource pack structure is incorrect!");
-                        Logger.warn("Make sure pack.png and pack.mcmeta are in the root of your zip file.");
-                        break;
-                    case "FILE_TOO_LARGE":
-                        Logger.warn("Your resource pack is too large! Please reduce the file size.");
-                        break;
-                    case "INVALID_FILE_FORMAT":
-                        Logger.warn("Your resource pack file is corrupted or not a valid zip file.");
-                        break;
-                    case "SESSION_NOT_FOUND":
-                        Logger.warn("Server session expired. Will attempt to reinitialize...");
-                        rspUUID = null; // Trigger re-initialization
-                        break;
-                    case "SERVER_UNAVAILABLE":
-                        Logger.warn("Remote server is temporarily unavailable. Will retry later.");
-                        break;
-                }
-            } else {
-                // Fallback for non-JSON error responses
-                Logger.warn("Server error during " + operation + " (HTTP " + statusCode + "): " + responseString);
+    /**
+     * On first success after (re)initialize(), push the pack to any players
+     * already online — covers the /reload scenario where players don't trigger
+     * a fresh PlayerJoinEvent.
+     */
+    private static void sendToOnlinePlayersIfFirstUpload() {
+        if (firstUpload) {
+            for (Player player : Bukkit.getOnlinePlayers()) {
+                AutoHost.sendResourcePack(player);
             }
-        } catch (Exception e) {
-            // Fallback if JSON parsing fails
-            Logger.warn("Server error during " + operation + " (HTTP " + statusCode + "): " + responseString);
+        }
+        firstUpload = false;
+    }
+
+    /**
+     * Apply orchestration-level reactions to an upload error returned by the
+     * client (e.g. resetting {@link #rspUUID} on {@code SESSION_NOT_FOUND} so
+     * the next keep-alive tick reinitializes the session). The client itself
+     * has already emitted detailed log lines for the operator.
+     */
+    private static void handleUploadError(RspError error) {
+        if (error == null) return;
+        String code = error.code();
+        if (code != null && code.equals("SESSION_NOT_FOUND")) {
+            rspUUID = null; // Trigger re-initialization on next keep-alive tick
         }
     }
 }
