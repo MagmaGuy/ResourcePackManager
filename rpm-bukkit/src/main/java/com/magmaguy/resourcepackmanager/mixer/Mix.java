@@ -1,6 +1,5 @@
 package com.magmaguy.resourcepackmanager.mixer;
 
-import com.google.gson.*;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
@@ -9,7 +8,13 @@ import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
-import com.magmaguy.resourcepackmanager.utils.SHA1Generator;
+import com.magmaguy.rspm.mixer.MergeOperations;
+import com.magmaguy.rspm.mixer.MixEngine;
+import com.magmaguy.rspm.mixer.MixInput;
+import com.magmaguy.rspm.mixer.MixOutput;
+import com.magmaguy.rspm.mixer.MixerLogger;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import lombok.Getter;
 import org.bukkit.scheduler.BukkitRunnable;
 
@@ -18,26 +23,50 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
+/**
+ * Bukkit-side orchestrator around the platform-neutral {@link MixEngine}.
+ *
+ * <p>Responsibilities kept on this side because they touch Bukkit-only state:
+ * scheduling the work off the main thread, locating the plugin's data folder,
+ * sorting the discovered {@link ThirdPartyResourcePack}s by configured priority,
+ * resource-pack rerouting (driven by {@code DefaultConfig}), and the Bedrock
+ * conversion step. The actual unzip / copy-with-collision-resolution / zip /
+ * SHA-1 pipeline lives in {@code rpm-mixer}.</p>
+ */
 public class Mix {
     private static final String resourcePackName = "ResourcePackManager_RSP";
-    private static final com.magmaguy.rspm.mixer.MergeOperations merge =
-            new com.magmaguy.rspm.mixer.MergeOperations(new com.magmaguy.rspm.mixer.MixerLogger() {
-                @Override public void info(String m) { com.magmaguy.magmacore.util.Logger.info(m); }
-                @Override public void warn(String m) { com.magmaguy.magmacore.util.Logger.warn(m); }
-                @Override public void collision(String m) { logCollision(m); }
-            });
-    private static List<File> resourcePacks;
-    private static List<String> orderedResourcePacks;
+
+    // Bridge MagmaCore's Logger into the platform-neutral MixerLogger interface so the
+    // engine can warn/log without any Bukkit knowledge. The engine returns collisions
+    // via MixOutput.collisionLog() rather than calling back into Mix's state.
+    private static final MixerLogger BUKKIT_LOGGER = new MixerLogger() {
+        @Override public void info(String m) { Logger.info(m); }
+        @Override public void warn(String m) { Logger.warn(m); }
+        @Override public void collision(String m) { /* collected via MixOutput */ }
+    };
+
+    // Reused by recursivelyCopyDirectory below (the cluster pre-merge path used by
+    // ThirdPartyResourcePack). The mixer engine instantiates its own MergeOperations
+    // internally; this one is independent so the two phases don't share mutable state.
+    private static final MergeOperations CLUSTER_MERGE = new MergeOperations(BUKKIT_LOGGER);
+
+    private static File mixerFolder;
+    private static List<File> orderedFiles;
+
     @Getter
     private static File finalResourcePack;
     @Getter
     private static String finalSHA1;
     @Getter
     private static byte[] finalSHA1Bytes;
-    private static File mixerFolder;
-    private static List<String> collisionLog;
 
     private Mix() {
     }
@@ -59,16 +88,52 @@ public class Mix {
      */
     public static void mixResourcePacks() {
         Logger.info("Starting resource pack mixing...");
-        collisionLog = new ArrayList<>();
         if (!initializeDefaultPluginFolders()) return;
         if (shuttingDown()) return;
         initializeThirdPartyResourcePacks();
         if (shuttingDown()) return;
-        cloneToOutputAndUnzip();
+
+        File outputFolder = getOutputFolder();
+
+        MixInput input = new MixInput(
+                orderedFiles,
+                outputFolder,   // workingDir == outputDir matches legacy behaviour
+                outputFolder,
+                resourcePackName,
+                true
+        );
+        MixEngine engine = new MixEngine(BUKKIT_LOGGER);
+        MixOutput out;
+        try {
+            out = engine.run(input);
+        } catch (IOException | RuntimeException e) {
+            Logger.warn("Mix engine failed: " + e.getMessage());
+            return;
+        }
         if (shuttingDown()) return;
-        createOutputDefaultElements();
+
+        // Reroute the merged zip (Bukkit-only because DefaultConfig is Bukkit-bound).
+        applyResourcePackRerouting(out.mergedDir());
+
+        // Bedrock conversion needs the still-extant unzipped folder, which the engine
+        // intentionally leaves on disk for exactly this kind of post-processing.
+        if (DefaultConfig.isBedrockConversionEnabled()) {
+            BedrockConversion.generate(out.mergedDir(), outputFolder);
+        }
         if (shuttingDown()) return;
-        writeCollisionLog();
+
+        // Final cleanup: the engine already deleted per-pack staging dirs but left the
+        // merged unzipped folder so we could run rerouting + Bedrock conversion against
+        // it. Now it's safe to delete. Bedrock outputs (zip + Geyser mappings) survive
+        // because they live alongside, not inside, the merged folder.
+        if (out.mergedDir().exists()) {
+            recursivelyDeleteDirectory(out.mergedDir());
+        }
+
+        finalResourcePack = out.mergedZip();
+        finalSHA1 = out.sha1Hex();
+        finalSHA1Bytes = out.sha1Bytes();
+
         Logger.info("Resource pack mixing complete.");
         if (shuttingDown()) return;
         AutoHost.initialize();
@@ -102,8 +167,7 @@ public class Mix {
      * and their files are preserved when lower priority packs collide with them.
      */
     private static void initializeThirdPartyResourcePacks() {
-        orderedResourcePacks = new ArrayList<>();
-        resourcePacks = new ArrayList<>();
+        orderedFiles = new ArrayList<>();
         List<String> priorityOrder = DefaultConfig.getPriorityOrder();
 
         // Collect all enabled packs from both the static set and API registrations
@@ -132,178 +196,68 @@ public class Mix {
                 if (prio < 0) prio = priorityOrder.indexOf(file.getName().replace(".zip", ""));
                 filePriorities.put(file, prio >= 0 ? prio : Integer.MAX_VALUE);
             }
+
+            // Surface cluster-style directories the same way the legacy pipeline did:
+            // the engine handles directory inputs natively (staging them under a
+            // cluster_<dirname> wrapper), so we just forward them in priority order.
+            for (File file : mixerContents) {
+                if (!file.isDirectory()) continue;
+                if (file.getName().equals("output")) continue;
+                // Cluster dirs aren't covered by priorityOrder; default to lowest priority
+                // so explicit plugin-registered packs win collisions against them — same
+                // behaviour as before (cluster_ entries were appended last to orderedResourcePacks).
+                filePriorities.put(file, Integer.MAX_VALUE);
+            }
         }
 
         // Sort all packs by priority (lower index = higher priority = copied first = wins collisions)
         filePriorities.entrySet().stream()
                 .sorted(Map.Entry.comparingByValue())
-                .forEach(entry -> {
-                    resourcePacks.add(entry.getKey());
-                    orderedResourcePacks.add(entry.getKey().getName().replace(".zip", ""));
-                });
+                .forEach(entry -> orderedFiles.add(entry.getKey()));
     }
 
-    private static void cloneToOutputAndUnzip() {
-        resourcePacks.forEach(resourcePack -> {
-            try {
-                if (resourcePack == null) {
-                    Logger.warn("A resource pack was null by the time it was meant to be unzipped!");
-                    return;
-                }
-                File outputDir = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "output" + File.separatorChar + resourcePack.getName().replace(".zip", ""));
-                // Pre-create the output directory to ensure getCanonicalPath() works correctly in the unzip security check
-                if (!outputDir.exists()) outputDir.mkdirs();
-                ZipFile.unzip(resourcePack, outputDir);
-            } catch (Exception e) {
-                if (resourcePack == null)
-                    Logger.warn("Failed to extract resource pack! The file might be encrypted. This pack will be skipped.");
-                else {
-                    Logger.warn("Failed to extract resource pack " + resourcePack.getName() + " - the file might be encrypted or the plugin distributes its own pack. This pack will be skipped.");
-                    Logger.warn("Error details: " + e.getMessage());
-                }
-            }
-        });
-
-        // Also copy any directories from mixer folder (from cluster processing) directly to output
-        copyClusterDirectoriesToOutput();
-    }
-
-    private static void copyClusterDirectoriesToOutput() {
-        if (mixerFolder == null || !mixerFolder.exists()) return;
-        File[] mixerContents = mixerFolder.listFiles();
-        if (mixerContents == null) return;
-
-        for (File file : mixerContents) {
-            // Only process directories (cluster content like 'assets')
-            if (!file.isDirectory()) continue;
-            // Skip the output folder if it somehow ends up here
-            if (file.getName().equals("output")) continue;
-
-            // Copy the directory to a wrapper folder in output
-            // This ensures the structure is: output/cluster_assets/assets/...
-            File outputWrapper = new File(getOutputFolder().getPath() + File.separatorChar + "cluster_" + file.getName());
-            if (!outputWrapper.exists()) outputWrapper.mkdir();
-
-            try {
-                recursivelyCopyDirectory(file, outputWrapper);
-                // Track this for the merge process
-                if (!orderedResourcePacks.contains("cluster_" + file.getName())) {
-                    orderedResourcePacks.add("cluster_" + file.getName());
-                }
-            } catch (Exception e) {
-                Logger.warn("Failed to copy cluster directory " + file.getName() + " to output folder");
-                e.printStackTrace();
-            }
-        }
-    }
-
-    private static void createOutputDefaultElements() {
-        //Clear old resource pack
-        if (getOutputResourcePackFolder().exists()) {
-            recursivelyDeleteDirectory(getOutputResourcePackFolder());
-        }
-        //Make sure new resource pack exists
+    private static void applyResourcePackRerouting(File mergedDir) {
+        String rerouteTarget = DefaultConfig.getResourcePackRerouting();
+        if (rerouteTarget == null || rerouteTarget.isEmpty() || rerouteTarget.isBlank()) return;
         try {
-            getOutputResourcePackFolder().mkdir();
+            File rerouteFolder = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().getAbsolutePath() + File.separatorChar + rerouteTarget);
+            if (!rerouteFolder.exists()) {
+                Logger.warn("Failed to reroute zipped file to " + rerouteFolder.getAbsolutePath() + " because that folder does not exist!");
+                return;
+            }
+            if (!rerouteFolder.isDirectory()) {
+                Logger.warn("Failed to reroute zipped file to " + rerouteFolder.getAbsolutePath() + " because that is a file and not a folder!");
+                return;
+            }
+            // Re-zip from the unzipped merged dir into the reroute target. Using
+            // MagmaCore's ZipFile here (not the rpm-mixer ZipUtil) keeps the existing
+            // dependency surface untouched — both implementations are byte-equivalent
+            // since ZipUtil was ported from this exact class.
+            if (!ZipFile.zip(mergedDir, rerouteFolder.getPath() + File.separatorChar + resourcePackName + ".zip")) {
+                Logger.warn("Failed to zip merged resource pack into reroute directory!");
+            }
         } catch (Exception e) {
-            Logger.warn("Failed to create resource pack output directory");
-            throw new RuntimeException(e);
+            Logger.warn("Failed to reroute zipped file to " + DefaultConfig.getResourcePackRerouting());
         }
-
-        List<File> orderedFiles = new ArrayList<>();
-        for (String filename : orderedResourcePacks) {
-            orderedFiles.add(new File(getOutputFolder().getPath() + File.separatorChar + filename));
-        }
-
-        for (File file : orderedFiles) {
-            if (file.getName().equals(resourcePackName + ".zip")) continue;
-            if (!file.exists()) {
-                // Pack likely failed to extract (possibly encrypted) - skip gracefully
-                continue;
-            }
-            if (!file.isDirectory()) {
-                if (file.getName().endsWith(".zip")) continue;
-                Logger.warn("Somehow a non-folder file made its way to the output folder! This isn't good. File: " + file.getAbsolutePath());
-                continue;
-            }
-            File[] subFiles = file.listFiles();
-            if (subFiles == null) continue;
-            for (File subFile : subFiles) {
-                recursivelyCopyDirectory(subFile, getOutputResourcePackFolder());
-            }
-        }
-
-        // Merge base atlas sources into overlay atlas files so overlays don't shadow base entries.
-        // When an overlay activates (e.g. ItemsAdder's ia_overlay_modern_atlas / ia_overlay_legacy_atlas),
-        // its atlas file replaces the base — without this, sources defined only in the base are lost.
-        merge.mergeBaseAtlasSourcesIntoOverlays(getOutputResourcePackFolder());
-
-        if (!ZipFile.zip(getOutputResourcePackFolder(), getOutputResourcePackFolder().getPath() + ".zip")) {
-            Logger.warn("Failed to zip merged resource pack!");
-            return;
-        }
-
-        if (!DefaultConfig.getResourcePackRerouting().isEmpty() && !DefaultConfig.getResourcePackRerouting().isBlank()) {
-            try {
-                File rerouteFolder = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().getAbsolutePath() + File.separatorChar + DefaultConfig.getResourcePackRerouting());
-                if (!rerouteFolder.exists()) {
-                    Logger.warn("Failed to reroute zipped file to " + rerouteFolder.getAbsolutePath() + " because that folder does not exist!");
-                } else if (!rerouteFolder.isDirectory()) {
-                    Logger.warn("Failed to reroute zipped file to " + rerouteFolder.getAbsolutePath() + " because that is a file and not a folder!");
-                } else if (!ZipFile.zip(getOutputResourcePackFolder(), rerouteFolder.getPath() + File.separatorChar + resourcePackName + ".zip")) {
-                    Logger.warn("Failed to zip merged resource pack into reroute directory!");
-                    return;
-                }
-            } catch (Exception e) {
-                Logger.warn("Failed to reroute zipped file to " + DefaultConfig.getResourcePackRerouting());
-            }
-        }
-
-        // Generate Bedrock resource pack for GeyserMC
-        if (DefaultConfig.isBedrockConversionEnabled()) {
-            BedrockConversion.generate(getOutputResourcePackFolder(), getOutputFolder());
-        }
-
-        // Files in output/ that must be preserved across cleanup. The Bedrock conversion
-        // outputs (zip + Geyser mappings) need to survive so deployPreviousIfNeeded() can
-        // pre-deploy them on the next startup — otherwise Geyser registers items from
-        // stale in-place mappings before the new regen finishes, and the on-disk pack /
-        // mapping mismatch causes invisible custom items on Bedrock for the whole session.
-        java.util.Set<String> preservedOutputs = java.util.Set.of(
-                resourcePackName + ".zip",
-                "ResourcePackManager_Bedrock.zip",
-                "rspm_geyser_mappings.json"
-        );
-        for (File file : getOutputFolder().listFiles()) {
-            if (file.getName().equals(resourcePackName + ".zip")) {
-                finalResourcePack = file;
-                try {
-                    finalSHA1 = SHA1Generator.sha1CodeString(finalResourcePack);
-                    finalSHA1Bytes = SHA1Generator.sha1CodeByteArray(finalResourcePack);
-                } catch (Exception e) {
-                    Logger.warn("Failed to get SHA1 from zipped resource pack!");
-                    finalResourcePack = null;
-                }
-                continue;
-            }
-            if (preservedOutputs.contains(file.getName())) continue;
-            recursivelyDeleteDirectory(file);
-        }
-
     }
 
     private static File getOutputFolder() {
         return new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "output");
     }
 
-    private static File getOutputResourcePackFolder() {
-        return new File(getOutputFolder().getAbsolutePath() + File.separatorChar + resourcePackName);
-    }
-
+    /**
+     * Recursively delete a directory tree. Kept as a public static helper because
+     * {@code ThirdPartyResourcePack} uses it when assembling cluster temp folders
+     * — extracting it into {@code rpm-mixer} would force {@code ThirdPartyResourcePack}
+     * (a Bukkit-side class) to depend on the mixer internal API.
+     */
     public static void recursivelyDeleteDirectory(File directory) {
         if (directory.isDirectory()) {
-            for (File file : directory.listFiles()) {
-                recursivelyDeleteDirectory(file);
+            File[] children = directory.listFiles();
+            if (children != null) {
+                for (File file : children) {
+                    recursivelyDeleteDirectory(file);
+                }
             }
             try {
                 Files.delete(directory.toPath());
@@ -319,23 +273,36 @@ public class Mix {
         }
     }
 
+    /**
+     * Recursively copy a directory tree with the same collision-resolution rules
+     * the engine uses (pack.mcmeta merge, JSON deep-merge for mergeable files,
+     * higher-priority wins for everything else). Used by
+     * {@code ThirdPartyResourcePack.processCluster} to combine multiple cluster
+     * sub-packs into a single temp directory before zipping it as one pack input
+     * for the engine. Kept public for the same callsite reason — moving it into
+     * {@code rpm-mixer} would force the Bukkit-side cluster code to import the
+     * mixer's internal helpers.
+     */
     public static void recursivelyCopyDirectory(File source, File target) {
         if (source.isDirectory()) {
             String sourceName = source.getName();
-
-            target = new File(target.getAbsolutePath() + File.separatorChar + sourceName);
-            target.mkdir();
-            for (File file : source.listFiles()) {
-                recursivelyCopyDirectory(file, target);
+            File nestedTarget = new File(target.getAbsolutePath() + File.separatorChar + sourceName);
+            nestedTarget.mkdir();
+            File[] children = source.listFiles();
+            if (children != null) {
+                for (File file : children) {
+                    recursivelyCopyDirectory(file, nestedTarget);
+                }
             }
         } else {
             try {
-                if (Path.of(target.getPath() + File.separatorChar + source.getName()).toFile().exists()) {
-                    resolveFileCollision(source, Path.of(target.getPath() + File.separatorChar + source.getName()).toFile());
+                Path targetPath = Path.of(target.getPath() + File.separatorChar + source.getName());
+                if (targetPath.toFile().exists()) {
+                    resolveClusterFileCollision(source, targetPath.toFile());
                     return;
                 }
-                Path targetPath = Path.of(target.getPath() + File.separatorChar + source.getName());
-                targetPath.getParent().toFile().mkdirs();
+                Path parent = targetPath.getParent();
+                if (parent != null) parent.toFile().mkdirs();
                 Files.copy(source.toPath(), targetPath);
             } catch (IOException e) {
                 Logger.warn("Failed to copy file");
@@ -344,86 +311,45 @@ public class Mix {
         }
     }
 
-    public static void resolveFileCollision(File sourceFile, File targetFile) throws IOException {
-        // pack.mcmeta needs overlay entries merged from all packs
+    /**
+     * Collision resolution used during cluster pre-merging — same rules as the
+     * engine's {@code resolveFileCollision}, but with no collision-log recording
+     * (matches legacy behaviour where cluster-stage collisions were silently
+     * dropped because {@code collisionLog} was still null at this point in the
+     * lifecycle).
+     */
+    private static void resolveClusterFileCollision(File sourceFile, File targetFile) throws IOException {
         if (targetFile.getName().equals("pack.mcmeta")) {
-            merge.mergePackMcmeta(sourceFile, targetFile);
+            CLUSTER_MERGE.mergePackMcmeta(sourceFile, targetFile);
             return;
         }
+        if (!targetFile.getName().endsWith(".json")) return;
+        if (!CLUSTER_MERGE.isMergeableJsonFile(targetFile)) return;
 
-        if (!targetFile.getName().endsWith(".json")) {
-            // Non-JSON: higher priority pack already placed this file, keep it
-            logCollision("Kept (higher priority): " + targetFile.getPath());
-            return;
-        }
-
-        if (!merge.isMergeableJsonFile(targetFile)) {
-            // Non-mergeable JSON (models, blockstates, etc.): higher priority version takes precedence
-            logCollision("Kept (higher priority, non-mergeable JSON): " + targetFile.getPath());
-            return;
-        }
-
-        JsonObject json1 = merge.readJsonFile(sourceFile);
-        JsonObject json2 = merge.readJsonFile(targetFile);
-
-        if (json1 == null && json2 == null) {
-            Logger.warn("Both JSON files unreadable during merge, skipping: " + targetFile.getPath());
-            return;
-        }
+        JsonObject json1 = CLUSTER_MERGE.readJsonFile(sourceFile);
+        JsonObject json2 = CLUSTER_MERGE.readJsonFile(targetFile);
+        if (json1 == null && json2 == null) return;
         if (json1 == null) return;
         if (json2 == null) {
-            Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            logCollision("Replaced (unreadable target JSON): " + targetFile.getPath());
+            Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             return;
         }
 
-        // Route to format-specific merge where needed
         JsonObject mergedJson;
-        if (merge.isItemsFile(targetFile)) {
-            mergedJson = merge.mergeItemsModels(json1, json2);
+        if (CLUSTER_MERGE.isItemsFile(targetFile)) {
+            mergedJson = CLUSTER_MERGE.mergeItemsModels(json1, json2);
         } else if (targetFile.getName().equals("sounds.json")) {
-            mergedJson = merge.mergeSoundsJson(json1, json2);
+            mergedJson = CLUSTER_MERGE.mergeSoundsJson(json1, json2);
         } else {
-            mergedJson = merge.mergeJsonObjects(json1, json2);
+            mergedJson = CLUSTER_MERGE.mergeJsonObjects(json1, json2);
         }
 
-        // Post-process: sort overrides in legacy item model files by custom_model_data
-        if (merge.isLegacyItemModel(targetFile) && mergedJson.has("overrides")) {
-            merge.sortModelOverrides(mergedJson);
+        if (CLUSTER_MERGE.isLegacyItemModel(targetFile) && mergedJson.has("overrides")) {
+            CLUSTER_MERGE.sortModelOverrides(mergedJson);
         }
 
         try (FileWriter writer = new FileWriter(targetFile)) {
             new Gson().toJson(mergedJson, writer);
         }
-
-        logCollision("Merged: " + targetFile.getPath());
     }
-
-    /**
-     * Writes the collision log to a file in the plugin's config folder.
-     * Only keeps the latest log, no history.
-     */
-    private static void writeCollisionLog() {
-        if (collisionLog == null || collisionLog.isEmpty()) return;
-
-        File logFile = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "collision_log.txt");
-        try (FileWriter writer = new FileWriter(logFile, false)) {
-            writer.write("Resource Pack Collision Log\n");
-            writer.write("Generated: " + java.time.LocalDateTime.now() + "\n");
-            writer.write("================================================\n\n");
-            for (String entry : collisionLog) {
-                writer.write(entry + "\n");
-            }
-        } catch (IOException e) {
-            Logger.warn("Failed to write collision log file.");
-        }
-    }
-
-    private static void logCollision(String message) {
-        if (collisionLog != null) {
-            collisionLog.add(message);
-        }
-    }
-
 }
-
