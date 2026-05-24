@@ -110,26 +110,66 @@ public final class BungeeResourcePackPusher implements Listener {
             Class<?> directionDataClass = Class.forName("net.md_5.bungee.protocol.Protocol$DirectionData");
             Class<?> mappingClass = Class.forName("net.md_5.bungee.protocol.Protocol$ProtocolMapping");
 
-            // Find a registerPacket method we know how to call. Bungee's
-            // canonical signature is:
-            //   registerPacket(Class<? extends DefinedPacket>, Supplier<? extends DefinedPacket>, ProtocolMapping...)
-            // — three params, varargs ProtocolMapping. We tolerate any method
-            // whose first two params are Class+Supplier, since that's the
-            // stable contract.
+            // BungeeCord's Protocol$DirectionData.registerPacket has shifted
+            // shape between major versions:
+            //   3-arg (older): (Class, Supplier, ProtocolMapping[])
+            //   4-arg (26.1+ and 1.21.4+ snapshots): (Class, Supplier, RegisterType, ProtocolMapping[])
+            // We support both. If both are somehow present we prefer the
+            // 3-arg variant for symmetry with older code paths.
             Method registerPacket = null;
+            boolean fourArg = false;
             for (Method m : directionDataClass.getDeclaredMethods()) {
                 if (!m.getName().equals("registerPacket")) continue;
                 Class<?>[] params = m.getParameterTypes();
                 if (params.length < 3) continue;
                 if (params[0] != Class.class) continue;
                 if (params[1] != Supplier.class) continue;
-                registerPacket = m;
-                break;
+                if (params.length == 3 && params[2].isArray() && params[2].getComponentType() == mappingClass) {
+                    registerPacket = m;
+                    fourArg = false;
+                    break; // prefer 3-arg
+                }
+                if (params.length == 4 && params[3].isArray() && params[3].getComponentType() == mappingClass) {
+                    // capture but keep scanning in case a 3-arg overload also exists
+                    registerPacket = m;
+                    fourArg = true;
+                }
             }
             if (registerPacket == null) {
-                throw new IllegalStateException("Protocol$DirectionData.registerPacket(Class,Supplier,...) not found via reflection. BungeeCord internal API may have changed.");
+                throw new IllegalStateException("No suitable registerPacket method found on " + directionDataClass
+                        + ". BungeeCord internal API may have changed.");
             }
             registerPacket.setAccessible(true);
+
+            // For the 4-arg form, resolve the RegisterType.ENCODE constant.
+            // We only ever encode (clientbound, proxy -> client). Fall back
+            // to BOTH, then to the first declared constant, in case a fork
+            // renames things.
+            Object registerType = null;
+            if (fourArg) {
+                Class<?> registerTypeClass = Class.forName("net.md_5.bungee.protocol.Protocol$RegisterType");
+                Object[] values = registerTypeClass.getEnumConstants();
+                if (values == null || values.length == 0) {
+                    throw new IllegalStateException("Protocol$RegisterType has no enum constants");
+                }
+                for (Object v : values) {
+                    if ("ENCODE".equals(((Enum<?>) v).name())) {
+                        registerType = v;
+                        break;
+                    }
+                }
+                if (registerType == null) {
+                    for (Object v : values) {
+                        if ("BOTH".equals(((Enum<?>) v).name())) {
+                            registerType = v;
+                            break;
+                        }
+                    }
+                }
+                if (registerType == null) {
+                    registerType = values[0];
+                }
+            }
 
             Constructor<?> mappingCtor = mappingClass.getDeclaredConstructor(int.class, int.class);
             mappingCtor.setAccessible(true);
@@ -139,24 +179,19 @@ public final class BungeeResourcePackPusher implements Listener {
 
             Supplier<DefinedPacket> supplier = ResourcePackPushPacket::new;
 
-            // Find the index of the ProtocolMapping[] varargs parameter (must
-            // be the last param for varargs methods). For the standard 3-arg
-            // signature this is index 2; if Bungee ever inserts an extra
-            // middle parameter (RegisterType etc.) we'd need to handle that,
-            // but as of every version we've seen (1.8..1.21.4+) it's 3 args.
-            Class<?>[] paramTypes = registerPacket.getParameterTypes();
-            if (paramTypes.length != 3 || !paramTypes[2].isArray() || paramTypes[2].getComponentType() != mappingClass) {
-                throw new IllegalStateException("Unexpected registerPacket signature: " + registerPacket);
-            }
-
             Object playArray = toMappingArray(mappingClass, playMappings);
             Object configArray = toMappingArray(mappingClass, configMappings);
 
             Object gameToClient = Protocol.GAME.TO_CLIENT;
             Object configToClient = Protocol.CONFIGURATION.TO_CLIENT;
 
-            registerPacket.invoke(gameToClient, ResourcePackPushPacket.class, supplier, playArray);
-            registerPacket.invoke(configToClient, ResourcePackPushPacket.class, supplier, configArray);
+            if (fourArg) {
+                registerPacket.invoke(gameToClient, ResourcePackPushPacket.class, supplier, registerType, playArray);
+                registerPacket.invoke(configToClient, ResourcePackPushPacket.class, supplier, registerType, configArray);
+            } else {
+                registerPacket.invoke(gameToClient, ResourcePackPushPacket.class, supplier, playArray);
+                registerPacket.invoke(configToClient, ResourcePackPushPacket.class, supplier, configArray);
+            }
 
             registered = true;
         } catch (RuntimeException e) {
