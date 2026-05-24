@@ -62,6 +62,7 @@ public class AutoHost {
     }
 
     public static void sendResourcePack(Player player) {
+        if (NetworkMode.isActive()) return;  // proxy plugin handles client pack push
         if (!done) return;
         String url;
         if (selfHostedUrl != null) {
