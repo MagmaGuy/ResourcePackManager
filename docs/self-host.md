@@ -2,7 +2,7 @@
 
 When uploading the resource pack to `magmaguy.com/rsp/` fails — pack too large, network issue, server down, autohost disabled — RPM falls back to serving the pack from an embedded HTTP server on the same machine. This document covers how that works, how to configure it, and how to debug it when clients can't reach the pack.
 
-This applies to both the backend RPM plugin and the proxy plugin (rpm-velocity / rpm-bungee). Both have identical config keys and behavior; the only difference is what they serve (backends serve their own plugin pack, proxy serves the network-merged pack).
+This applies to both the backend RPM plugin and the proxy plugin (resourcepackmanager-velocity / resourcepackmanager-bungee). Both have identical config keys and behavior; the only difference is what they serve (backends serve their own plugin pack, proxy serves the network-merged pack).
 
 ## How it works
 
@@ -18,7 +18,7 @@ The embedded server has no fancy features — it serves one file at one path, wi
 In `plugins/ResourcePackManager/config.yml` (backend) or `plugins/ResourcePackManager/config.yml` on the proxy:
 
 ```yaml
-# Backend (rpm-bukkit) keys are camelCase per the Bukkit convention:
+# Backend (resourcepackmanager-bukkit) keys are camelCase per the Bukkit convention:
 selfHostEnabled: true
 selfHostPort: 25567
 selfHostExternalHost: ""
@@ -115,6 +115,6 @@ Java clients cache by hash. If the hash changes every restart (e.g., timestamp d
 
 ## Architecture cross-reference
 
-- Backend self-host code: [`AutoHost.fallbackToSelfHost`](../rpm-bukkit/src/main/java/com/magmaguy/resourcepackmanager/autohost/AutoHost.java)
-- Proxy self-host code: [`NetworkSync.startOrRefreshSelfHost`](../rpm-proxy-common/src/main/java/com/magmaguy/rspm/proxy/NetworkSync.java)
-- HTTP server: [`PackHttpServer`](../rpm-http-common/src/main/java/com/magmaguy/rspm/http/PackHttpServer.java)
+- Backend self-host code: [`AutoHost.fallbackToSelfHost`](../resourcepackmanager-bukkit/src/main/java/com/magmaguy/resourcepackmanager/autohost/AutoHost.java)
+- Proxy self-host code: [`NetworkSync.startOrRefreshSelfHost`](../resourcepackmanager-proxy-common/src/main/java/com/magmaguy/resourcepackmanager/proxy/NetworkSync.java)
+- HTTP server: [`PackHttpServer`](../resourcepackmanager-http-common/src/main/java/com/magmaguy/resourcepackmanager/http/PackHttpServer.java)

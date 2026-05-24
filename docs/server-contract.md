@@ -1,6 +1,6 @@
 # `magmaguy.com/rsp/` Server-Side API Contract
 
-This document describes the HTTP API that `magmaguy.com/rsp/` must implement to support ResourcePackManager's autohost and network-mode features. The plugin client lives in [`MagmaguyRspClient`](../rpm-http-common/src/main/java/com/magmaguy/rspm/http/MagmaguyRspClient.java); this is the server-side counterpart.
+This document describes the HTTP API that `magmaguy.com/rsp/` must implement to support ResourcePackManager's autohost and network-mode features. The plugin client lives in [`MagmaguyRspClient`](../resourcepackmanager-http-common/src/main/java/com/magmaguy/resourcepackmanager/http/MagmaguyRspClient.java); this is the server-side counterpart.
 
 Note: the server is a separate codebase from RPM. This document is the contract — the plugin client targets these endpoints; server-side implementation is updated independently. Phases 0–3 of the network-mode rollout work entirely against the existing endpoints (no new server endpoints needed). Phases 4+ require the new endpoints listed under "Network mode" below.
 
@@ -154,7 +154,7 @@ Notes:
 
 ### `POST /rsp/network/<network-key>/merged`
 
-Uploads the proxy-merged network pack. Called by the rpm-velocity / rpm-bungee plugin after it downloads each backend's pack from the manifest and runs the shared `MixEngine` over them.
+Uploads the proxy-merged network pack. Called by the ResourcePackManager-Velocity / ResourcePackManager-BungeeCord proxy plugin after it downloads each backend's pack from the manifest and runs the shared `MixEngine` over them.
 
 **Form fields:**
 - `file` — required, binary multipart, the merged .zip
@@ -177,7 +177,7 @@ Serves the latest merged pack uploaded via `POST /rsp/network/<network-key>/merg
 - **Phase 4** (proxy plugin manifest poll + merge + republish): requires `/rsp/network/<key>/manifest`, `POST /rsp/network/<key>/merged`, `GET /rsp/network/<key>/merged`.
 - **Phase 5+** (Velocity/Bungee entry points, extension extraction): no new endpoints.
 
-The client-side ([`MagmaguyRspClient`](../rpm-http-common/src/main/java/com/magmaguy/rspm/http/MagmaguyRspClient.java)) ships stub methods (`fetchNetworkManifest`, `uploadNetworkMerged`, `uploadBedrockVariant`, `uploadNetworkTagged`) that throw `UnsupportedOperationException` until the matching server-side endpoints land. Replace the stub bodies with real HTTP calls once the server is ready.
+The client-side ([`MagmaguyRspClient`](../resourcepackmanager-http-common/src/main/java/com/magmaguy/resourcepackmanager/http/MagmaguyRspClient.java)) ships stub methods (`fetchNetworkManifest`, `uploadNetworkMerged`, `uploadBedrockVariant`, `uploadNetworkTagged`) that throw `UnsupportedOperationException` until the matching server-side endpoints land. Replace the stub bodies with real HTTP calls once the server is ready.
 
 ---
 

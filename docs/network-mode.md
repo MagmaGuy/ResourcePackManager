@@ -24,7 +24,8 @@ Player joins proxy
   │   ┌──────────────────────────────────────────┐
   │   │  Proxy (Velocity / BungeeCord)           │
   │   │                                          │
-  │   │  rpm-velocity.jar / rpm-bungee.jar       │
+  │   │  ResourcePackManager-Velocity.jar /      │
+  │   │  ResourcePackManager-BungeeCord.jar      │
   │   │   • NetworkSync polls magmaguy.com       │
   │   │   • Downloads each backend's pack        │
   │   │   • Mixes via shared MixEngine           │
@@ -59,11 +60,11 @@ The bundled Bedrock conversion still runs on every backend so the upload contain
 
 Drop the jars, restart, done. No config files to edit.
 
-1. **Backend(s):** drop `ResourcePackManager.jar` into each backend's `plugins/`. On first boot it detects network mode (Floodgate present, no Geyser-Spigot) and extracts `rpm-velocity.jar` and `rpm-bungee.jar` to `plugins/ResourcePackManager/proxy-extension/`. Log line tells you the absolute path.
+1. **Backend(s):** drop `ResourcePackManager.jar` into each backend's `plugins/`. On first boot it detects network mode (Floodgate present, no Geyser-Spigot) and extracts `ResourcePackManager-Velocity.jar` and `ResourcePackManager-BungeeCord.jar` to `plugins/ResourcePackManager/proxy-extension/`. Log line tells you the absolute path.
 
 2. **Proxy:** copy the appropriate proxy jar from any backend's `proxy-extension/` folder to your proxy's `plugins/`. Restart the proxy.
-   - **Velocity:** `rpm-velocity.jar`
-   - **BungeeCord / Waterfall:** `rpm-bungee.jar` (no extra plugins required — RPM registers the resource-pack-push packet directly against Bungee's protocol API).
+   - **Velocity:** `ResourcePackManager-Velocity.jar`
+   - **BungeeCord / Waterfall:** `ResourcePackManager-BungeeCord.jar` (no extra plugins required — RPM registers the resource-pack-push packet directly against Bungee's protocol API).
 
 3. **Done.** RPM derives the network-key automatically from your Floodgate `key.pem` (the file you already shared between proxy and backends for Floodgate's own proxy-mode auth). Same key.pem → same network-key → all components on the same network. No config to edit.
 

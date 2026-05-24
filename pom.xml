@@ -9,12 +9,12 @@
     <packaging>pom</packaging>
 
     <modules>
-        <module>rpm-mixer</module>
-        <module>rpm-http-common</module>
-        <module>rpm-proxy-common</module>
-        <module>rpm-velocity</module>
-        <module>rpm-bungee</module>
-        <module>rpm-bukkit</module>
+        <module>resourcepackmanager-mixer</module>
+        <module>resourcepackmanager-http-common</module>
+        <module>resourcepackmanager-proxy-common</module>
+        <module>resourcepackmanager-velocity</module>
+        <module>resourcepackmanager-bungee</module>
+        <module>resourcepackmanager-bukkit</module>
     </modules>
 
     <properties>
