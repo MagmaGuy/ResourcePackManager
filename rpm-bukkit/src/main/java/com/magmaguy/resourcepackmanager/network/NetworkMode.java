@@ -1,6 +1,10 @@
 package com.magmaguy.resourcepackmanager.network;
 
+import com.magmaguy.resourcepackmanager.config.DataConfig;
+import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import org.bukkit.Bukkit;
+
+import java.util.UUID;
 
 /**
  * Detects whether RPM is running behind a proxy (Velocity / BungeeCord / Waterfall)
@@ -30,5 +34,27 @@ public final class NetworkMode {
         boolean floodgate = Bukkit.getPluginManager().getPlugin("floodgate") != null;
         cached = noGeyser && floodgate;
         return cached;
+    }
+
+    /**
+     * Resolves the network key that links this backend with the proxy plugin and any
+     * other backends in the same network. Resolution order:
+     * <ol>
+     *     <li>{@link DefaultConfig#getNetworkKey()} — admin override pinned in config.yml.</li>
+     *     <li>{@link DataConfig#getNetworkKey()} — value persisted from a previous boot.</li>
+     *     <li>Auto-generate a fresh {@link UUID}, persist it to {@code data.yml}, return it.</li>
+     * </ol>
+     * Auto-generated keys are saved immediately (not deferred) so a crash before the
+     * next config-save cycle doesn't lose the key the admin already pasted into the
+     * proxy plugin.
+     */
+    public static String getNetworkKey() {
+        String override = DefaultConfig.getNetworkKey();
+        if (override != null && !override.isBlank()) return override;
+        String persisted = DataConfig.getNetworkKey();
+        if (persisted != null && !persisted.isBlank()) return persisted;
+        String generated = UUID.randomUUID().toString();
+        DataConfig.setNetworkKey(generated);
+        return generated;
     }
 }

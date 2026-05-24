@@ -24,6 +24,8 @@ public class DefaultConfig extends ConfigurationFile {
     private static boolean bedrockAutoDeployToGeyser = true;
     @Getter
     private static String bedrockGeyserFolder = "";
+    @Getter
+    private static String networkKey = "";
 
 
     public DefaultConfig() {
@@ -82,5 +84,13 @@ public class DefaultConfig extends ConfigurationFile {
         bedrockGeyserFolder = ConfigurationEngine.setString(
                 List.of("Path to the Geyser packs folder. Leave empty to auto-detect."),
                 fileConfiguration, "bedrockGeyserFolder", "");
+
+        networkKey = ConfigurationEngine.setString(
+                List.of(
+                        "Pin a network key explicitly. Leave empty to auto-generate on first boot (recommended).",
+                        "Multi-backend networks: paste the SAME network key into every backend's RPM config",
+                        "AND into the proxy plugin's config to link them. The key is logged prominently",
+                        "on every boot when network mode is active."),
+                fileConfiguration, "networkKey", "");
     }
 }

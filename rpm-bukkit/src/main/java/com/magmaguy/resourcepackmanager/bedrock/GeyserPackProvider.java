@@ -64,6 +64,14 @@ public final class GeyserPackProvider {
             // proxy can fetch it.
             Logger.info("Network mode: ACTIVE (Floodgate present, Geyser-Spigot absent on backend).");
             Logger.info("Bedrock pack delivery is handled by the proxy plugin; backend RPM skips local Geyser registration.");
+            // Boot banner: log the network key prominently every boot so admins can re-find it
+            // after console history rotates. NetworkMode.getNetworkKey() auto-generates on first
+            // boot and persists to data.yml.
+            String networkKey = NetworkMode.getNetworkKey();
+            Logger.info("[RSPM] ===== NETWORK MODE =====");
+            Logger.info("[RSPM] Network key: " + networkKey);
+            Logger.info("[RSPM] Use this same key on your proxy plugin and any other backends in this network.");
+            Logger.info("[RSPM] ========================");
             return;
         }
         if (Bukkit.getPluginManager().getPlugin("Geyser-Spigot") == null) {
