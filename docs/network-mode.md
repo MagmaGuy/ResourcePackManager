@@ -57,67 +57,29 @@ The bundled Bedrock conversion still runs on every backend so the upload contain
 
 ## Setup
 
-### 1. Install RPM on every backend that has pack-providing plugins
+Drop the jars, restart, done. No config files to edit.
 
-Drop `ResourcePackManager.jar` into each backend's `plugins/` folder and start the server. RPM detects network mode automatically and prints a banner on startup:
+1. **Backend(s):** drop `ResourcePackManager.jar` into each backend's `plugins/`. On first boot it detects network mode (Floodgate present, no Geyser-Spigot) and extracts `rpm-velocity.jar` and `rpm-bungee.jar` to `plugins/ResourcePackManager/proxy-extension/`. Log line tells you the absolute path.
 
-```
-[ResourcePackManager] ===== NETWORK MODE =====
-[ResourcePackManager] Network key: 1f2a3b4c-5d6e-7f8a-9b0c-d1e2f3a4b5c6
-[ResourcePackManager] Use this same key on your proxy plugin and any other backends in this network.
-[ResourcePackManager] ========================
-```
+2. **Proxy:** copy the appropriate proxy jar from any backend's `proxy-extension/` folder to your proxy's `plugins/`. Restart the proxy.
+   - **Velocity:** `rpm-velocity.jar`
+   - **BungeeCord / Waterfall:** `rpm-bungee.jar`, plus [Protocolize](https://www.spigotmc.org/resources/protocolize.63778/) (Bungee has no native pack-push API).
 
-Copy the network key. You'll paste it into the proxy plugin in step 3 and into any other backends in step 2.
+3. **Done.** RPM derives the network-key automatically from your Floodgate `key.pem` (the file you already shared between proxy and backends for Floodgate's own proxy-mode auth). Same key.pem → same network-key → all components on the same network. No config to edit.
 
-### 2. Set the same network key on every other RPM backend
+## Advanced: override the network-key explicitly
 
-In each additional backend's `plugins/ResourcePackManager/config.yml`, set:
+If you need to split one Floodgate network into multiple RPM networks (or merge multiple Floodgate networks into one), set an explicit network-key:
 
-```yaml
-networkKey: 1f2a3b4c-5d6e-7f8a-9b0c-d1e2f3a4b5c6
-```
+- **Backend:** `plugins/ResourcePackManager/config.yml` → `networkKey: "your-shared-string"`
+- **Proxy plugin:** `plugins/ResourcePackManager/config.yml` → `network-key: "your-shared-string"`
 
-Restart the backend. It now uploads its pack tagged with the same network key so the proxy plugin sees both packs in the manifest.
+Use the same value everywhere. This overrides the auto-derive.
 
-### 3. Copy the proxy plugin to your proxy
+## Verify
 
-On startup, every RPM backend (when in network mode) extracts the bundled proxy plugin jars to `plugins/ResourcePackManager/proxy-extension/` and logs the absolute paths:
-
-```
-[ResourcePackManager] ===== PROXY EXTENSION =====
-[ResourcePackManager] Proxy plugin jars extracted to:
-[ResourcePackManager]   Velocity: /srv/mc/backend1/plugins/ResourcePackManager/proxy-extension/rpm-velocity.jar
-[ResourcePackManager]   Bungee:   /srv/mc/backend1/plugins/ResourcePackManager/proxy-extension/rpm-bungee.jar
-```
-
-Copy the appropriate file to your proxy:
-- **Velocity:** `rpm-velocity.jar` → proxy's `plugins/`
-- **BungeeCord / Waterfall:** `rpm-bungee.jar` → proxy's `plugins/`. **Also install [Protocolize](https://www.spigotmc.org/resources/protocolize.63778/)** — Bungee has no native pack-push API, so Protocolize is required.
-
-### 4. Configure the proxy plugin
-
-Start the proxy. The plugin generates a default config at `plugins/ResourcePackManager/config.yml`:
-
-```yaml
-network-key: ""
-force-resource-pack: false
-self-host-port: 25567
-self-host-external-host: ""
-```
-
-Paste the network key from step 1 into `network-key`, then restart the proxy.
-
-```yaml
-network-key: 1f2a3b4c-5d6e-7f8a-9b0c-d1e2f3a4b5c6
-```
-
-The plugin starts polling the network manifest every 30 seconds, downloads each backend's pack, mixes them, and pushes the result to clients on connect.
-
-### 5. Verify
-
-After all four steps:
-- Proxy console should log `RSPM proxy plugin started (network-key=...)`. and within ~30s: `Merged pack ready at https://magmaguy.com/rsp/network/.../merged (sha1 ...)`.
+After dropping the jars and restarting:
+- Proxy console should log `RSPM proxy plugin started (network-key=...)` and within ~30s: `Merged pack ready at https://magmaguy.com/rsp/network/.../merged (sha1 ...)`.
 - A Java player connecting via the proxy gets a pack prompt at proxy login.
 - A Bedrock player connecting via Geyser sees the merged pack on join.
 - Switching backend servers on either client does NOT re-prompt (proxy pushes once; subsequent server connects are no-ops for the same pack).
@@ -136,12 +98,12 @@ For Java, the proxy pushes one pack per network. Backends are silent in network 
 
 To go back to non-network behavior, remove Floodgate from the backend OR add Geyser-Spigot. Detection will flip off network mode. Backend RPM resumes pushing packs directly to Java players via `setResourcePack`, and the proxy plugin's polls return harmlessly empty.
 
-The network key persists in `plugins/ResourcePackManager/data.yml` even if network mode flips off, so re-activating later picks up the same key.
+Re-activating later derives the same network-key again from the same Floodgate `key.pem`, so existing network state lines up automatically.
 
 ## Caveats and limitations
 
 - **Server-side endpoints required:** Network mode depends on `/rsp/network/<key>/manifest`, `POST /rsp/network/<key>/merged`, and `GET /rsp/network/<key>/merged` endpoints on `magmaguy.com/rsp/`. See [`server-contract.md`](server-contract.md) for the full contract. Until the server side ships these, the proxy plugin's poll silently no-ops and clients receive no pack.
-- **Network-key collision:** If two unrelated RPM installations accidentally use the same network-key, their packs get merged together. Treat the key like a shared secret — let the auto-generated UUID stand or set an explicit value you control.
+- **Network-key collision:** If two unrelated RPM installations accidentally use the same network-key, their packs get merged together. With the default Floodgate-derived key this is essentially impossible — separate Floodgate networks already have distinct `key.pem` files. If you override the key manually, treat it like a shared secret and pick something unique.
 - **Backend re-mixes:** when a backend re-uploads a different pack (different sha1), the proxy detects on its next poll and re-merges within ~30 seconds. New clients see the new pack; existing clients keep the pack they already downloaded until they reconnect.
 - **Self-host fallback:** see [`self-host.md`](self-host.md). The proxy automatically falls back to a local HTTP server when uploads to magmaguy.com fail.
 - **Protocolize on Bungee:** required, not bundled. The Bungee plugin will warn on startup and continue running with Bedrock-only delivery if Protocolize is missing.
