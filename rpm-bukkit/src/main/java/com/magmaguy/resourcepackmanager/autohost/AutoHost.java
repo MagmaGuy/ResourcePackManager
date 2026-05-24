@@ -5,6 +5,7 @@ import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
+import com.magmaguy.resourcepackmanager.network.NetworkMode;
 import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
 import com.magmaguy.rspm.http.MagmaguyRspClient;
 import com.magmaguy.rspm.http.MagmaguyRspClient.UploadResult;
@@ -198,7 +199,10 @@ public class AutoHost {
 
         UploadResult result;
         try {
-            result = client.upload(rspUUID, Mix.getFinalResourcePack());
+            String networkKey = NetworkMode.isActive() ? NetworkMode.getNetworkKey() : null;
+            result = (networkKey != null)
+                    ? client.uploadNetworkTagged(rspUUID, Mix.getFinalResourcePack(), networkKey)
+                    : client.upload(rspUUID, Mix.getFinalResourcePack());
         } catch (IOException e) {
             Logger.warn("Failed to communicate with remote server during upload!");
             e.printStackTrace();
@@ -312,11 +316,16 @@ public class AutoHost {
      */
     private static void sendToOnlinePlayersIfFirstUpload() {
         if (firstUpload) {
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                AutoHost.sendResourcePack(player);
+            // In network mode the proxy plugin pushes the pack to Java players at
+            // proxy login. Backends never push directly, so the recovery broadcast
+            // here would just be a duplicate (and potentially wrong-URL) send.
+            if (!NetworkMode.isActive()) {
+                for (Player player : Bukkit.getOnlinePlayers()) {
+                    AutoHost.sendResourcePack(player);
+                }
             }
+            firstUpload = false;
         }
-        firstUpload = false;
     }
 
     /**
