@@ -60,9 +60,19 @@ public final class RspmVelocityPlugin {
             return;
         }
 
-        if (config.networkKey() == null || config.networkKey().isBlank()) {
-            slf4j.warn("[RSPM] rsp network-key not set in plugins/ResourcePackManager/config.yml - plugin idle until you configure it.");
-            slf4j.warn("[RSPM] Look at the backend RPM's startup console for the auto-generated key.");
+        String effectiveKey = config.networkKey();
+        if (effectiveKey == null || effectiveKey.isBlank()) {
+            // Auto-derive from Floodgate key.pem on the proxy
+            java.nio.file.Path keyPem = dataDir.getParent()   // plugins/
+                    .resolve("floodgate")
+                    .resolve("key.pem");
+            effectiveKey = com.magmaguy.rspm.http.NetworkKeyResolver.deriveFromFloodgateKey(keyPem);
+            if (effectiveKey != null) {
+                slf4j.info("[RSPM] Network-key auto-derived from Floodgate key.pem ({}). Override via network-key in config.yml if needed.", effectiveKey);
+            }
+        }
+        if (effectiveKey == null || effectiveKey.isBlank()) {
+            slf4j.warn("[RSPM] No network-key. Floodgate key.pem missing from plugins/floodgate/ — install Floodgate on this proxy, or set network-key explicitly in config.yml. Plugin idle.");
             return;
         }
 
@@ -95,7 +105,7 @@ public final class RspmVelocityPlugin {
                 httpClient,
                 mixerLogger,
                 dataDir.resolve("work").toFile(),
-                config.networkKey(),
+                effectiveKey,
                 config.selfHostPort(),
                 config.selfHostExternalHost(),
                 this::onMergedPackReady);
@@ -110,7 +120,7 @@ public final class RspmVelocityPlugin {
 
         // First poll after 5s so the rest of the proxy / Geyser finishes startup; then every 30s.
         this.sync.start(5_000L, 30_000L);
-        logger.info("RSPM proxy plugin started (network-key=" + config.networkKey() + ").");
+        logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + ").");
     }
 
     @Subscribe
