@@ -32,11 +32,9 @@ import java.util.List;
  */
 public final class MixEngine {
     private final MixerLogger logger;
-    private final MergeOperations merge;
 
     public MixEngine(MixerLogger logger) {
         this.logger = logger;
-        this.merge = new MergeOperations(logger);
     }
 
     public MixOutput run(MixInput input) throws IOException {
@@ -46,7 +44,23 @@ public final class MixEngine {
         if (!workingDir.exists()) workingDir.mkdirs();
         if (!outputDir.exists()) outputDir.mkdirs();
 
+        // Run-scoped state. We allocate it inside run() rather than as fields so the
+        // engine remains safe to reuse across calls and to share between threads — each
+        // invocation has its own collision list and its own MergeOperations.
         List<String> collisionLog = new ArrayList<>();
+
+        // Decorate the injected logger so any logger.collision(...) call coming out of
+        // MergeOperations (e.g. mergePackMcmeta line 349, mergeBaseAtlasSourcesIntoOverlays
+        // line 221) feeds into this run's collisionLog. info/warn still forward to the
+        // platform logger. The engine itself routes its own collision entries through the
+        // same wrapped.collision(...) channel so everything funnels through one place.
+        MixerLogger wrapped = new MixerLogger() {
+            @Override public void info(String m) { logger.info(m); }
+            @Override public void warn(String m) { logger.warn(m); }
+            @Override public void collision(String m) { collisionLog.add(m); }
+        };
+        MergeOperations merge = new MergeOperations(wrapped);
+
         // Track every staging directory we materialize so we can clean it up later
         // without scanning outputDir blindly (which would also nuke unrelated artifacts
         // dropped there by platform-side post-processing — e.g. Bedrock outputs).
@@ -93,7 +107,7 @@ public final class MixEngine {
             File[] subFiles = packDir.listFiles();
             if (subFiles == null) continue;
             for (File subFile : subFiles) {
-                recursivelyCopyDirectory(subFile, mergedDir, collisionLog);
+                recursivelyCopyDirectory(subFile, mergedDir, merge, wrapped);
             }
         }
 
@@ -167,10 +181,10 @@ public final class MixEngine {
     /**
      * Recursively copy a single tree under {@code target}, with collision-aware
      * merging for JSON files. This is the assembly-phase workhorse; it threads
-     * the collision log so {@link #resolveFileCollision} can report each merge
-     * outcome without depending on engine state.
+     * the run-scoped {@code merge} + {@code wrapped} logger so collision entries
+     * flow into the same per-run list that {@link MergeOperations} writes to.
      */
-    private void recursivelyCopyDirectory(File source, File target, List<String> collisionLog) {
+    private void recursivelyCopyDirectory(File source, File target, MergeOperations merge, MixerLogger wrapped) {
         if (source.isDirectory()) {
             String sourceName = source.getName();
             File nestedTarget = new File(target.getAbsolutePath() + File.separatorChar + sourceName);
@@ -178,14 +192,14 @@ public final class MixEngine {
             File[] children = source.listFiles();
             if (children != null) {
                 for (File file : children) {
-                    recursivelyCopyDirectory(file, nestedTarget, collisionLog);
+                    recursivelyCopyDirectory(file, nestedTarget, merge, wrapped);
                 }
             }
         } else {
             try {
                 Path targetPath = Path.of(target.getPath() + File.separatorChar + source.getName());
                 if (targetPath.toFile().exists()) {
-                    resolveFileCollision(source, targetPath.toFile(), collisionLog);
+                    resolveFileCollision(source, targetPath.toFile(), merge, wrapped);
                     return;
                 }
                 Path parent = targetPath.getParent();
@@ -252,19 +266,21 @@ public final class MixEngine {
      *   <li>Mergeable JSON: deep-merge via the format-specific helper in {@link MergeOperations}.</li>
      * </ul>
      */
-    private void resolveFileCollision(File sourceFile, File targetFile, List<String> collisionLog) throws IOException {
+    private void resolveFileCollision(File sourceFile, File targetFile, MergeOperations merge, MixerLogger wrapped) throws IOException {
         if (targetFile.getName().equals("pack.mcmeta")) {
+            // mergePackMcmeta already emits its own logger.collision(...) entry, which the
+            // wrapped logger routes into the run-scoped list. No additional logging here.
             merge.mergePackMcmeta(sourceFile, targetFile);
             return;
         }
 
         if (!targetFile.getName().endsWith(".json")) {
-            collisionLog.add("Kept (higher priority): " + targetFile.getPath());
+            wrapped.collision("Kept (higher priority): " + targetFile.getPath());
             return;
         }
 
         if (!merge.isMergeableJsonFile(targetFile)) {
-            collisionLog.add("Kept (higher priority, non-mergeable JSON): " + targetFile.getPath());
+            wrapped.collision("Kept (higher priority, non-mergeable JSON): " + targetFile.getPath());
             return;
         }
 
@@ -272,13 +288,13 @@ public final class MixEngine {
         JsonObject json2 = merge.readJsonFile(targetFile);
 
         if (json1 == null && json2 == null) {
-            logger.warn("Both JSON files unreadable during merge, skipping: " + targetFile.getPath());
+            wrapped.warn("Both JSON files unreadable during merge, skipping: " + targetFile.getPath());
             return;
         }
         if (json1 == null) return;
         if (json2 == null) {
             Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            collisionLog.add("Replaced (unreadable target JSON): " + targetFile.getPath());
+            wrapped.collision("Replaced (unreadable target JSON): " + targetFile.getPath());
             return;
         }
 
@@ -302,7 +318,7 @@ public final class MixEngine {
             new Gson().toJson(mergedJson, writer);
         }
 
-        collisionLog.add("Merged: " + targetFile.getPath());
+        wrapped.collision("Merged: " + targetFile.getPath());
     }
 
     private void writeCollisionLog(File outputDir, List<String> collisionLog) {
