@@ -50,6 +50,36 @@ public class DataConfig extends ConfigurationFile {
     }
 
     /**
+     * Returns the persisted network key used to link this backend with the proxy plugin
+     * and any other backends in the same network. Auto-generated on first network-mode
+     * boot via {@link com.magmaguy.resourcepackmanager.network.NetworkMode#getNetworkKey()}.
+     * Returns empty string when unset.
+     */
+    public static String getNetworkKey() {
+        String key = instance.getFileConfiguration().getString("networkKey");
+        return (key == null) ? "" : key;
+    }
+
+    /**
+     * Persists the network key to data.yml. Saves immediately so an auto-generated
+     * key survives a crash before the next config save cycle. Mirrors {@link #setRspUUID(String)}.
+     */
+    public static void setNetworkKey(String networkKey) {
+        instance.getFileConfiguration().set("networkKey", networkKey);
+        try {
+            instance.getFileConfiguration().save(instance.file);
+            if (networkKey != null && !networkKey.isEmpty()) {
+                Logger.info("Successfully saved network key.");
+            } else {
+                Logger.info("Successfully cleared network key from config.");
+            }
+        } catch (Exception e) {
+            Logger.warn("Failed to save network key!");
+            e.printStackTrace();
+        }
+    }
+
+    /**
      * Clears invalid UUID from config file
      */
     private void clearInvalidUUID() {
