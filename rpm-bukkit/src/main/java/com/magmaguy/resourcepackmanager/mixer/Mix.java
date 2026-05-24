@@ -94,11 +94,15 @@ public class Mix {
         if (shuttingDown()) return;
 
         File outputFolder = getOutputFolder();
+        // Collision log lands in the plugin data folder root (not output/) — preserves the
+        // legacy on-disk path so existing user scripts / docs continue to find it.
+        File dataFolder = ResourcePackManager.plugin.getDataFolder();
 
         MixInput input = new MixInput(
                 orderedFiles,
                 outputFolder,   // workingDir == outputDir matches legacy behaviour
                 outputFolder,
+                dataFolder,     // collisionLogDir
                 resourcePackName,
                 true
         );
@@ -165,16 +169,20 @@ public class Mix {
      * Builds the ordered list of resource packs to merge, sorted by configured priority.
      * Packs are copied in this order during merging — higher priority packs go first,
      * and their files are preserved when lower priority packs collide with them.
+     *
+     * <p>Cluster-style raw directories in the mixer folder are appended strictly LAST
+     * (after the priority-sorted zips), preserving legacy {@code copyClusterDirectoriesToOutput}
+     * ordering. Lumping them into the same priority bucket as un-prioritized zips would
+     * leave the relative order to {@code HashMap} iteration, which is JVM-undefined.</p>
      */
     private static void initializeThirdPartyResourcePacks() {
-        orderedFiles = new ArrayList<>();
         List<String> priorityOrder = DefaultConfig.getPriorityOrder();
 
         // Collect all enabled packs from both the static set and API registrations
         List<ThirdPartyResourcePack> allPacks = new ArrayList<>(ThirdPartyResourcePack.thirdPartyResourcePacks);
         allPacks.addAll(ResourcePackManagerAPI.thirdPartyResourcePackHashMap.values());
 
-        // Build a unified map of (file -> priority) for sorting
+        // Build a unified map of (file -> priority) for sorting — ZIP/file inputs only.
         Map<File, Integer> filePriorities = new HashMap<>();
         Set<String> registeredFilenames = new HashSet<>();
 
@@ -184,6 +192,10 @@ public class Mix {
             filePriorities.put(pack.getMixerResourcePack(),
                     pack.getPriority() >= 0 ? pack.getPriority() : Integer.MAX_VALUE);
         }
+
+        // Cluster directories are kept in a separate ordered list so we can append them
+        // strictly after the sorted zips — matches legacy "clusters always come last".
+        List<File> clusterDirs = new ArrayList<>();
 
         // Add custom zip files from the mixer folder (user-provided packs not tied to a plugin)
         File[] mixerContents = mixerFolder.listFiles();
@@ -203,17 +215,19 @@ public class Mix {
             for (File file : mixerContents) {
                 if (!file.isDirectory()) continue;
                 if (file.getName().equals("output")) continue;
-                // Cluster dirs aren't covered by priorityOrder; default to lowest priority
-                // so explicit plugin-registered packs win collisions against them — same
-                // behaviour as before (cluster_ entries were appended last to orderedResourcePacks).
-                filePriorities.put(file, Integer.MAX_VALUE);
+                clusterDirs.add(file);
             }
         }
 
-        // Sort all packs by priority (lower index = higher priority = copied first = wins collisions)
+        // Sort prioritized files (lower index = higher priority = copied first = wins collisions),
+        // then append clusters in deterministic listFiles() order — they're always last so explicit
+        // plugin-registered packs win collisions against them, exactly like the legacy pipeline.
+        List<File> result = new ArrayList<>(filePriorities.size() + clusterDirs.size());
         filePriorities.entrySet().stream()
                 .sorted(Map.Entry.comparingByValue())
-                .forEach(entry -> orderedFiles.add(entry.getKey()));
+                .forEach(entry -> result.add(entry.getKey()));
+        result.addAll(clusterDirs);
+        orderedFiles = result;
     }
 
     private static void applyResourcePackRerouting(File mergedDir) {
