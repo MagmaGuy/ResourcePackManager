@@ -28,6 +28,11 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
+            <groupId>dev.simplix</groupId>
+            <artifactId>protocolize-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
             <groupId>com.magmaguy</groupId>
             <artifactId>rpm-proxy-common</artifactId>
             <version>${project.version}</version>

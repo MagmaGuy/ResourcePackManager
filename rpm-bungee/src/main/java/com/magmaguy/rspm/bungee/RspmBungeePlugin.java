@@ -17,6 +17,7 @@ public final class RspmBungeePlugin extends Plugin {
     private MagmaguyRspClient httpClient;
     private NetworkSync sync;
     private GeyserBinder bedrock;
+    private ProtocolizeBinder protocolize;
 
     @Override
     public void onEnable() {
@@ -35,8 +36,9 @@ public final class RspmBungeePlugin extends Plugin {
             return;
         }
 
-        // Soft-depend on Protocolize for Java pack push (Task 6.2 wires this in).
-        // For now, we warn if it's missing but continue with Bedrock-only delivery.
+        // Soft-depend on Protocolize for Java pack push. If absent, we still
+        // ship the merged pack to Bedrock clients via Geyser, but Java clients
+        // won't see it until the admin installs Protocolize.
         if (getProxy().getPluginManager().getPlugin("Protocolize") == null) {
             getLogger().warning("[RSPM] Protocolize not detected. Bedrock pack delivery will still work via Geyser, but Java pack push requires Protocolize.");
             getLogger().warning("[RSPM] Install Protocolize from https://www.spigotmc.org/resources/protocolize.63778/");
@@ -79,6 +81,12 @@ public final class RspmBungeePlugin extends Plugin {
         this.bedrock = new GeyserBinder(logger, EventRegistrar.of(this));
         this.bedrock.register();
 
+        if (getProxy().getPluginManager().getPlugin("Protocolize") != null) {
+            this.protocolize = new ProtocolizeBinder(logger, config.forceResourcePack());
+            getProxy().getPluginManager().registerListener(this, this.protocolize);
+            logger.info("[RSPM] Protocolize binder registered - Java clients will receive the merged pack on PostLoginEvent.");
+        }
+
         // First poll after 5s so the rest of the proxy / Geyser finishes startup; then every 30s.
         this.sync.start(5_000L, 30_000L);
         logger.info("RSPM proxy plugin started (network-key=" + config.networkKey() + ").");
@@ -98,7 +106,7 @@ public final class RspmBungeePlugin extends Plugin {
 
     private void onMergedPackReady(MergedPack pack) {
         if (bedrock != null) bedrock.onMergedPackReady(pack);
+        if (protocolize != null) protocolize.onMergedPackReady(pack);
         logger.info("Merged pack ready at " + pack.url() + " (sha1 " + pack.sha1Hex() + ")");
-        // Task 6.2: push to currently-connecting/connected Java players via Protocolize.
     }
 }
