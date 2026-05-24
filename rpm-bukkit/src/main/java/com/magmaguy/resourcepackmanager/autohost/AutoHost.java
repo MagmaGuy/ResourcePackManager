@@ -8,6 +8,7 @@ import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
 import com.magmaguy.rspm.http.MagmaguyRspClient;
 import com.magmaguy.rspm.http.MagmaguyRspClient.UploadResult;
+import com.magmaguy.rspm.http.PackHttpServer;
 import com.magmaguy.rspm.http.RspError;
 import lombok.Getter;
 import lombok.Setter;
@@ -52,14 +53,25 @@ public class AutoHost {
     /** Shared HTTP client. Reconstructed on each {@link #initialize()} call. */
     private static volatile MagmaguyRspClient client = null;
 
+    /** Local self-host server when the magmaguy.com upload fails or is force-skipped. */
+    private static volatile PackHttpServer selfHostServer = null;
+    private static volatile String selfHostedUrl = null;
+
     private AutoHost() {
     }
 
     public static void sendResourcePack(Player player) {
-        if (rspUUID == null || !done) return;
+        if (!done) return;
+        String url;
+        if (selfHostedUrl != null) {
+            url = selfHostedUrl;
+        } else if (rspUUID != null) {
+            url = MagmaguyRspClient.BASE_URL + rspUUID;
+        } else {
+            return;
+        }
         Logger.info("Sending resource pack to " + player.getName());
 
-        String url = MagmaguyRspClient.BASE_URL + rspUUID;
         byte[] hash = Mix.getFinalSHA1Bytes();
         String prompt = DefaultConfig.getResourcePackPrompt();
         boolean force = DefaultConfig.isForceResourcePack();
@@ -128,6 +140,12 @@ public class AutoHost {
     }
 
     private static void checkFileExistence() {
+        // selfHostForce short-circuits the magmaguy.com flow entirely.
+        if (DefaultConfig.isSelfHostForce()) {
+            fallbackToSelfHost();
+            return;
+        }
+
         if (client == null) return;
 
         Optional<String> initResult;
@@ -137,6 +155,7 @@ public class AutoHost {
             Logger.warn("Failed to communicate with remote server!");
             e.printStackTrace();
             rspUUID = null;
+            fallbackToSelfHost();
             return;
         }
 
@@ -162,12 +181,14 @@ public class AutoHost {
                 // reinitializes; uploading against a dead session would just
                 // burn bandwidth and fail.
                 handleUploadError(sha1Result.errorOrNull());
+                fallbackToSelfHost();
             } else {
                 uploadFile();
             }
         } catch (IOException e) {
             Logger.warn("Failed to communicate with remote server during SHA1 check!");
             e.printStackTrace();
+            fallbackToSelfHost();
         }
     }
 
@@ -181,6 +202,7 @@ public class AutoHost {
         } catch (IOException e) {
             Logger.warn("Failed to communicate with remote server during upload!");
             e.printStackTrace();
+            fallbackToSelfHost();
             return;
         }
 
@@ -190,6 +212,7 @@ public class AutoHost {
             sendToOnlinePlayersIfFirstUpload();
         } else {
             handleUploadError(result.errorOrNull());
+            fallbackToSelfHost();
         }
     }
 
@@ -266,6 +289,14 @@ public class AutoHost {
             }
             client = null;
         }
+        if (selfHostServer != null) {
+            try {
+                selfHostServer.close();
+            } catch (Exception ignored) {
+            }
+            selfHostServer = null;
+            selfHostedUrl = null;
+        }
         done = false;
         rspUUID = null;
     }
@@ -299,6 +330,71 @@ public class AutoHost {
         String code = error.code();
         if (code != null && code.equals("SESSION_NOT_FOUND")) {
             rspUUID = null; // Trigger re-initialization on next keep-alive tick
+        }
+    }
+
+    /**
+     * Start a local HTTP server (or reuse an already-running one) that serves
+     * the current {@link Mix#getFinalResourcePack()} zip. Called from any
+     * upload-error path and from the {@code selfHostForce} short-circuit.
+     *
+     * <p>The server is started once and left running for the plugin's lifetime;
+     * {@code PackHttpServer} reads the file per-request, so a re-mix that
+     * rewrites the same zip path is picked up automatically without
+     * restarting the server.</p>
+     *
+     * @return {@code true} if a server is now serving the pack (whether newly
+     * started or already running), {@code false} if self-host is disabled,
+     * the pack file is missing, or the port is unavailable.
+     */
+    private static boolean fallbackToSelfHost() {
+        if (!DefaultConfig.isSelfHostEnabled() && !DefaultConfig.isSelfHostForce()) return false;
+        File pack = Mix.getFinalResourcePack();
+        if (pack == null) return false;
+        if (selfHostServer != null) {
+            // Already running — just refresh `done` and notify players.
+            done = true;
+            for (Player p : Bukkit.getOnlinePlayers()) sendResourcePack(p);
+            return true;
+        }
+        try {
+            PackHttpServer server = PackHttpServer.start(pack, DefaultConfig.getSelfHostPort(), "/rspm.zip");
+            String url = server.urlOn(resolveExternalHost());
+            selfHostServer = server;
+            selfHostedUrl = url;
+            Logger.info("Self-hosting pack at " + url);
+            done = true;
+            for (Player p : Bukkit.getOnlinePlayers()) sendResourcePack(p);
+            return true;
+        } catch (IOException e) {
+            Logger.warn("Self-host fallback failed (port " + DefaultConfig.getSelfHostPort()
+                    + " probably in use): " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Resolve the public host for the self-host URL. Order of preference:
+     * <ol>
+     *   <li>{@code selfHostExternalHost} config (admin-set; required for any
+     *       non-LAN scenario).</li>
+     *   <li>{@link Bukkit#getIp()} when non-empty and not {@code 0.0.0.0}.</li>
+     *   <li>{@link java.net.InetAddress#getLocalHost()} as a best-effort.</li>
+     *   <li>{@code localhost} as a last resort.</li>
+     * </ol>
+     * RPM does NOT probe reachability — if the resolved host isn't actually
+     * reachable from clients, the pack download fails on the client side and
+     * the admin must set {@code selfHostExternalHost}.
+     */
+    private static String resolveExternalHost() {
+        String configured = DefaultConfig.getSelfHostExternalHost();
+        if (configured != null && !configured.isBlank()) return configured;
+        String bukkitIp = Bukkit.getIp();
+        if (bukkitIp != null && !bukkitIp.isBlank() && !bukkitIp.equals("0.0.0.0")) return bukkitIp;
+        try {
+            return java.net.InetAddress.getLocalHost().getHostAddress();
+        } catch (java.net.UnknownHostException e) {
+            return "localhost";
         }
     }
 }
