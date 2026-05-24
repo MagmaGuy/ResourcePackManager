@@ -1,14 +1,33 @@
 package com.magmaguy.rspm.proxy;
 
 import com.magmaguy.rspm.http.MagmaguyRspClient;
+import com.magmaguy.rspm.http.MagmaguyRspClient.ManifestResult;
+import com.magmaguy.rspm.http.MagmaguyRspClient.ManifestResult.Entry;
+import com.magmaguy.rspm.http.MagmaguyRspClient.UploadResult;
 import com.magmaguy.rspm.http.PackHttpServer;
 import com.magmaguy.rspm.mixer.MixEngine;
+import com.magmaguy.rspm.mixer.MixInput;
+import com.magmaguy.rspm.mixer.MixOutput;
 import com.magmaguy.rspm.mixer.MixerLogger;
 
 import java.io.File;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.URI;
+import java.net.UnknownHostException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * Proxy-side orchestrator. Polls magmaguy.com for the current set of backend pack URLs
@@ -29,6 +48,14 @@ import java.util.function.Consumer;
  */
 public final class NetworkSync {
 
+    /**
+     * Entries older than this are considered stale and excluded from the mix. 8 hours
+     * is comfortably longer than any sensible backend keep-alive interval (AutoHost
+     * pings every 5 minutes) but short enough that a permanently-departed backend
+     * stops contributing within a day.
+     */
+    static final long STALE_THRESHOLD_MILLIS = 8L * 60L * 60L * 1000L;
+
     private final ProxyLogger logger;
     private final ProxySchedulerAdapter scheduler;
     private final MagmaguyRspClient client;
@@ -44,8 +71,9 @@ public final class NetworkSync {
     private volatile MergedPack current;
 
     /**
-     * Per-uuid last-seen sha1 for change detection. Task 4.2 will populate this from
-     * the manifest response to decide whether to re-mix or skip.
+     * Per-uuid last-seen sha1 for change detection. Populated from the manifest on
+     * each successful re-mix. Compared against the next poll's map to decide whether
+     * to re-mix or skip.
      */
     private final Map<String, String> lastSeenSha1 = new ConcurrentHashMap<>();
 
@@ -105,24 +133,216 @@ public final class NetworkSync {
     /** Manifest poll + mix + publish. Synchronous on the scheduler's async thread. */
     private void pollOnce() {
         try {
-            // fetchNetworkManifest is still a stub on MagmaguyRspClient — it throws
-            // UnsupportedOperationException. We catch and stay silent so a missing
-            // server-side implementation doesn't spam the log every interval.
-            //
-            // Task 4.2 will add real manifest-change detection and the
-            // download + mix + publish pipeline. For Task 4.1 we just structure the
-            // entry point and verify the build wires together.
-            client.fetchNetworkManifest(networkKey);
-        } catch (UnsupportedOperationException e) {
-            // Expected until magmaguy.com server adds network endpoints. Don't log at
-            // every interval — would drown other output.
+            ManifestResult manifest;
+            try {
+                manifest = client.fetchNetworkManifest(networkKey);
+            } catch (UnsupportedOperationException e) {
+                // Server-side network endpoints not implemented yet. Don't spam logs —
+                // this is expected until magmaguy.com adds the manifest endpoint.
+                return;
+            }
+
+            // Drop entries whose backends haven't checked in recently. A "stale" backend
+            // is one that's gone away (proxy survived a restart it didn't, or the
+            // backend crashed) — we don't want its old pack continuing to influence
+            // the merge indefinitely.
+            List<Entry> active = filterStale(manifest.entries(), System.currentTimeMillis(), STALE_THRESHOLD_MILLIS);
+            if (active.isEmpty()) {
+                logger.info("Network manifest empty (or all backends stale); skipping mix.");
+                return;
+            }
+
+            // Compute current set + sha1 map.
+            Map<String, String> currentSha1 = active.stream()
+                    .collect(Collectors.toMap(Entry::uuid, Entry::sha1));
+
+            // Change detection: have any UUIDs been added/removed, or has any sha1 shifted?
+            if (!hasManifestChanged(lastSeenSha1, currentSha1)) {
+                return; // no changes; nothing to do this cycle
+            }
+
+            logger.info("Network manifest changed (" + active.size() + " active backends); re-mixing.");
+
+            // Download each pack to a per-uuid file in workingDir/downloads/.
+            File downloadsDir = new File(workingDir, "downloads");
+            downloadsDir.mkdirs();
+            List<File> orderedPacks = new ArrayList<>();
+            for (Entry e : active) {
+                File dest = new File(downloadsDir, e.uuid() + ".zip");
+                try {
+                    downloadPack(e.url(), dest);
+                    orderedPacks.add(dest);
+                } catch (IOException ioex) {
+                    logger.warn("Skipping backend " + e.uuid() + " - download failed: " + ioex.getMessage());
+                }
+            }
+            if (orderedPacks.isEmpty()) {
+                logger.warn("All backend pack downloads failed; nothing to mix.");
+                return;
+            }
+
+            // Run the platform-neutral mixer.
+            File mixerWorkDir = new File(workingDir, "mixer-scratch");
+            File mixerOutDir = new File(workingDir, "mixer-output");
+            mixerWorkDir.mkdirs();
+            mixerOutDir.mkdirs();
+            MixInput input = new MixInput(orderedPacks, mixerWorkDir, mixerOutDir, workingDir, "rspm-network", false);
+            MixOutput out = mixer.run(input);
+
+            // Publish: upload to magmaguy.com first, fall back to self-host on failure.
+            String publishedUrl = publishMergedPack(out.mergedZip());
+            if (publishedUrl == null) {
+                logger.warn("Failed to publish merged pack via both upload and self-host.");
+                return;
+            }
+
+            MergedPack pack = new MergedPack(publishedUrl, out.sha1Hex(), out.sha1Bytes(), MergedPack.NETWORK_PACK_UUID);
+            current = pack;
+            lastSeenSha1.clear();
+            lastSeenSha1.putAll(currentSha1);
+            onMergedPackReady.accept(pack);
+            logger.info("Merged pack published at " + publishedUrl);
+
+            // Polish: prune any per-uuid download files that no longer correspond to an
+            // active backend. Cheap to do here; keeps the downloads dir from growing
+            // unbounded across long uptimes as backends rotate in/out.
+            cleanupDownloads(downloadsDir, currentSha1.keySet());
+
         } catch (Exception e) {
-            logger.warn("Failed to poll network manifest", e);
+            logger.warn("Network sync poll failed", e);
         }
     }
 
     /** The most recently published merged pack, or {@code null} if none yet. */
     public MergedPack current() {
         return current;
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers (package-private static where useful for unit testing)
+    // ------------------------------------------------------------------
+
+    /**
+     * Pure change-detection over two uuid->sha1 maps. Returns true iff either map
+     * contains a uuid the other doesn't, or any shared uuid maps to a different sha1.
+     *
+     * <p>Extracted as a static helper so {@code NetworkSyncTest} can exercise it
+     * directly without needing to mock the HTTP client.</p>
+     */
+    static boolean hasManifestChanged(Map<String, String> previous, Map<String, String> current) {
+        if (previous == current) return false;
+        if (previous.size() != current.size()) return true;
+        for (Map.Entry<String, String> e : current.entrySet()) {
+            if (!Objects.equals(e.getValue(), previous.get(e.getKey()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Filter the manifest entries to those seen within {@code staleThresholdMillis}
+     * of {@code now}. Pure function; extracted as a static helper for direct unit
+     * testing.
+     */
+    static List<Entry> filterStale(List<Entry> entries, long now, long staleThresholdMillis) {
+        long cutoff = now - staleThresholdMillis;
+        List<Entry> out = new ArrayList<>(entries.size());
+        for (Entry e : entries) {
+            if (e.lastSeenMillis() >= cutoff) out.add(e);
+        }
+        return out;
+    }
+
+    private void downloadPack(String url, File dest) throws IOException {
+        // Use the JDK's built-in HttpClient so we don't drag Apache HttpComponents
+        // onto rpm-proxy-common's classpath for a one-shot GET.
+        HttpClient http = HttpClient.newHttpClient();
+        HttpResponse<Path> response;
+        try {
+            response = http.send(
+                    HttpRequest.newBuilder(URI.create(url)).GET().build(),
+                    HttpResponse.BodyHandlers.ofFile(dest.toPath()));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while downloading " + url, e);
+        }
+        if (response.statusCode() != 200) {
+            throw new IOException("Pack download " + url + " returned HTTP " + response.statusCode());
+        }
+    }
+
+    /**
+     * Try uploading to magmaguy.com; if that fails (or throws
+     * {@link UnsupportedOperationException} because the server hasn't implemented the
+     * network-merged endpoint yet), fall back to self-hosting on
+     * {@link #selfHostPort}. Returns the URL clients should use, or {@code null} if
+     * both paths fail.
+     */
+    private String publishMergedPack(File mergedZip) {
+        try {
+            UploadResult result = client.uploadNetworkMerged(networkKey, mergedZip);
+            if (result.success() && result.urlOrNull() != null) {
+                return result.urlOrNull();
+            }
+            logger.info("Merged pack upload to magmaguy.com failed; falling back to self-host.");
+        } catch (UnsupportedOperationException e) {
+            // server doesn't have the endpoint yet — fall through to self-host
+        } catch (IOException e) {
+            logger.info("Merged pack upload threw IOException; falling back to self-host: " + e.getMessage());
+        }
+        return startOrRefreshSelfHost(mergedZip);
+    }
+
+    /**
+     * Start the local self-host HTTP server if it isn't running yet; if it already is,
+     * reuse it. The server reads the file fresh on each request, so the URL is
+     * stable across re-mixes — clients see new bytes without us needing to bounce
+     * the port (and the pack UUID is also stable per {@link MergedPack#NETWORK_PACK_UUID}).
+     */
+    private String startOrRefreshSelfHost(File mergedZip) {
+        if (selfHostServer != null) {
+            return selfHostServer.urlOn(resolveExternalHost());
+        }
+        try {
+            PackHttpServer s = PackHttpServer.start(mergedZip, selfHostPort, "/network.zip");
+            selfHostServer = s;
+            String url = s.urlOn(resolveExternalHost());
+            logger.info("Self-hosting merged pack at " + url);
+            return url;
+        } catch (IOException e) {
+            logger.warn("Self-host fallback failed (port " + selfHostPort + " in use?)", e);
+            return null;
+        }
+    }
+
+    private String resolveExternalHost() {
+        if (selfHostExternalHost != null && !selfHostExternalHost.isBlank()) return selfHostExternalHost;
+        try {
+            return InetAddress.getLocalHost().getHostAddress();
+        } catch (UnknownHostException e) {
+            return "localhost";
+        }
+    }
+
+    /**
+     * Delete any per-uuid {@code <uuid>.zip} in {@code downloadsDir} whose uuid is
+     * no longer in the current active set. Polish only; failure is non-fatal.
+     */
+    private void cleanupDownloads(File downloadsDir, Set<String> activeUuids) {
+        File[] files = downloadsDir.listFiles();
+        if (files == null) return;
+        Set<String> keep = new HashSet<>(activeUuids);
+        for (File f : files) {
+            String name = f.getName();
+            if (!name.endsWith(".zip")) continue;
+            String uuid = name.substring(0, name.length() - ".zip".length());
+            if (!keep.contains(uuid)) {
+                // Best-effort delete — if it fails (e.g. file in use), we'll try again
+                // next cycle.
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
+        }
     }
 }
