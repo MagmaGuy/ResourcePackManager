@@ -100,8 +100,13 @@ public final class RspmVelocityPlugin {
                 config.selfHostExternalHost(),
                 this::onMergedPackReady);
 
-        this.bedrock = new GeyserBinder(logger, EventRegistrar.of(this));
-        this.bedrock.register();
+        boolean geyserPresent = proxy.getPluginManager().getPlugin("geyser").isPresent();
+        if (geyserPresent) {
+            this.bedrock = new GeyserBinder(logger, EventRegistrar.of(this));
+            this.bedrock.register();
+        } else {
+            logger.warn("[RSPM] Geyser-Velocity not detected. Bedrock pack delivery disabled. Install Geyser-Velocity to deliver packs to Bedrock players.");
+        }
 
         // First poll after 5s so the rest of the proxy / Geyser finishes startup; then every 30s.
         this.sync.start(5_000L, 30_000L);

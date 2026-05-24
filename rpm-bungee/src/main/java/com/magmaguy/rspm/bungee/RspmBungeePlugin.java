@@ -78,8 +78,13 @@ public final class RspmBungeePlugin extends Plugin {
                 config.selfHostExternalHost(),
                 this::onMergedPackReady);
 
-        this.bedrock = new GeyserBinder(logger, EventRegistrar.of(this));
-        this.bedrock.register();
+        boolean geyserPresent = getProxy().getPluginManager().getPlugin("Geyser-BungeeCord") != null;
+        if (geyserPresent) {
+            this.bedrock = new GeyserBinder(logger, EventRegistrar.of(this));
+            this.bedrock.register();
+        } else {
+            getLogger().warning("[RSPM] Geyser-BungeeCord not detected. Bedrock pack delivery disabled. Install Geyser-BungeeCord to deliver packs to Bedrock players.");
+        }
 
         if (getProxy().getPluginManager().getPlugin("Protocolize") != null) {
             this.protocolize = new ProtocolizeBinder(logger, config.forceResourcePack());
