@@ -222,12 +222,16 @@ public final class BungeeResourcePackPusher implements Listener {
      * PLAY-state {@code resource_pack_push} packet IDs across protocol
      * versions. Preserved from the previous Protocolize-based implementation
      * (which sourced them from Phoenix616's {@code packetmap.yml}).
+     *
+     * <p>Each {@link #addRange} call emits ONE entry marking the start of a
+     * packet-ID range. Bungee's {@code ProtocolMapping} machinery infers the
+     * end of each range from the start of the next one — registering one
+     * mapping per protocol version triggers
+     * {@code "Duplicate packet mapping (X, Y)"} at registration time. The
+     * {@code endVer} parameter is preserved for readability only.</p>
      */
     private static List<int[]> playEntries() {
         List<int[]> list = new ArrayList<>();
-        // {protocolVersion, packetId}. We register each version individually
-        // so Bungee's per-version map gets populated correctly. Repeated
-        // versions (e.g. 1.9..1.11.2 all use 0x32) are listed once per int.
         addRange(list, MC_1_8, MC_1_8, 0x48);
         addRange(list, MC_1_9, MC_1_11_2, 0x32);
         addRange(list, MC_1_12, MC_1_12, 0x33);
@@ -262,10 +266,13 @@ public final class BungeeResourcePackPusher implements Listener {
         return list;
     }
 
-    private static void addRange(List<int[]> sink, int lowInclusive, int highInclusive, int packetId) {
-        for (int v = lowInclusive; v <= highInclusive; v++) {
-            sink.add(new int[]{v, packetId});
-        }
+    @SuppressWarnings("unused") // endVer kept for caller-site readability
+    private static void addRange(List<int[]> sink, int startVer, int endVer, int packetId) {
+        // Bungee's ProtocolMapping list infers the end of a packet-ID range
+        // from the next mapping's startVer. Registering one mapping per
+        // protocol version causes Protocol$DirectionData.registerPacket to
+        // throw "Duplicate packet mapping (X, Y)". Emit only the range start.
+        sink.add(new int[]{startVer, packetId});
     }
 
     public void onMergedPackReady(MergedPack pack) {
