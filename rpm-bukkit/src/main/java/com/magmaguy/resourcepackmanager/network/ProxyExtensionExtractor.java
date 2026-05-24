@@ -69,11 +69,10 @@ public final class ProxyExtensionExtractor {
         Logger.info("");
         Logger.info("Setup steps:");
         Logger.info("  1. Copy the right file (Velocity or Bungee) to your proxy's plugins/ folder.");
-        Logger.info("  2. Bungee/Waterfall also requires Protocolize: https://www.spigotmc.org/resources/protocolize.63778/");
-        Logger.info("  3. Start the proxy. The plugin will write a default config.yml.");
-        Logger.info("  4. Edit plugins/ResourcePackManager/config.yml on the proxy and paste this network-key:");
+        Logger.info("  2. Start the proxy. The plugin will write a default config.yml.");
+        Logger.info("  3. Edit plugins/ResourcePackManager/config.yml on the proxy and paste this network-key:");
         Logger.info("       " + NetworkMode.getNetworkKey());
-        Logger.info("  5. Restart the proxy. Bedrock + Java clients now receive the merged pack.");
+        Logger.info("  4. Restart the proxy. Bedrock + Java clients now receive the merged pack.");
         Logger.info("===========================");
     }
 }
