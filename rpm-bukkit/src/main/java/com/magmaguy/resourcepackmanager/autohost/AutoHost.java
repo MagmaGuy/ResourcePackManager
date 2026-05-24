@@ -321,12 +321,24 @@ public class AutoHost {
             // proxy login. Backends never push directly, so the recovery broadcast
             // here would just be a duplicate (and potentially wrong-URL) send.
             if (!NetworkMode.isActive()) {
-                for (Player player : Bukkit.getOnlinePlayers()) {
-                    AutoHost.sendResourcePack(player);
-                }
+                broadcastResourcePackSync();
             }
             firstUpload = false;
         }
+    }
+
+    /**
+     * Broadcast the current pack to all online players on the main thread.
+     * Player#addResourcePack / setResourcePack are sync-only per the Spigot API
+     * contract; callers from async contexts (the keep-alive runnable, upload
+     * error paths) must hop to the main thread before iterating online players.
+     */
+    private static void broadcastResourcePackSync() {
+        Bukkit.getScheduler().runTask(ResourcePackManager.plugin, () -> {
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                sendResourcePack(p);
+            }
+        });
     }
 
     /**
@@ -364,7 +376,7 @@ public class AutoHost {
         if (selfHostServer != null) {
             // Already running — just refresh `done` and notify players.
             done = true;
-            for (Player p : Bukkit.getOnlinePlayers()) sendResourcePack(p);
+            broadcastResourcePackSync();
             return true;
         }
         try {
@@ -374,7 +386,7 @@ public class AutoHost {
             selfHostedUrl = url;
             Logger.info("Self-hosting pack at " + url);
             done = true;
-            for (Player p : Bukkit.getOnlinePlayers()) sendResourcePack(p);
+            broadcastResourcePackSync();
             return true;
         } catch (IOException e) {
             Logger.warn("Self-host fallback failed (port " + DefaultConfig.getSelfHostPort()
