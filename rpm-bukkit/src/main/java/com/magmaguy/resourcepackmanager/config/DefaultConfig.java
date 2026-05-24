@@ -26,6 +26,14 @@ public class DefaultConfig extends ConfigurationFile {
     private static String bedrockGeyserFolder = "";
     @Getter
     private static String networkKey = "";
+    @Getter
+    private static boolean selfHostEnabled = true;
+    @Getter
+    private static int selfHostPort = 25567;
+    @Getter
+    private static String selfHostExternalHost = "";
+    @Getter
+    private static boolean selfHostForce = false;
 
 
     public DefaultConfig() {
@@ -92,5 +100,32 @@ public class DefaultConfig extends ConfigurationFile {
                         "AND into the proxy plugin's config to link them. The key is logged prominently",
                         "on every boot when network mode is active."),
                 fileConfiguration, "networkKey", "");
+
+        selfHostEnabled = ConfigurationEngine.setBoolean(
+                List.of(
+                        "Fallback to a local HTTP server when uploading the pack to magmaguy.com fails.",
+                        "When enabled (default), if the upload fails for any reason (server down, file too large, etc.)",
+                        "RPM will start a local HTTP server on `selfHostPort` and use that URL to push the pack to players.",
+                        "You are responsible for opening the firewall port; RPM does not probe reachability.",
+                        "Interaction with selfHostForce: forced=true always self-hosts regardless of this flag."),
+                fileConfiguration, "selfHostEnabled", true);
+
+        selfHostPort = ConfigurationEngine.setInt(
+                List.of("Port for the self-host HTTP server. Defaults to 25567 (adjacent to vanilla 25565)."),
+                fileConfiguration, "selfHostPort", 25567);
+
+        selfHostExternalHost = ConfigurationEngine.setString(
+                List.of(
+                        "Public hostname or IP that clients use to reach your self-host server.",
+                        "Leave empty to auto-detect via Bukkit.getIp() / InetAddress (best-effort).",
+                        "If clients connect from outside your LAN, set this to your public hostname (e.g. play.example.com)."),
+                fileConfiguration, "selfHostExternalHost", "");
+
+        selfHostForce = ConfigurationEngine.setBoolean(
+                List.of(
+                        "Skip the magmaguy.com upload attempt entirely and self-host directly.",
+                        "Mainly for testing the self-host path. In production, leave this false so auto-upload is tried first.",
+                        "When true, this overrides selfHostEnabled (self-hosting always happens)."),
+                fileConfiguration, "selfHostForce", false);
     }
 }
