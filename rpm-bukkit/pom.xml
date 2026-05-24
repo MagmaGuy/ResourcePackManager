@@ -40,6 +40,11 @@
             <groupId>org.bstats</groupId>
             <artifactId>bstats-bukkit</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.magmaguy</groupId>
+            <artifactId>rpm-mixer</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>
