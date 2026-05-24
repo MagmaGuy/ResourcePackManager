@@ -26,6 +26,7 @@ public class Mix {
             new com.magmaguy.rspm.mixer.MergeOperations(new com.magmaguy.rspm.mixer.MixerLogger() {
                 @Override public void info(String m) { com.magmaguy.magmacore.util.Logger.info(m); }
                 @Override public void warn(String m) { com.magmaguy.magmacore.util.Logger.warn(m); }
+                @Override public void collision(String m) { logCollision(m); }
             });
     private static List<File> resourcePacks;
     private static List<String> orderedResourcePacks;
@@ -347,7 +348,6 @@ public class Mix {
         // pack.mcmeta needs overlay entries merged from all packs
         if (targetFile.getName().equals("pack.mcmeta")) {
             merge.mergePackMcmeta(sourceFile, targetFile);
-            logCollision("Merged pack.mcmeta: " + targetFile.getPath());
             return;
         }
 
