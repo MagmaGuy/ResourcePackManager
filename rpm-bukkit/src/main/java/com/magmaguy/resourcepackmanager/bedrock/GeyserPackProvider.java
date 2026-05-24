@@ -3,6 +3,7 @@ package com.magmaguy.resourcepackmanager.bedrock;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
+import com.magmaguy.resourcepackmanager.network.NetworkMode;
 import org.bukkit.Bukkit;
 import org.geysermc.geyser.api.GeyserApi;
 import org.geysermc.geyser.api.event.EventRegistrar;
@@ -55,7 +56,18 @@ public final class GeyserPackProvider {
             Logger.info("Bedrock conversion disabled in config; skipping Geyser pack provider.");
             return;
         }
+        if (NetworkMode.isActive()) {
+            // Backend is behind a proxy that owns Geyser. We don't register a SessionLoadResourcePacks
+            // subscriber here because Geyser isn't on this JVM. The proxy plugin (rpm-velocity /
+            // rpm-bungee, see Phase 4+ of the network-mode plan) handles Bedrock pack registration
+            // from the proxy side; backend RPM only needs to ensure the pack zip is uploaded so the
+            // proxy can fetch it.
+            Logger.info("Network mode: ACTIVE (Floodgate present, Geyser-Spigot absent on backend).");
+            Logger.info("Bedrock pack delivery is handled by the proxy plugin; backend RPM skips local Geyser registration.");
+            return;
+        }
         if (Bukkit.getPluginManager().getPlugin("Geyser-Spigot") == null) {
+            // Standalone server with no Geyser at all. Nothing to do.
             Logger.info("Geyser-Spigot not detected; skipping Geyser pack provider.");
             return;
         }
