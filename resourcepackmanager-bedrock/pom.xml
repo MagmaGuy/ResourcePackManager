@@ -1,0 +1,57 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.magmaguy</groupId>
+        <artifactId>ResourcePackManager-parent</artifactId>
+        <version>1.8.0</version>
+    </parent>
+
+    <artifactId>resourcepackmanager-bedrock</artifactId>
+
+    <!--
+        Platform-neutral Bedrock pack converter. Takes the merged Java resource pack
+        produced by the mixer module, walks every items definition, converts geometry/
+        attachables/animations/icons into the Bedrock format, and zips the result with
+        a manifest.json that Geyser can consume.
+
+        Used by:
+          - resourcepackmanager-bukkit (runs after backend mix)
+          - resourcepackmanager-proxy-common (runs after proxy network mix)
+
+        Depends only on the mixer module (for MixerLogger) and Gson — no Bukkit / Velocity
+        / Bungee / Geyser API. Platform-specific concerns (where to copy the mappings
+        file, whether Bedrock targets are present) are abstracted behind
+        BedrockConverterContext.
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.magmaguy</groupId>
+            <artifactId>resourcepackmanager-mixer</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -10,6 +10,7 @@
 
     <modules>
         <module>resourcepackmanager-mixer</module>
+        <module>resourcepackmanager-bedrock</module>
         <module>resourcepackmanager-http-common</module>
         <module>resourcepackmanager-proxy-common</module>
         <module>resourcepackmanager-velocity</module>

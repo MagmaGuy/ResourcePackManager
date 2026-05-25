@@ -1,8 +1,8 @@
 package com.magmaguy.resourcepackmanager.bungee;
 
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
-import com.magmaguy.resourcepackmanager.proxy.BackendMetadataPoller;
 import com.magmaguy.resourcepackmanager.proxy.GeyserBinder;
+import com.magmaguy.resourcepackmanager.proxy.GeyserMappingsDeployer;
 import com.magmaguy.resourcepackmanager.proxy.MergedPack;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
 import net.md_5.bungee.api.plugin.Plugin;
@@ -16,7 +16,6 @@ public final class RspmBungeePlugin extends Plugin {
     private RspmBungeeConfig config;
     private NetworkSync sync;
     private GeyserBinder bedrock;
-    private BackendMetadataPoller poller;
 
     @Override
     public void onEnable() {
@@ -64,26 +63,34 @@ public final class RspmBungeePlugin extends Plugin {
 
         BungeeScheduler scheduler = new BungeeScheduler(this);
 
-        // Backend metadata poller: hits every backend's /.rspm-pack-info.json on a
-        // 60s cycle and aggregates the responses into a ManifestResult NetworkSync
-        // can consume. Replaces the previous magmaguy.com-manifest stub + plugin-
-        // message-cache fallback.
-        this.poller = new BackendMetadataPoller(
-                logger,
-                scheduler,
-                new BungeeBackendListProvider(this),
-                config.backendMetadataPort(),
-                effectiveKey);
+        // Auto-detect the proxy's Geyser plugin folder (Geyser-BungeeCord on
+        // BungeeCord/Waterfall). NetworkSync deploys merged mappings here after
+        // each merge; we also pre-deploy the previous run's mappings below.
+        File proxyPluginsDir = getDataFolder().getParentFile();
+        File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(proxyPluginsDir);
+
+        // Boot-time pre-deploy of the previous run's Geyser mappings — Geyser's
+        // custom-item registry is boot-frozen, so anything we generate AFTER its
+        // startup waits for the next proxy restart to apply.
+        File workingDir = new File(getDataFolder(), "work");
+        File previousMergedMappings = new File(new File(workingDir, "merged"), "rspm_geyser_mappings.json");
+        if (previousMergedMappings.isFile() && geyserPluginDir != null) {
+            if (GeyserMappingsDeployer.isEmptyMappings(previousMergedMappings)) {
+                logger.info("Previous Geyser mappings file exists but is empty (no items); skipping boot-time pre-deploy.");
+            } else {
+                GeyserMappingsDeployer.deploy(geyserPluginDir, previousMergedMappings, logger);
+                logger.info("Pre-deployed previous Geyser mappings for boot-time registration.");
+            }
+        }
 
         this.sync = new NetworkSync(
                 logger,
                 scheduler,
-                poller::getLatestManifest,
+                new BungeeBackendListProvider(this),
+                workingDir,
+                config.networkHttpOffset(),
                 mixerLogger,
-                new File(getDataFolder(), "work"),
-                effectiveKey,
-                config.selfHostPort(),
-                config.selfHostExternalHost(),
+                geyserPluginDir,
                 this::onMergedPackReady);
 
         boolean geyserPresent = getProxy().getPluginManager().getPlugin("Geyser-BungeeCord") != null;
@@ -94,10 +101,9 @@ public final class RspmBungeePlugin extends Plugin {
             getLogger().warning("[RSPM] Geyser-BungeeCord not detected. Bedrock pack delivery disabled. Install Geyser-BungeeCord to deliver packs to Bedrock players.");
         }
 
-        // Poll backends first (2s grace so Bungee finishes server registration),
-        // then run the mix loop with a slightly longer initial delay so the first
-        // mix sees actual data.
-        this.poller.start(2_000L, 60_000L);
+        // First poll after 5s so Bungee finishes server registration; thereafter
+        // every 30s. Stability gate inside NetworkSync requires two consecutive
+        // identical hash cycles before triggering a merge.
         this.sync.start(5_000L, 30_000L);
         logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + "). Java pack push is handled by backends; this proxy plugin is Bedrock-only.");
     }
@@ -105,12 +111,11 @@ public final class RspmBungeePlugin extends Plugin {
     @Override
     public void onDisable() {
         if (sync != null) sync.stop();
-        if (poller != null) poller.stop();
         if (bedrock != null) bedrock.unregister();
     }
 
     private void onMergedPackReady(MergedPack pack) {
         if (bedrock != null) bedrock.onMergedPackReady(pack);
-        logger.info("Merged pack ready at " + pack.url() + " (sha1 " + pack.sha1Hex() + ")");
+        logger.info("Merged pack ready at " + pack.packFile().getAbsolutePath() + " (sha1 " + pack.sha1Hex() + ")");
     }
 }

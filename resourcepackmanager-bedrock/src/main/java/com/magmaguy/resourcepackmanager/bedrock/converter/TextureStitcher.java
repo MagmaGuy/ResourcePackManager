@@ -3,7 +3,7 @@ package com.magmaguy.resourcepackmanager.bedrock.converter;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 import com.magmaguy.resourcepackmanager.bedrock.model.SpriteInfo;
 import com.magmaguy.resourcepackmanager.bedrock.util.BedrockNaming;
 
@@ -136,7 +136,7 @@ public class TextureStitcher {
                                                        File mergedPackRoot, File bedrockPackDir) {
         Map<String, String> textureMap = unionTextures(boneTextures);
         if (textureMap.isEmpty()) {
-            Logger.warn("[BedrockConverter] No textures found for model " + modelName);
+            BedrockLog.warn("[BedrockConverter] No textures found for model " + modelName);
             return null;
         }
 
@@ -159,14 +159,14 @@ public class TextureStitcher {
             String path = BedrockNaming.extractPath(textureRef);
             File textureFile = new File(mergedPackRoot, "assets/" + ns + "/textures/" + path + ".png");
             if (!textureFile.exists()) {
-                Logger.warn("[BedrockConverter] Texture not found: " + textureFile.getPath());
+                BedrockLog.warn("[BedrockConverter] Texture not found: " + textureFile.getPath());
                 continue;
             }
 
             try {
                 BufferedImage img = ImageIO.read(textureFile);
                 if (img == null) {
-                    Logger.warn("[BedrockConverter] Failed to read image: " + textureFile.getPath());
+                    BedrockLog.warn("[BedrockConverter] Failed to read image: " + textureFile.getPath());
                     continue;
                 }
 
@@ -179,12 +179,12 @@ public class TextureStitcher {
                 sourceFileByRef.put(textureRef, textureFile);
                 placementOrderRefs.add(textureRef);
             } catch (IOException e) {
-                Logger.warn("[BedrockConverter] Error reading texture " + textureFile.getPath() + ": " + e.getMessage());
+                BedrockLog.warn("[BedrockConverter] Error reading texture " + textureFile.getPath() + ": " + e.getMessage());
             }
         }
 
         if (loadedByRef.isEmpty()) {
-            Logger.warn("[BedrockConverter] No valid textures loaded for model " + modelName);
+            BedrockLog.warn("[BedrockConverter] No valid textures loaded for model " + modelName);
             return null;
         }
 
@@ -223,7 +223,7 @@ public class TextureStitcher {
         }
 
         if (atlasWidth > MAX_ATLAS_DIM || atlasHeight > MAX_ATLAS_DIM) {
-            Logger.warn("[BedrockConverter] Atlas " + modelName + " exceeds max size ("
+            BedrockLog.warn("[BedrockConverter] Atlas " + modelName + " exceeds max size ("
                     + atlasWidth + "x" + atlasHeight + "); Bedrock may reject this");
         }
 
@@ -243,7 +243,7 @@ public class TextureStitcher {
             Files.createDirectories(outputFile.getParentFile().toPath());
             ImageIO.write(atlas, "PNG", outputFile);
         } catch (IOException e) {
-            Logger.warn("[BedrockConverter] Failed to write atlas for " + modelName + ": " + e.getMessage());
+            BedrockLog.warn("[BedrockConverter] Failed to write atlas for " + modelName + ": " + e.getMessage());
             return null;
         }
 
@@ -273,7 +273,7 @@ public class TextureStitcher {
                 writeIconCroppedIfFlipbook(source, iconFile);
                 bonePrimaryIconPath.put(boneName, iconRel);
             } catch (IOException ioe) {
-                Logger.warn("[BedrockConverter] Failed to write per-bone icon for "
+                BedrockLog.warn("[BedrockConverter] Failed to write per-bone icon for "
                         + modelName + "/" + boneName + ": " + ioe.getMessage());
             }
         }
@@ -338,7 +338,7 @@ public class TextureStitcher {
                     }
                 }
             } catch (Exception e) {
-                Logger.warn("[BedrockConverter] Failed to parse textures from " + file.getPath() + ": " + e.getMessage());
+                BedrockLog.warn("[BedrockConverter] Failed to parse textures from " + file.getPath() + ": " + e.getMessage());
             }
             result.put(boneName, new BoneTextures(textures));
         }

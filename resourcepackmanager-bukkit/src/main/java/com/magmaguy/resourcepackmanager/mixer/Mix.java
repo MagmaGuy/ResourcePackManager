@@ -6,6 +6,7 @@ import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.api.ResourcePackManagerAPI;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
+import com.magmaguy.resourcepackmanager.bedrock.BukkitBedrockConverterContext;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
 import com.magmaguy.resourcepackmanager.mixer.engine.MergeOperations;
@@ -121,8 +122,13 @@ public class Mix {
 
         // Bedrock conversion needs the still-extant unzipped folder, which the engine
         // intentionally leaves on disk for exactly this kind of post-processing.
+        // The context wires the platform-neutral converter into DefaultConfig +
+        // Bukkit.getPluginManager + GeyserDeployer; the converter's own gate
+        // checks isBedrockConversionEnabled() so the outer if() here is belt-
+        // and-braces (preserved to skip the context construction in the common
+        // "Bedrock conversion disabled" case).
         if (DefaultConfig.isBedrockConversionEnabled()) {
-            BedrockConversion.generate(out.mergedDir(), outputFolder);
+            BedrockConversion.generate(out.mergedDir(), outputFolder, new BukkitBedrockConverterContext());
         }
         if (shuttingDown()) return;
 

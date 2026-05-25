@@ -13,20 +13,14 @@ final class RspmVelocityConfig {
 
     private final String networkKey;
     private final boolean forceResourcePack;
-    private final int selfHostPort;
-    private final String selfHostExternalHost;
-    private final int backendMetadataPort;
+    private final int networkHttpOffset;
 
     private RspmVelocityConfig(String networkKey,
                                boolean forceResourcePack,
-                               int selfHostPort,
-                               String selfHostExternalHost,
-                               int backendMetadataPort) {
+                               int networkHttpOffset) {
         this.networkKey = networkKey;
         this.forceResourcePack = forceResourcePack;
-        this.selfHostPort = selfHostPort;
-        this.selfHostExternalHost = selfHostExternalHost;
-        this.backendMetadataPort = backendMetadataPort;
+        this.networkHttpOffset = networkHttpOffset;
     }
 
     String networkKey() {
@@ -37,16 +31,8 @@ final class RspmVelocityConfig {
         return forceResourcePack;
     }
 
-    int selfHostPort() {
-        return selfHostPort;
-    }
-
-    String selfHostExternalHost() {
-        return selfHostExternalHost;
-    }
-
-    int backendMetadataPort() {
-        return backendMetadataPort;
+    int networkHttpOffset() {
+        return networkHttpOffset;
     }
 
     static RspmVelocityConfig loadOrCreate(Path dataDir) throws IOException {
@@ -59,12 +45,20 @@ final class RspmVelocityConfig {
             Yaml yaml = new Yaml();
             Map<String, Object> data = yaml.load(r);
             if (data == null) data = new LinkedHashMap<>();
+            // New canonical key: network-http-offset (added to each backend's MC port
+            // to derive its HTTP port). Default 100. Older configs that used a fixed
+            // backend-http-port / backend-metadata-port / self-host-port are ignored —
+            // the new per-backend derivation supersedes them. Admins who explicitly
+            // set those keys before will get the default offset and likely need to
+            // re-bind any non-default ports via the BACKEND's selfHostPort config.
+            int offset = 100;
+            if (data.containsKey("network-http-offset")) {
+                offset = ((Number) data.get("network-http-offset")).intValue();
+            }
             return new RspmVelocityConfig(
                     (String) data.getOrDefault("network-key", ""),
                     (Boolean) data.getOrDefault("force-resource-pack", false),
-                    ((Number) data.getOrDefault("self-host-port", 25567)).intValue(),
-                    (String) data.getOrDefault("self-host-external-host", ""),
-                    ((Number) data.getOrDefault("backend-metadata-port", 25567)).intValue()
+                    offset
             );
         }
     }
@@ -79,18 +73,13 @@ final class RspmVelocityConfig {
                 # Force clients to accept the pack (kick on decline). Default: false.
                 force-resource-pack: false
 
-                # Port for the self-host HTTP server (serves the proxy-merged pack to Bedrock
-                # via Geyser). You must open this port in your firewall manually.
-                self-host-port: 25567
-
-                # Public hostname/IP clients use to reach the self-host server. Leave empty
-                # for auto-detect (best-effort).
-                self-host-external-host: ""
-
-                # TCP port the proxy will hit on every backend to fetch /.rspm-pack-info.json.
-                # Must match the backend RPM's `selfHostPort` config (also 25567 by default).
-                # Override here if you run RPM on a non-default port on the backends.
-                backend-metadata-port: 25567
+                # Offset added to each backend's Minecraft port to derive the HTTP port
+                # this proxy will hit for /bedrock.zip and /mappings.json. Default 100
+                # => MC 25565 -> HTTP 25665, MC 25671 -> HTTP 25771, etc. Must match
+                # each backend's `networkHttpOffset` config. Admins rarely need to
+                # change this — bump it only if 100 collides with something on the
+                # backend host.
+                network-http-offset: 100
                 """;
         Files.writeString(configFile, yaml);
     }

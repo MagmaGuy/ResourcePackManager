@@ -80,7 +80,7 @@ public class BedrockManifest {
         try (FileWriter writer = new FileWriter(manifestFile, StandardCharsets.UTF_8)) {
             GSON.toJson(manifest, writer);
         } catch (IOException e) {
-            com.magmaguy.magmacore.util.Logger.warn("Failed to write Bedrock manifest.json: " + e.getMessage());
+            com.magmaguy.resourcepackmanager.bedrock.BedrockLog.warn("Failed to write Bedrock manifest.json: " + e.getMessage());
         }
     }
 

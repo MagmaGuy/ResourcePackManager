@@ -35,7 +35,10 @@
     </dependencies>
 
     <build>
-        <finalName>resourcepackmanager-bungee-${project.version}</finalName>
+        <!-- Stable, version-free filename so setup_symlinks.sh can target
+             target/resourcepackmanager-bungee.jar regardless of version. See the
+             matching comment in resourcepackmanager-velocity/pom.xml. -->
+        <finalName>resourcepackmanager-bungee</finalName>
         <plugins>
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>

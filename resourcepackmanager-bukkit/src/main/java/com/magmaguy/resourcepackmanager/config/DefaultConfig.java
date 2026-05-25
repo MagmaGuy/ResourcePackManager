@@ -29,7 +29,9 @@ public class DefaultConfig extends ConfigurationFile {
     @Getter
     private static boolean selfHostEnabled = true;
     @Getter
-    private static int selfHostPort = 25567;
+    private static int selfHostPort = -1;
+    @Getter
+    private static int networkHttpOffset = 100;
     @Getter
     private static String selfHostExternalHost = "";
     @Getter
@@ -111,8 +113,22 @@ public class DefaultConfig extends ConfigurationFile {
                 fileConfiguration, "selfHostEnabled", true);
 
         selfHostPort = ConfigurationEngine.setInt(
-                List.of("Port for the self-host HTTP server. Defaults to 25567 (adjacent to vanilla 25565)."),
-                fileConfiguration, "selfHostPort", 25567);
+                List.of(
+                        "Port for the self-host HTTP server.",
+                        "-1 (default) = auto-derive: HTTP port = Minecraft server port + networkHttpOffset.",
+                        "  This makes single-host networks (multiple backends on localhost) auto-stagger:",
+                        "  each backend already has a unique MC port, so each gets a unique HTTP port,",
+                        "  with zero admin configuration.",
+                        "Set to any positive value to force an explicit port (legacy behaviour, default was 25567)."),
+                fileConfiguration, "selfHostPort", -1);
+
+        networkHttpOffset = ConfigurationEngine.setInt(
+                List.of(
+                        "Offset added to the Minecraft server port to derive the HTTP port when selfHostPort = -1.",
+                        "Default 100 => MC 25565 -> HTTP 25665, MC 25671 -> HTTP 25771, etc.",
+                        "Must match the proxy plugin's network-http-offset config. Admins rarely need to change",
+                        "this — bump it only if 100 happens to collide with something already on the host."),
+                fileConfiguration, "networkHttpOffset", 100);
 
         selfHostExternalHost = ConfigurationEngine.setString(
                 List.of(

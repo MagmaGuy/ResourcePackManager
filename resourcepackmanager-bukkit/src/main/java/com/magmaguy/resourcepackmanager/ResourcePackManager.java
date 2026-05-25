@@ -11,6 +11,7 @@ import com.magmaguy.magmacore.nightbreak.NightbreakPluginSpec;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
+import com.magmaguy.resourcepackmanager.bedrock.BukkitBedrockConverterContext;
 import com.magmaguy.resourcepackmanager.bedrock.GeyserPackProvider;
 import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
 import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
@@ -115,7 +116,7 @@ public class ResourcePackManager extends JavaPlugin {
         new BedrockDisplayOffsetsConfig();
 
         initializationContext.step("Bedrock Mappings Pre-deploy");
-        BedrockConversion.deployPreviousMappingsIfNeeded();
+        BedrockConversion.deployPreviousMappingsIfNeeded(new BukkitBedrockConverterContext());
 
         initializationContext.step("ItemsAdder Config");
         new ItemsAdderDismissedConfig();

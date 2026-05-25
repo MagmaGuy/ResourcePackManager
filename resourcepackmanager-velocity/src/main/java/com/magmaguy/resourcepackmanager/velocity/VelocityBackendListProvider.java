@@ -27,7 +27,8 @@ final class VelocityBackendListProvider implements BackendListProvider {
         for (RegisteredServer rs : proxy.getAllServers()) {
             String name = rs.getServerInfo().getName();
             String host = rs.getServerInfo().getAddress().getHostString();
-            out.add(new Backend(name, host));
+            int mcPort = rs.getServerInfo().getAddress().getPort();
+            out.add(new Backend(name, host, mcPort));
         }
         return out;
     }

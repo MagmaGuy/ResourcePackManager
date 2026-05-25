@@ -4,8 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.magmaguy.magmacore.util.Logger;
-import com.magmaguy.resourcepackmanager.config.BedrockDisplayOffsetsConfig;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockDisplayOffsets;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -46,7 +46,7 @@ public final class FmmAnimationGenerator {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
-    // First/third-person base values are user-tunable via BedrockDisplayOffsetsConfig.
+    // First/third-person base values are user-tunable via BedrockDisplayOffsets.
     // Head values stay as compile-time constants — they belong to a separate render
     // path (head-slot display, not held-in-hand) and aren't part of the offset-tuning
     // workflow the user-facing config exposes.
@@ -120,12 +120,12 @@ public final class FmmAnimationGenerator {
         // position (0, 12.5, 0). The base offsets are added on every axis so a
         // user reporting "the model floats too high in first person" can adjust
         // firstPersonBasePositionX directly without touching code.
-        double fpBaseRotX = BedrockDisplayOffsetsConfig.getFirstPersonBaseRotationX();
-        double fpBaseRotY = BedrockDisplayOffsetsConfig.getFirstPersonBaseRotationY();
-        double fpBaseRotZ = BedrockDisplayOffsetsConfig.getFirstPersonBaseRotationZ();
-        double fpBasePosX = BedrockDisplayOffsetsConfig.getFirstPersonBasePositionX();
-        double fpBasePosY = BedrockDisplayOffsetsConfig.getFirstPersonBasePositionY();
-        double fpBasePosZ = BedrockDisplayOffsetsConfig.getFirstPersonBasePositionZ();
+        double fpBaseRotX = BedrockDisplayOffsets.getFirstPersonBaseRotationX();
+        double fpBaseRotY = BedrockDisplayOffsets.getFirstPersonBaseRotationY();
+        double fpBaseRotZ = BedrockDisplayOffsets.getFirstPersonBaseRotationZ();
+        double fpBasePosX = BedrockDisplayOffsets.getFirstPersonBasePositionX();
+        double fpBasePosY = BedrockDisplayOffsets.getFirstPersonBasePositionY();
+        double fpBasePosZ = BedrockDisplayOffsets.getFirstPersonBasePositionZ();
 
         // First-person: identity defaults, then layer Java display.firstperson_righthand if provided.
         double[] fpPos;
@@ -160,12 +160,12 @@ public final class FmmAnimationGenerator {
         // First- and third-person are independent Bedrock render paths with their
         // own rest poses, so they get fully independent knob sets. Adjusting one
         // does not affect the other.
-        double tpBaseRotX = BedrockDisplayOffsetsConfig.getThirdPersonBaseRotationX();
-        double tpBaseRotY = BedrockDisplayOffsetsConfig.getThirdPersonBaseRotationY();
-        double tpBaseRotZ = BedrockDisplayOffsetsConfig.getThirdPersonBaseRotationZ();
-        double tpBasePosX = BedrockDisplayOffsetsConfig.getThirdPersonBasePositionX();
-        double tpBasePosY = BedrockDisplayOffsetsConfig.getThirdPersonBasePositionY();
-        double tpBasePosZ = BedrockDisplayOffsetsConfig.getThirdPersonBasePositionZ();
+        double tpBaseRotX = BedrockDisplayOffsets.getThirdPersonBaseRotationX();
+        double tpBaseRotY = BedrockDisplayOffsets.getThirdPersonBaseRotationY();
+        double tpBaseRotZ = BedrockDisplayOffsets.getThirdPersonBaseRotationZ();
+        double tpBasePosX = BedrockDisplayOffsets.getThirdPersonBasePositionX();
+        double tpBasePosY = BedrockDisplayOffsets.getThirdPersonBasePositionY();
+        double tpBasePosZ = BedrockDisplayOffsets.getThirdPersonBasePositionZ();
 
         // Third-person: identity defaults, then layer Java display.thirdperson_righthand if provided.
         double[] tpPos;
@@ -253,7 +253,7 @@ public final class FmmAnimationGenerator {
                 GSON.toJson(root, w);
             }
         } catch (IOException e) {
-            Logger.warn("[BedrockConverter] Failed to write animation " + outFile.getPath() + ": " + e.getMessage());
+            BedrockLog.warn("[BedrockConverter] Failed to write animation " + outFile.getPath() + ": " + e.getMessage());
             return null;
         }
         return new AnimationIds(fpId, tpId, hdId);
