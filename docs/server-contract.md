@@ -104,89 +104,11 @@ Serves the currently-uploaded resource pack for the given uuid. Used by clients 
 
 ---
 
-## Network-mode endpoints (Phases 4+ require these)
+## Network-mode endpoints
 
-These endpoints support the network-mode workflow where multiple backends pool packs under a shared `network-key` and the proxy plugin merges them into a single network-wide pack.
+**None required.** Network mode no longer talks to `magmaguy.com/rsp/` for manifest or merged-pack distribution. The proxy plugin polls each backend's own `/.rspm-pack-info.json` endpoint (served by the always-on backend `PackHttpServer`) to discover pack URLs, then downloads and merges the per-backend packs locally and self-hosts the merged pack on its own port for Geyser to fetch. See [`network-mode.md`](network-mode.md) for the architecture.
 
-### `POST /rsp/upload` extension — `network-key` and `variant` form fields
-
-Existing `/rsp/upload` accepts two new optional fields:
-
-- `network-key` (optional) — tags this upload as belonging to a network. Server stores `(network-key, uuid, sha1, last-upload-time)` in a registry queryable via `/rsp/network/<key>/manifest`.
-- `variant` (optional, default `"java"`) — `"java"` or `"bedrock"`. Two parallel slots per uuid. Bedrock variant served at `https://magmaguy.com/rsp/<uuid>/bedrock` (GET).
-
-When both are set: the upload is tagged into the network registry AND stored under the appropriate variant slot.
-
-### `GET /rsp/<uuid>/bedrock`
-
-Serves the Bedrock-variant pack for the given uuid (uploaded via `/rsp/upload?variant=bedrock`). Same response semantics as `/rsp/<uuid>`.
-
-### `GET /rsp/network/<network-key>/manifest`
-
-Returns the current set of backends registered to a network, **plus** the network-merged pack entry. Polled by both:
-
-- the proxy plugin (`NetworkSync`) — uses backend entries as the merge inputs
-- every backend (`NetworkManifestPoll`) — uses the merged-pack entry to discover the network-merged URL + sha1 to push to its own Java clients via `Player.setResourcePack`
-
-The merged-pack entry is identified by either:
-- `uuid == "merged"` (preferred — explicit marker), or
-- `url` ending in `/merged` (fallback — derived from `POST /rsp/network/<key>/merged` canonical URL).
-
-If a backend can't identify the merged entry, it falls back to pushing its own per-backend pack URL (divergent across backends, client re-prompts on `/server` switches). This keeps Java pack push functional even if the manifest endpoint is shipped before backends understand the merged-entry shape.
-
-**Response (success):**
-```json
-{
-  "entries": [
-    {
-      "uuid": "a1b2c3...",
-      "url": "https://magmaguy.com/rsp/a1b2c3...",
-      "sha1": "DEAD...",
-      "priority": 100,
-      "lastSeenMillis": 1715000000000
-    },
-    {
-      "uuid": "d4e5f6...",
-      "url": "http://backend2.example.com:25567/rspm.zip",
-      "sha1": "BEEF...",
-      "priority": 50,
-      "lastSeenMillis": 1715000060000
-    }
-  ]
-}
-```
-
-Notes:
-- `url` may point at `magmaguy.com/rsp/<uuid>` OR at a backend's self-hosted URL when the backend chose self-host (e.g., upload failed). The server records whatever URL the backend reports.
-- `priority` is set by the backend (defaults to 100); higher wins authority disputes (TBD — for v1, lowest-conflict approach: highest priority's pack is preferred).
-- Entries with `lastSeenMillis` older than the still-alive window (~7 hours) MAY be omitted by the server, or returned and excluded by the client.
-
-### `POST /rsp/network/<network-key>/merged`
-
-Uploads the proxy-merged network pack. Called by the ResourcePackManager-Velocity / ResourcePackManager-BungeeCord proxy plugin after it downloads each backend's pack from the manifest and runs the shared `MixEngine` over them.
-
-**Form fields:**
-- `file` — required, binary multipart, the merged .zip
-- Optional metadata fields TBD
-
-**Response (success, 2xx):** the URL the merged pack is now served at (typically `https://magmaguy.com/rsp/network/<key>/merged`).
-
-### `GET /rsp/network/<network-key>/merged`
-
-Serves the latest merged pack uploaded via `POST /rsp/network/<network-key>/merged`. Java backends push this URL to clients via `setResourcePack`; the proxy plugin registers it via `PackCodec.url(...)` for Bedrock (Geyser fetches it on the proxy JVM and serves to Bedrock clients via the Bedrock protocol).
-
-`Content-Type: application/zip`; `Content-Length` accurate.
-
----
-
-## Phasing summary
-
-- **Phase 0–2** (multi-module restructure, mixer extraction, HTTP infra): no server-side changes.
-- **Phase 3** (backend network mode + self-host fallback): no new endpoints required — backends in network mode upload to existing `/rsp/upload` with `network-key` form field added. If the server rejects the extra field cleanly, behavior is unchanged from today (uploads succeed without network tagging). If the server stores it but doesn't expose `/rsp/network/<key>/manifest` yet, the proxy plugin (Phase 4) can't function but the backend works fine.
-- **Phase 4** (proxy plugin manifest poll + merge + republish): requires `/rsp/network/<key>/manifest`, `POST /rsp/network/<key>/merged`, `GET /rsp/network/<key>/merged`.
-- **Phase 5+** (Velocity/Bungee entry points, extension extraction): no new endpoints.
-
-The client-side ([`MagmaguyRspClient`](../resourcepackmanager-http-common/src/main/java/com/magmaguy/resourcepackmanager/http/MagmaguyRspClient.java)) ships stub methods (`fetchNetworkManifest`, `uploadNetworkMerged`, `uploadBedrockVariant`, `uploadNetworkTagged`) that throw `UnsupportedOperationException` until the matching server-side endpoints land. Replace the stub bodies with real HTTP calls once the server is ready.
+Backends in network mode still use the regular `/rsp/upload` / `/rsp/sha1` / `/rsp/initialize` / `/rsp/still_alive` endpoints to host their individual packs — nothing about that flow changes. The network-merged pack lives only on the proxy and is never uploaded.
 
 ---
 
