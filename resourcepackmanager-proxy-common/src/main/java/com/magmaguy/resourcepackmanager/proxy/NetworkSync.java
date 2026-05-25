@@ -52,16 +52,26 @@ public final class NetworkSync {
 
     /**
      * Number of consecutive identical-hash poll cycles required before we merge.
-     * At the default 30s interval this is ~60s of quiet — long enough for any
-     * backend that's still finishing a regen to publish its final bytes, short
-     * enough that admins don't wait minutes to see their edits.
+     * Set to 1: as soon as the inbox state matches across two adjacent polls,
+     * merge. (The first poll always sets the baseline {@code lastInboxHashes}
+     * and the second poll's match triggers the merge — so effectively "merge
+     * after two polls observe the same state.")
      *
-     * <p>Mirrors the stability gate in
-     * {@code com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack},
-     * which waits 3 seconds of identical hashes before considering plugin-supplied
-     * packs stable.</p>
+     * <p><b>Why not the previous 2-cycle gate:</b> the old value was defensive
+     * paranoia against torn writes — "what if the backend is mid-regenerating
+     * its zip while we poll?" In practice this can never happen: the backend's
+     * {@code BedrockZip.zip} writes to a temp file then atomically renames,
+     * so the {@code /bedrock.zip} HTTP route always serves either the old
+     * complete zip or the new complete zip — never a half-written one.
+     * Without that risk the 2-cycle gate was pure cold-start latency cost
+     * (an extra full poll interval before first merge).</p>
+     *
+     * <p>Tradeoff with 1: if two backends regenerate at slightly different
+     * times, one cycle could merge backend-A-NEW with backend-B-OLD before
+     * the next cycle merges with both new. Brief (~poll interval) window of
+     * stale content from one backend, then auto-corrects. Acceptable.</p>
      */
-    static final int STABLE_CYCLES_REQUIRED = 2;
+    static final int STABLE_CYCLES_REQUIRED = 1;
 
     /** Per-backend HTTP timeout. Tight enough that a dead backend doesn't stall a poll. */
     private static final Duration PER_BACKEND_TIMEOUT = Duration.ofSeconds(5);

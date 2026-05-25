@@ -102,6 +102,12 @@ public class BedrockConversion {
             bedrockDir.mkdirs();
             copyPackIcon(mergedJavaPack, bedrockDir);
 
+            // (Removed BedrockMaterialEmitter.emit call — the custom-material approach
+            //  to fix the "armor stand inside block renders dark" problem produced a
+            //  worse regression (models entirely invisible) because the material file
+            //  didn't load the way we expected. The BedrockMaterialEmitter class is
+            //  kept for now as a code reference while we figure out the correct shape.)
+
             // Single, namespace-agnostic conversion pipeline. The generic scanner walks
             // every items definition under assets/<ns>/items/** (including the
             // freeminecraftmodels namespace — there is no longer a FMM-specific path).

@@ -13,6 +13,9 @@ import com.velocitypowered.api.plugin.Dependency;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.geysermc.geyser.api.event.EventRegistrar;
 import org.slf4j.Logger;
 
@@ -127,16 +130,20 @@ public final class RspmVelocityPlugin {
 
         boolean geyserPresent = proxy.getPluginManager().getPlugin("geyser").isPresent();
         if (geyserPresent) {
-            this.bedrock = new GeyserBinder(logger, EventRegistrar.of(this));
+            this.bedrock = new GeyserBinder(logger, EventRegistrar.of(this), this::broadcastBedrockPackUnavailable);
             this.bedrock.register();
         } else {
             logger.warn("[RSPM] Geyser-Velocity not detected. Bedrock pack delivery disabled. Install Geyser-Velocity to deliver packs to Bedrock players.");
         }
 
-        // First poll after 5s so Velocity finishes server registration; thereafter
-        // every 30s. Stability gate inside NetworkSync requires two consecutive
-        // identical hash cycles before triggering a merge.
-        this.sync.start(5_000L, 30_000L);
+        // First poll after 2s so Velocity has time to finish server registration
+        // (any race shows up as zero backends in this poll → next cycle picks them
+        // up). Thereafter every 5s during the boot window, which combined with the
+        // 1-cycle stability gate gets the first merge published ~7s after proxy
+        // boot if backends are already up. Polls are HTTP HEAD-ish with
+        // If-Modified-Since so steady-state cost is ~0 bytes per cycle per backend
+        // when nothing changed — cheap enough to leave fast.
+        this.sync.start(2_000L, 5_000L);
         logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + "). Java pack push is handled by backends; this proxy plugin is Bedrock-only.");
     }
 
@@ -146,9 +153,64 @@ public final class RspmVelocityPlugin {
         if (bedrock != null) bedrock.unregister();
     }
 
+    /**
+     * Tracks whether the "pack is now ready" broadcast has already fired this
+     * proxy session. Operators want to know the FIRST time a pack becomes
+     * available (so they know "any Bedrock player connecting from here will
+     * receive custom models"), not every poll cycle — that would be 1 spam
+     * message every 30 seconds.
+     */
+    private volatile boolean packReadyAnnounced = false;
+
     private void onMergedPackReady(MergedPack pack) {
         if (bedrock != null) bedrock.onMergedPackReady(pack);
         logger.info("Merged pack ready at " + pack.packFile().getAbsolutePath()
                 + " (sha1 " + pack.sha1Hex() + ")");
+        if (!packReadyAnnounced) {
+            packReadyAnnounced = true;
+            announcePackReady(pack);
+        }
+    }
+
+    /**
+     * Called by {@link GeyserBinder} whenever a Bedrock session loads without
+     * a usable RSPM pack. Broadcasts a chat warning to all online Java players
+     * on this proxy so in-game admins see "this Bedrock player isn't seeing
+     * models" without having to scrape the proxy log. The Bedrock player
+     * themselves also gets a modal popup and the proxy console gets a banner
+     * — this is the third surface, aimed at Java-side admins.
+     */
+    private void broadcastBedrockPackUnavailable(String bedrockPlayerName, String reason) {
+        Component msg = Component.text()
+                .append(Component.text("⚠ ", NamedTextColor.RED, TextDecoration.BOLD))
+                .append(Component.text("[RSPM] ", NamedTextColor.YELLOW, TextDecoration.BOLD))
+                .append(Component.text("Bedrock player ", NamedTextColor.WHITE))
+                .append(Component.text(bedrockPlayerName, NamedTextColor.AQUA, TextDecoration.BOLD))
+                .append(Component.text(" connected before the resource pack was ready — they're seeing plain armor stands instead of custom models. ", NamedTextColor.WHITE))
+                .append(Component.text("Tell them to disconnect and reconnect; the pack will load on their next session.", NamedTextColor.YELLOW))
+                .append(Component.text(" (Cause: " + reason + ")", NamedTextColor.GRAY))
+                .build();
+        proxy.getConsoleCommandSource().sendMessage(msg);
+        proxy.getAllPlayers().forEach(p -> p.sendMessage(msg));
+    }
+
+    /**
+     * Fire-once broadcast to console + all online players the FIRST time a
+     * pack becomes available after proxy boot. Bookends the
+     * "pack-not-ready" modal {@link GeyserBinder} fires at Bedrock-session-
+     * load time: the modal tells a too-early-joining Bedrock player to
+     * reconnect; this broadcast tells the operator (and anyone already in
+     * chat) that the moment to reconnect has arrived.
+     */
+    private void announcePackReady(MergedPack pack) {
+        Component msg = Component.text()
+                .append(Component.text("✔ ", NamedTextColor.GREEN, TextDecoration.BOLD))
+                .append(Component.text("[RSPM] ", NamedTextColor.YELLOW, TextDecoration.BOLD))
+                .append(Component.text("Network resource pack is now ready ", NamedTextColor.WHITE))
+                .append(Component.text("(" + pack.packFile().length() / 1024 + " KB, sha1 " + pack.sha1Hex().substring(0, 8) + ")", NamedTextColor.GRAY))
+                .append(Component.text(". Bedrock players who connected before this should disconnect and reconnect to receive custom models.", NamedTextColor.WHITE))
+                .build();
+        proxy.getConsoleCommandSource().sendMessage(msg);
+        proxy.getAllPlayers().forEach(p -> p.sendMessage(msg));
     }
 }
