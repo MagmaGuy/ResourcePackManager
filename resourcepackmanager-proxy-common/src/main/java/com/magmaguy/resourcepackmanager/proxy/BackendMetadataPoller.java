@@ -127,7 +127,16 @@ public final class BackendMetadataPoller {
 
         long now = System.currentTimeMillis();
         List<Entry> entries = new ArrayList<>(backends.size());
+        // Dedupe by metadata host:port so we don't waste queries (and don't
+        // pollute the manifest with duplicate UUIDs) when the proxy's server
+        // list has multiple backends sharing the same host:metadataPort.
+        // Production: each backend is on its own machine — no collision.
+        // Testbed: multiple backends on localhost all defaulting to 25567 —
+        // the metadata endpoint that wins the port-bind race is what answers.
+        java.util.Set<String> queriedAddresses = new java.util.HashSet<>();
         for (BackendListProvider.Backend b : backends) {
+            String addr = b.host() + ":" + metadataPort;
+            if (!queriedAddresses.add(addr)) continue;  // already polled this endpoint
             Entry entry = pollBackend(b, now);
             if (entry != null) entries.add(entry);
         }

@@ -147,9 +147,25 @@ public final class NetworkSync {
                 return;
             }
 
-            // Compute current set + sha1 map.
+            // Defensive dedupe by UUID. Duplicates can show up when two backends in
+            // the proxy's server list share a metadata host:port (e.g. multiple
+            // backends running on the same host in a testbed, or a misconfig where
+            // someone cloned a data folder). We keep the first occurrence and warn
+            // — the alternative is the Collectors.toMap below throwing IllegalStateException.
+            int beforeDedup = active.size();
+            java.util.LinkedHashMap<String, Entry> uniqueByUuid = new java.util.LinkedHashMap<>();
+            for (Entry e : active) uniqueByUuid.putIfAbsent(e.uuid(), e);
+            if (uniqueByUuid.size() < beforeDedup) {
+                logger.warn("Manifest had " + (beforeDedup - uniqueByUuid.size())
+                        + " duplicate backend UUID(s); collapsed to " + uniqueByUuid.size()
+                        + " unique entry/entries. Multiple backends sharing a metadata endpoint?");
+            }
+            active = new java.util.ArrayList<>(uniqueByUuid.values());
+
+            // Compute current set + sha1 map. (a, b) -> a merge is belt-and-braces;
+            // active is already deduped above.
             Map<String, String> currentSha1 = active.stream()
-                    .collect(Collectors.toMap(Entry::uuid, Entry::sha1));
+                    .collect(Collectors.toMap(Entry::uuid, Entry::sha1, (a, b) -> a));
 
             // Change detection: have any UUIDs been added/removed, or has any sha1 shifted?
             if (!hasManifestChanged(lastSeenSha1, currentSha1)) {
