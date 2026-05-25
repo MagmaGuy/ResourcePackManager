@@ -32,7 +32,12 @@
     </dependencies>
 
     <build>
-        <finalName>resourcepackmanager-velocity-${project.version}</finalName>
+        <!-- Stable, version-free filename so symlinks (setup_symlinks.sh / .bat) can
+             target target/resourcepackmanager-velocity.jar without churning on version
+             bumps. Maven's deploy/publish still uses the artifact coordinates
+             (groupId:artifactId:version), so dropping the version from the jar filename
+             is purely cosmetic and doesn't affect distribution. -->
+        <finalName>resourcepackmanager-velocity</finalName>
         <plugins>
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>

@@ -1,6 +1,5 @@
 package com.magmaguy.resourcepackmanager.autohost;
 
-import com.google.gson.JsonObject;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
@@ -36,10 +35,11 @@ import java.util.UUID;
  * shared {@link MagmaguyRspClient} from {@code resourcepackmanager-http-common}.</p>
  *
  * <p>In network mode this class also runs a small always-on
- * {@link PackHttpServer} that exposes {@link PackHttpServer#METADATA_PATH} for
- * the proxy plugin's {@code BackendMetadataPoller} to discover this backend's
- * current pack URL+sha1. The metadata route returns 200 with null fields when
- * a pack hasn't been uploaded yet so the proxy can poll without seeing 404s.</p>
+ * {@link PackHttpServer} that exposes the backend's Bedrock-conversion outputs
+ * ({@code /bedrock.zip} and {@code /mappings.json}) for the proxy plugin's
+ * {@code NetworkSync} to pull. The pack-zip route (used by Java self-host
+ * fallback) 404s until {@link Mix#getFinalResourcePack()} appears; the Bedrock
+ * routes 404 until BedrockConversion has produced output.</p>
  */
 public class AutoHost {
     // Consistent UUID for identifying ResourcePackManager's pack when using multiple resource packs
@@ -124,12 +124,12 @@ public class AutoHost {
                 DEFAULT_SOCKET_TIMEOUT,
                 UPLOAD_SOCKET_TIMEOUT);
 
-        // In network mode, start the always-on metadata server immediately so the
-        // proxy plugin's BackendMetadataPoller can hit /.rspm-pack-info.json from
-        // the very first poll, even before the magmaguy.com upload completes.
-        // Returns 200 with null fields until AutoHost finishes uploading.
+        // In network mode, start the always-on backend HTTP server immediately so the
+        // proxy plugin's NetworkSync can pull /bedrock.zip and /mappings.json from
+        // the very first poll, even before this backend has produced any output.
+        // The routes 404 cleanly until the underlying files appear.
         if (NetworkMode.isActive()) {
-            startMetadataServerIfNeeded();
+            startBackendHttpServerIfNeeded();
         }
 
         keepAlive = new BukkitRunnable() {
@@ -390,7 +390,7 @@ public class AutoHost {
         File pack = Mix.getFinalResourcePack();
         if (pack == null) return false;
         // In network mode the server may already be running (started by
-        // startMetadataServerIfNeeded for the /.rspm-pack-info.json route). Reuse it.
+        // startBackendHttpServerIfNeeded for the Bedrock-output routes). Reuse it.
         if (selfHostServer != null) {
             // Already running — derive and cache the self-host URL, mark done,
             // and notify players. The URL is the pack path on the same server.
@@ -402,8 +402,9 @@ public class AutoHost {
             broadcastResourcePackSync();
             return true;
         }
+        int port = resolveHttpPort();
         try {
-            PackHttpServer server = startPackHttpServer(pack);
+            PackHttpServer server = startPackHttpServer(pack, port);
             String url = server.urlOn(resolveExternalHost());
             selfHostServer = server;
             selfHostedUrl = url;
@@ -412,7 +413,7 @@ public class AutoHost {
             broadcastResourcePackSync();
             return true;
         } catch (IOException e) {
-            Logger.warn("Self-host fallback failed (port " + DefaultConfig.getSelfHostPort()
+            Logger.warn("Self-host fallback failed (port " + port
                     + " probably in use): " + e.getMessage());
             return false;
         }
@@ -420,88 +421,81 @@ public class AutoHost {
 
     /**
      * Network-mode only: start a {@link PackHttpServer} immediately so the
-     * proxy plugin's poller can discover this backend's metadata endpoint right
-     * away, even before {@link #uploadFile()} finishes. The pack-zip route
-     * 404s until {@link Mix#getFinalResourcePack()} appears; the metadata
-     * route always returns 200 with whatever's known so far (null fields
-     * filtered server-side).
+     * proxy plugin's NetworkSync can pull this backend's Bedrock-conversion
+     * outputs from the very first poll, even before this backend has produced
+     * any output. The pack-zip route 404s until {@link Mix#getFinalResourcePack()}
+     * appears.
+     *
+     * <p>Also registers two Bedrock-conversion output routes
+     * ({@link PackHttpServer#BEDROCK_PACK_PATH} and
+     * {@link PackHttpServer#GEYSER_MAPPINGS_PATH}) so the proxy can pull the
+     * latest converted pack + Geyser mappings on each poll. Both routes read
+     * the file fresh per request and 404 cleanly until BedrockConversion has
+     * produced output, so they're safe to wire up before the first conversion
+     * has run.</p>
      */
-    private static void startMetadataServerIfNeeded() {
+    private static void startBackendHttpServerIfNeeded() {
         if (selfHostServer != null) return;
+        int port = resolveHttpPort();
         try {
             File pack = Mix.getFinalResourcePack(); // may be null at this point
-            PackHttpServer server = startPackHttpServer(pack);
+            PackHttpServer server = startPackHttpServer(pack, port);
             selfHostServer = server;
-            Logger.info("Started backend metadata server on port " + server.port()
-                    + " (path " + PackHttpServer.METADATA_PATH + ")");
+            registerBedrockOutputRoutes(server);
+            Logger.info("Started backend HTTP server on port " + server.port()
+                    + " (serving /rspm.zip, " + PackHttpServer.BEDROCK_PACK_PATH
+                    + ", " + PackHttpServer.GEYSER_MAPPINGS_PATH + ")");
         } catch (IOException e) {
-            Logger.warn("Failed to start backend metadata HTTP server (port "
-                    + DefaultConfig.getSelfHostPort() + " in use?): " + e.getMessage());
+            // Loud multi-line ERROR: this backend is now invisible to the proxy.
+            // Bedrock players will not get its content in the merged pack.
+            Logger.warn("[ERROR] Backend HTTP server failed to bind on port " + port
+                    + ": " + e.getMessage());
+            Logger.warn("[ERROR] This backend's Bedrock resource pack will NOT reach the proxy until you fix this.");
+            Logger.warn("[ERROR] If another process is using port " + port + ", set selfHostPort to a different value in");
+            Logger.warn("[ERROR] plugins/ResourcePackManager/config.yml, OR change networkHttpOffset to push");
+            Logger.warn("[ERROR] the auto-derived port away from the collision.");
         }
     }
 
     /**
-     * Construct + start the {@link PackHttpServer} with the metadata supplier
-     * always wired. Centralises so the metadata-only startup path and the
-     * fallback-self-host path can't drift apart.
+     * Resolve the HTTP port for the backend's {@link PackHttpServer}.
+     * <ul>
+     *   <li>{@code selfHostPort >= 0}: explicit admin-configured port (back-compat).</li>
+     *   <li>{@code selfHostPort == -1} (default sentinel): auto-derive as
+     *       {@code Bukkit.getServer().getPort() + networkHttpOffset}. This guarantees
+     *       a unique HTTP port per backend on a single-host deployment without any
+     *       admin configuration, because each backend already has a unique MC port.</li>
+     * </ul>
      */
-    private static PackHttpServer startPackHttpServer(File pack) throws IOException {
-        return PackHttpServer.start(
-                pack,
-                DefaultConfig.getSelfHostPort(),
-                "/rspm.zip",
-                AutoHost::buildMetadataJson);
+    private static int resolveHttpPort() {
+        int explicit = DefaultConfig.getSelfHostPort();
+        if (explicit >= 0) return explicit;
+        int mcPort = Bukkit.getServer().getPort();
+        return mcPort + DefaultConfig.getNetworkHttpOffset();
     }
 
     /**
-     * Build the metadata JSON body returned by {@code /.rspm-pack-info.json}.
-     * Always returns a valid 200-body object; fields that aren't known yet
-     * (no UUID assigned, no pack uploaded, etc.) are emitted as JSON null so
-     * the proxy can gracefully skip this backend until it has data.
+     * Register the two Bedrock-conversion output routes on the running server.
+     * Files are resolved to absolute paths under the plugin data folder's
+     * {@code output/} subdirectory — the same paths {@code BedrockConversion}
+     * writes to. {@link PackHttpServer#registerFileRoute(File, String) reads
+     * per-request} so a fresh BedrockConversion run is visible immediately
+     * to the next proxy poll without restarting anything.
      */
-    static String buildMetadataJson() {
-        JsonObject obj = new JsonObject();
-        String uuid = DataConfig.getRspUUID();
-        if (uuid != null && !uuid.isEmpty()) {
-            obj.addProperty("uuid", uuid);
-        } else {
-            obj.add("uuid", com.google.gson.JsonNull.INSTANCE);
-        }
-        String url;
-        if (selfHostedUrl != null) {
-            url = selfHostedUrl;
-        } else if (rspUUID != null && done) {
-            url = MagmaguyRspClient.BASE_URL + rspUUID;
-        } else {
-            url = null;
-        }
-        if (url != null) {
-            obj.addProperty("url", url);
-        } else {
-            obj.add("url", com.google.gson.JsonNull.INSTANCE);
-        }
-        String sha1 = Mix.getFinalSHA1();
-        if (sha1 != null && !sha1.isEmpty()) {
-            obj.addProperty("sha1", sha1);
-        } else {
-            obj.add("sha1", com.google.gson.JsonNull.INSTANCE);
-        }
-        // Resolve the network-key best-effort; outside network mode this falls
-        // through to the autogen UUID path inside NetworkMode.getNetworkKey().
-        // Standalone backends shouldn't be polled in the first place but it
-        // costs nothing to emit a usable value.
-        String networkKey;
-        try {
-            networkKey = NetworkMode.getNetworkKey();
-        } catch (Throwable t) {
-            networkKey = null;
-        }
-        if (networkKey != null && !networkKey.isEmpty()) {
-            obj.addProperty("networkKey", networkKey);
-        } else {
-            obj.add("networkKey", com.google.gson.JsonNull.INSTANCE);
-        }
-        return obj.toString();
+    private static void registerBedrockOutputRoutes(PackHttpServer server) {
+        File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
+        File bedrockZip = new File(outputDir, "ResourcePackManager_Bedrock.zip");
+        File geyserMappings = new File(outputDir, "rspm_geyser_mappings.json");
+        server.registerFileRoute(PackHttpServer.BEDROCK_PACK_PATH, bedrockZip, "application/zip");
+        server.registerFileRoute(PackHttpServer.GEYSER_MAPPINGS_PATH, geyserMappings, "application/json");
+    }
+
+    /**
+     * Construct + start the {@link PackHttpServer}. Centralises so the
+     * network-mode startup path and the fallback-self-host path can't drift apart.
+     */
+    private static PackHttpServer startPackHttpServer(File pack, int port) throws IOException {
+        return PackHttpServer.start(pack, port, "/rspm.zip");
     }
 
     /**

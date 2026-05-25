@@ -1,6 +1,6 @@
 package com.magmaguy.resourcepackmanager.bedrock.generic;
 
-import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -51,7 +51,7 @@ public final class MappedItemRegistry {
     public void addMapping(String baseItem, GeyserDefinitionEntry entry) {
         String key = baseItem + "|" + entry.bedrockIdentifier() + "|" + predicateShape(entry.predicates());
         if (!emittedEntryKeys.add(key)) {
-            Logger.warn("[BedrockConverter] Duplicate generic mapping skipped: base=" + baseItem
+            BedrockLog.warn("[BedrockConverter] Duplicate generic mapping skipped: base=" + baseItem
                     + " id=" + entry.bedrockIdentifier());
             return;
         }

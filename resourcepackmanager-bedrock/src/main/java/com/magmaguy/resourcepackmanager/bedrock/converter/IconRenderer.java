@@ -3,7 +3,7 @@ package com.magmaguy.resourcepackmanager.bedrock.converter;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import javax.imageio.ImageIO;
 import java.awt.AlphaComposite;
@@ -315,7 +315,7 @@ public final class IconRenderer {
             ImageIO.write(canvas, "PNG", outputPng);
             return true;
         } catch (Exception e) {
-            Logger.warn("[IconRenderer] Failed to render icon to " + outputPng.getPath()
+            BedrockLog.warn("[IconRenderer] Failed to render icon to " + outputPng.getPath()
                     + ": " + e.getMessage());
             return false;
         }
@@ -344,7 +344,7 @@ public final class IconRenderer {
             ImageIO.write(canvas, "PNG", outputPng);
             return true;
         } catch (IOException e) {
-            Logger.warn("[IconRenderer] Failed to write missing-texture placeholder to "
+            BedrockLog.warn("[IconRenderer] Failed to write missing-texture placeholder to "
                     + outputPng.getPath() + ": " + e.getMessage());
             return false;
         }
@@ -619,7 +619,7 @@ public final class IconRenderer {
             cache.put(texRef, img);
             return img;
         } catch (IOException e) {
-            Logger.warn("[IconRenderer] Failed to load texture " + f.getPath() + ": " + e.getMessage());
+            BedrockLog.warn("[IconRenderer] Failed to load texture " + f.getPath() + ": " + e.getMessage());
             cache.put(texRef, null);
             return null;
         }

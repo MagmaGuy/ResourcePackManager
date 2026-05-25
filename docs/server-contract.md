@@ -106,7 +106,7 @@ Serves the currently-uploaded resource pack for the given uuid. Used by clients 
 
 ## Network-mode endpoints
 
-**None required.** Network mode no longer talks to `magmaguy.com/rsp/` for manifest or merged-pack distribution. The proxy plugin polls each backend's own `/.rspm-pack-info.json` endpoint (served by the always-on backend `PackHttpServer`) to discover pack URLs, then downloads and merges the per-backend packs locally and self-hosts the merged pack on its own port for Geyser to fetch. See [`network-mode.md`](network-mode.md) for the architecture.
+**None required.** Network mode no longer talks to `magmaguy.com/rsp/` for manifest or merged-pack distribution. The proxy plugin polls each backend's `PackHttpServer` directly at `/bedrock.zip` and `/mappings.json` on `mcPort + networkHttpOffset` (default `+100`), saves the responses to a local inbox, waits for the inbox to stabilize across two consecutive polls, and merges the per-backend Bedrock packs + Geyser mappings on the proxy's local disk. It then hands the merged pack file path to Geyser via `PackCodec.path(file)` — there is no proxy-side HTTP server; Geyser reads the file in-process and delivers bytes to Bedrock clients over the Bedrock protocol. See [`network-mode.md`](network-mode.md) for the architecture.
 
 Backends in network mode still use the regular `/rsp/upload` / `/rsp/sha1` / `/rsp/initialize` / `/rsp/still_alive` endpoints to host their individual packs — nothing about that flow changes. The network-merged pack lives only on the proxy and is never uploaded.
 

@@ -31,19 +31,21 @@ final class BungeeBackendListProvider implements BackendListProvider {
         List<Backend> out = new ArrayList<>();
         for (ServerInfo info : plugin.getProxy().getServers().values()) {
             String name = info.getName();
-            String host = extractHost(info);
-            if (host != null) out.add(new Backend(name, host));
+            HostPort hp = extractHostPort(info);
+            if (hp != null) out.add(new Backend(name, hp.host, hp.port));
         }
         return out;
     }
 
-    private static String extractHost(ServerInfo info) {
+    private static HostPort extractHostPort(ServerInfo info) {
         java.net.SocketAddress sa = info.getSocketAddress();
         if (sa instanceof java.net.InetSocketAddress isa) {
-            return isa.getHostString();
+            return new HostPort(isa.getHostString(), isa.getPort());
         }
         // Defensive: a non-Inet backend address (e.g. Unix domain socket) has no
         // routable hostname for an HTTP request. Skip rather than guess.
         return null;
     }
+
+    private record HostPort(String host, int port) {}
 }

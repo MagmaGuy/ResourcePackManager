@@ -6,26 +6,28 @@ import java.util.List;
  * Platform-neutral source of the proxy's currently-registered backend servers.
  * Velocity and Bungee implementations expose the proxy's server list (from
  * {@code velocity.toml} / {@code config.yml}) as a list of {@link Backend}
- * records that {@link BackendMetadataPoller} can hit at
- * {@code http://<host>:<metadataPort>/.rspm-pack-info.json}.
+ * records that {@link NetworkSync} can hit at
+ * {@code http://<host>:<httpPort>/bedrock.zip} and
+ * {@code http://<host>:<httpPort>/mappings.json}.
  *
- * <p>Note: the Java pack-push port is irrelevant here. The poller targets the
- * backend's {@code self-host-port} (default 25567) — that's the port the
- * backend's always-on {@code PackHttpServer} listens on, which is distinct
- * from the Minecraft server port read from this list. We reuse the backend's
- * Minecraft host but substitute the metadata port; admins can override the
- * default via the proxy plugin's {@code backend-metadata-port} config.</p>
+ * <p>HTTP port derivation: the backend's HTTP port is computed per-backend as
+ * {@code mcPort() + networkHttpOffset} (default offset 100). This auto-staggers
+ * HTTP ports across backends on a single host (each backend already has a unique
+ * MC port). It also works fine cross-host (each backend has a unique MC port on
+ * its own box).</p>
  */
 public interface BackendListProvider {
 
     List<Backend> listBackends();
 
     /**
-     * @param name the backend's name as configured on the proxy (used for log
-     *             identification; not part of the URL)
-     * @param host the backend's host (DNS name or IP) — same value the proxy
-     *             uses to connect Minecraft players
+     * @param name   the backend's name as configured on the proxy (used for log
+     *               identification; not part of the URL)
+     * @param host   the backend's host (DNS name or IP) — same value the proxy
+     *               uses to connect Minecraft players
+     * @param mcPort the backend's Minecraft server port. {@link NetworkSync}
+     *               adds {@code networkHttpOffset} to derive the HTTP port.
      */
-    record Backend(String name, String host) {
+    record Backend(String name, String host, int mcPort) {
     }
 }

@@ -5,7 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 import com.magmaguy.resourcepackmanager.bedrock.generic.AssetResolver;
 import com.magmaguy.resourcepackmanager.bedrock.generic.EquipmentSlotMapper;
 
@@ -174,7 +174,7 @@ public final class EquipmentAttachableGenerator {
         File sourcePng = new File(mergedJavaPack,
                 "assets/" + texNs + "/textures/entity/equipment/" + layerKey + "/" + texStem + ".png");
         if (!sourcePng.isFile()) {
-            Logger.warn("[BedrockConverter] Equipment texture not found: " + sourcePng.getPath()
+            BedrockLog.warn("[BedrockConverter] Equipment texture not found: " + sourcePng.getPath()
                     + " (referenced by " + equipmentRef + " layer=" + layerKey + ")");
             return false;
         }
@@ -192,7 +192,7 @@ public final class EquipmentAttachableGenerator {
             // sheets, no flipbook cropping needed and no atlas stitching.
             Files.copy(sourcePng.toPath(), destPng.toPath(), StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
-            Logger.warn("[BedrockConverter] Failed to copy equipment texture "
+            BedrockLog.warn("[BedrockConverter] Failed to copy equipment texture "
                     + sourcePng.getPath() + " -> " + destPng.getPath() + ": " + e.getMessage());
             return false;
         }
@@ -312,7 +312,7 @@ public final class EquipmentAttachableGenerator {
             }
             return true;
         } catch (IOException e) {
-            Logger.warn("[BedrockConverter] Failed to write equipment attachable "
+            BedrockLog.warn("[BedrockConverter] Failed to write equipment attachable "
                     + outputFile.getPath() + ": " + e.getMessage());
             return false;
         }

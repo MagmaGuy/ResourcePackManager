@@ -1,7 +1,7 @@
 package com.magmaguy.resourcepackmanager.bedrock.converter;
 
 import com.google.gson.*;
-import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 import com.magmaguy.resourcepackmanager.bedrock.model.SpriteInfo;
 
 import java.io.File;
@@ -57,7 +57,7 @@ public class FmmGeometryConverter {
                                                int atlasWidth, int atlasHeight,
                                                File bedrockPackDir) {
         if (!javaModel.has("elements") || !javaModel.get("elements").isJsonArray()) {
-            Logger.warn("[BedrockConverter] No elements in model " + geometryIdentifier);
+            BedrockLog.warn("[BedrockConverter] No elements in model " + geometryIdentifier);
             return null;
         }
 
@@ -147,7 +147,7 @@ public class FmmGeometryConverter {
             }
             return geometryId;
         } catch (IOException e) {
-            Logger.warn("[BedrockConverter] Failed to write geometry " + geoFile.getPath() + ": " + e.getMessage());
+            BedrockLog.warn("[BedrockConverter] Failed to write geometry " + geoFile.getPath() + ": " + e.getMessage());
             return null;
         }
     }
@@ -256,7 +256,7 @@ public class FmmGeometryConverter {
                     // that strictness with a warn-and-skip rather than silent acceptance.
                     int normalized = ((raw % 360) + 360) % 360;
                     if (normalized % 90 != 0) {
-                        Logger.warn("[BedrockConverter] face rotation " + raw + " on " + faceName
+                        BedrockLog.warn("[BedrockConverter] face rotation " + raw + " on " + faceName
                                 + " is not a multiple of 90; ignoring (Rainbow parity).");
                     } else {
                         faceRotation = normalized;

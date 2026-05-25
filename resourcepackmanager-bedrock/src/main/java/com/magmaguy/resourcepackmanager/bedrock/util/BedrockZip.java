@@ -58,7 +58,7 @@ public class BedrockZip {
                 }
             });
         } catch (IOException e) {
-            com.magmaguy.magmacore.util.Logger.warn("Failed to zip Bedrock pack: " + e.getMessage());
+            com.magmaguy.resourcepackmanager.bedrock.BedrockLog.warn("Failed to zip Bedrock pack: " + e.getMessage());
             try { Files.deleteIfExists(tmpFile.toPath()); } catch (IOException ignored) {}
             return null;
         }
@@ -72,7 +72,7 @@ public class BedrockZip {
             try {
                 Files.move(tmpFile.toPath(), zipFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException e2) {
-                com.magmaguy.magmacore.util.Logger.warn("Failed to publish Bedrock pack: " + e2.getMessage());
+                com.magmaguy.resourcepackmanager.bedrock.BedrockLog.warn("Failed to publish Bedrock pack: " + e2.getMessage());
                 try { Files.deleteIfExists(tmpFile.toPath()); } catch (IOException ignored) {}
                 return null;
             }

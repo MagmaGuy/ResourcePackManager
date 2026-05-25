@@ -1,7 +1,7 @@
 package com.magmaguy.resourcepackmanager.bedrock.converter;
 
 import com.google.gson.*;
-import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -65,7 +65,7 @@ public class FmmAttachableGenerator {
         FmmAnimationGenerator.AnimationIds animIds =
                 prepareAnimations(animBaseId, animFileBase, javaModel, bedrockPackDir);
         if (animIds == null) {
-            Logger.warn("[BedrockConverter] Failed to write animations for " + bedrockIdentifier);
+            BedrockLog.warn("[BedrockConverter] Failed to write animations for " + bedrockIdentifier);
             return null;
         }
         return writeAttachable(bedrockIdentifier, attachableOutputPath, geometryId,
@@ -128,7 +128,7 @@ public class FmmAttachableGenerator {
                                          File bedrockPackDir) {
         if (!writeAttachableInternal(bedrockIdentifier, geometryId, bedrockTexturePath,
                 animIds, attachableOutputPath, bedrockPackDir)) {
-            Logger.warn("[BedrockConverter] Failed to write attachable for " + bedrockIdentifier);
+            BedrockLog.warn("[BedrockConverter] Failed to write attachable for " + bedrockIdentifier);
             return null;
         }
         return bedrockIdentifier;
@@ -293,7 +293,7 @@ public class FmmAttachableGenerator {
             }
             return true;
         } catch (IOException e) {
-            Logger.warn("[BedrockConverter] Failed to write " + file.getPath() + ": " + e.getMessage());
+            BedrockLog.warn("[BedrockConverter] Failed to write " + file.getPath() + ": " + e.getMessage());
             return false;
         }
     }

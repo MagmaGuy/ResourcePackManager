@@ -1,7 +1,7 @@
 package com.magmaguy.resourcepackmanager.bedrock.generic;
 
 import com.google.gson.JsonObject;
-import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import java.util.List;
 import java.util.Optional;
@@ -26,10 +26,41 @@ public final class BaseItemResolver {
     private BaseItemResolver() {}
 
     /**
+     * Base item that FreeMinecraftModels uses as the carrier for every bone armor stand
+     * (see {@code ModelArmorStand.java:35} in FMM — always {@code Material.LEATHER_HORSE_ARMOR}).
+     * Every items definition in the {@code freeminecraftmodels} namespace must have a
+     * Geyser mapping under this base item too, otherwise Bedrock clients see plain
+     * leather-horse-armor-wearing armor stands instead of the custom model. The
+     * filename-heuristic-chosen base item ({@code bow}, {@code compass}, etc.) also
+     * stays in the list so the same model still renders if a plugin equips it on a
+     * player-held base item (e.g. FMM's {@code /craftify} command emits paper).
+     */
+    private static final String FMM_BONE_CARRIER = "minecraft:leather_horse_armor";
+
+    /**
      * Resolves the candidate base-item list for a given items definition.
      * Never returns empty: falls through to {@link FilenameHeuristic#genericFallback()}.
      */
     public static List<String> resolve(ItemsDefinition def, AssetResolver resolver) {
+        List<String> bases = resolveHeuristic(def, resolver);
+
+        // FreeMinecraftModels always wears items on a leather_horse_armor carrier when
+        // rendering bones via packet armor stands. Ensure the FMM model is registered
+        // under that base item too, in addition to whatever the filename heuristic
+        // picked (which covers the /craftify or held-item case). Without this the
+        // bone armor stand renders as plain leather-horse-armor on Bedrock and the
+        // user-visible FMM furniture / props / weapons are invisible.
+        if ("freeminecraftmodels".equals(def.namespace()) && !bases.contains(FMM_BONE_CARRIER)) {
+            // Build a fresh list so we don't mutate the (often-shared) heuristic-returned list.
+            java.util.List<String> merged = new java.util.ArrayList<>(bases.size() + 1);
+            merged.addAll(bases);
+            merged.add(FMM_BONE_CARRIER);
+            return merged;
+        }
+        return bases;
+    }
+
+    private static List<String> resolveHeuristic(ItemsDefinition def, AssetResolver resolver) {
         String filenameStem = lastPathSegment(def.itemsRelPath());
         String lower = filenameStem == null ? "" : filenameStem.toLowerCase();
 
@@ -54,7 +85,7 @@ public final class BaseItemResolver {
         }
 
         // 4. Generic fallback (log so packs with unusual naming surface in operator's logs)
-        Logger.warn("[BedrockConverter] No base-item rule matched for "
+        BedrockLog.warn("[BedrockConverter] No base-item rule matched for "
                 + def.itemIdentifier() + "; using generic fallback set");
         return FilenameHeuristic.genericFallback();
     }

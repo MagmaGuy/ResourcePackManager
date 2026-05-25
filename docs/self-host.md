@@ -9,7 +9,7 @@ This applies to both the backend RPM plugin and the proxy plugin (resourcepackma
 1. RPM tries to upload the pack to `magmaguy.com/rsp/` via the autohost client.
 2. If the upload succeeds, it uses the returned `magmaguy.com/rsp/<uuid>` URL to push to clients. End.
 3. If the upload fails — any reason: HTTP error, IOException, size rejection, `UnsupportedOperationException` (server doesn't have the endpoint yet) — RPM starts a local HTTP server on the configured port serving the pack zip.
-4. The local URL is `http://<self-host-external-host>:<self-host-port>/...zip` and gets used in place of the magmaguy.com URL when pushing to clients.
+4. The local URL is `http://<selfHostExternalHost>:<selfHostPort>/rspm.zip` (using the resolved external host and the port the backend logged on startup) and gets used in place of the magmaguy.com URL when pushing to clients.
 
 The embedded server has no fancy features — it serves one file at one path, with the headers Geyser requires (`Content-Type: application/zip`, accurate `Content-Length`). One request per client per pack download.
 
@@ -20,28 +20,28 @@ In `plugins/ResourcePackManager/config.yml` (backend) or `plugins/ResourcePackMa
 ```yaml
 # Backend (resourcepackmanager-bukkit) keys are camelCase per the Bukkit convention:
 selfHostEnabled: true
-selfHostPort: 25567
+selfHostPort: -1            # -1 = auto-derive (mcPort + networkHttpOffset)
+networkHttpOffset: 100
 selfHostExternalHost: ""
 selfHostForce: false
-
-# Proxy plugin (Velocity/Bungee) keys are kebab-case:
-self-host-port: 25567
-self-host-external-host: ""
 ```
 
 | Key | Default | What it does |
 |---|---|---|
 | `selfHostEnabled` (backend only) | `true` | Allow falling back to local HTTP if upload fails. Setting to `false` disables fallback — failed uploads simply log a warning. |
-| `selfHostPort` | `25567` | TCP port for the embedded HTTP server. Picked to be adjacent to vanilla Minecraft's 25565 so it's often open when the Minecraft port is open. |
+| `selfHostPort` | `-1` | TCP port for the embedded HTTP server. `-1` (default) = auto-derive as `<minecraft port> + networkHttpOffset`. Set to any positive integer to force an explicit port (legacy behaviour). |
+| `networkHttpOffset` | `100` | Added to the Minecraft port when `selfHostPort == -1`. Must match the proxy plugin's `network-http-offset`. Auto-stagger of multiple backends on the same host happens because each backend already has a unique MC port. |
 | `selfHostExternalHost` | `""` | Public hostname or IP clients should use to reach the self-host server. When empty, RPM auto-detects (best-effort). Set explicitly if auto-detect picks the wrong interface. |
-| `selfHostForce` (backend only) | `false` | Skip the magmaguy.com upload attempt entirely; always self-host. Mainly for testing. The proxy plugin doesn't have this — it always tries upload first. |
+| `selfHostForce` (backend only) | `false` | Skip the magmaguy.com upload attempt entirely; always self-host. Mainly for testing. |
 
 ## Setup checklist
 
 1. **Open the port in your firewall.** RPM does NOT probe reachability — it just binds the socket. If the port isn't reachable from your players, the pack download will fail on their end with a generic "couldn't download pack" error.
 
-   - Linux: `sudo ufw allow 25567/tcp` (Ubuntu) or `firewall-cmd --add-port=25567/tcp --permanent` (RHEL/CentOS)
-   - Windows: open `wf.msc`, add an inbound rule for TCP 25567
+   The exact port is the one the backend logs on startup (`Started backend metadata server on port <N>` / `Self-hosting pack at http://...:<N>/rspm.zip`). With the default config that's your Minecraft port + `networkHttpOffset` (default `+100`) — e.g. MC `25565` → HTTP `25665`. Use the actual logged number in your firewall rules:
+
+   - Linux: `sudo ufw allow <port>/tcp` (Ubuntu) or `firewall-cmd --add-port=<port>/tcp --permanent` (RHEL/CentOS)
+   - Windows: open `wf.msc`, add an inbound rule for TCP `<port>`
    - Cloud hosts: also open it in your security group / network ACL (AWS, GCP, OVH all have this)
    - Pterodactyl/managed panels: usually requires a support ticket to open a non-default port
 
@@ -60,13 +60,13 @@ self-host-external-host: ""
    selfHostExternalHost: "203.0.113.42"
    ```
 
-3. **(Optional) Test the URL.** Once the plugin reports `Self-hosting pack at http://...`, try fetching it from a machine on the public internet:
+3. **(Optional) Test the URL.** Once the plugin reports `Self-hosting pack at http://...`, copy that URL and try fetching it from a machine on the public internet:
 
    ```
-   curl -I http://your-host:25567/rspm.zip
+   curl -I http://your-host:<port>/rspm.zip
    ```
 
-   You should get `HTTP/1.1 200 OK` with `Content-Type: application/zip` and `Content-Length: <size>`. If `curl` hangs or returns `Connection refused`, the port isn't reachable from outside.
+   Substitute `<port>` with the port the backend logged on startup (auto-derived from your Minecraft port plus `networkHttpOffset`). You should get `HTTP/1.1 200 OK` with `Content-Type: application/zip` and `Content-Length: <size>`. If `curl` hangs or returns `Connection refused`, the port isn't reachable from outside.
 
 ## Forcing self-host (testing only)
 
@@ -82,14 +82,14 @@ The proxy plugin has no equivalent `force` flag — to test its self-host path, 
 
 ## Troubleshooting
 
-### "Self-host fallback failed (port 25567 probably in use)"
+### "Self-host fallback failed (port \<N\> probably in use)"
 
-Something else is bound to the port. Check with:
+Something else is bound to the port the backend tried to bind on (auto-derived from your Minecraft port plus `networkHttpOffset`). Substitute the actual port from the log line into the diagnostics:
 
-- Linux: `ss -tlnp | grep 25567`
-- Windows: `netstat -ano | findstr 25567`
+- Linux: `ss -tlnp | grep <port>`
+- Windows: `netstat -ano | findstr <port>`
 
-Common culprits: another Minecraft server, a previous RPM instance that didn't shut down cleanly, an unrelated HTTP service. Change `selfHostPort` to a different port (and update your firewall rule).
+Common culprits: another Minecraft server, a previous RPM instance that didn't shut down cleanly, an unrelated HTTP service. Either bump `networkHttpOffset` (and the proxy's `network-http-offset` to match), or pin a specific `selfHostPort` (positive integer) to bypass the offset derivation. Update your firewall rule to match.
 
 ### Clients see "Couldn't download resource pack" / Bedrock log shows `Content-Type` complaint
 
@@ -97,9 +97,9 @@ Geyser requires `Content-Type: application/zip` and an accurate `Content-Length`
 
 ### Java client gets "Failed to download" with a vague message
 
-The URL isn't reachable. Test with `curl -v http://your-host:25567/rspm.zip` from the public internet. If `curl` hangs or refuses, your firewall/NAT/cloud security group is blocking the port. If `curl` works but the game still fails, double-check that `selfHostExternalHost` matches what `curl` resolves to.
+The URL isn't reachable. Test with `curl -v http://your-host:<port>/rspm.zip` from the public internet (use the port from the backend's startup log). If `curl` hangs or refuses, your firewall/NAT/cloud security group is blocking the port. If `curl` works but the game still fails, double-check that `selfHostExternalHost` matches what `curl` resolves to.
 
-### "Self-hosting pack at http://0.0.0.0:25567/..." in the log
+### "Self-hosting pack at http://0.0.0.0:\<port\>/..." in the log
 
 The auto-detected external host is `0.0.0.0`, which clients can't use. Set `selfHostExternalHost` explicitly to your public IP or hostname.
 

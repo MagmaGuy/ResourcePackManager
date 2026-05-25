@@ -2,7 +2,7 @@ package com.magmaguy.resourcepackmanager.bedrock.generic;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import java.io.File;
 import java.io.FileReader;
@@ -13,9 +13,8 @@ import java.util.Set;
 
 /**
  * Scans a merged Java resource pack directory for 1.21.4+ items definition files
- * across every namespace except {@code minecraft} (vanilla — handled by Bedrock) and
- * {@code freeminecraftmodels} (handled by the FMM-specific scanner that walks
- * {@code assets/freeminecraftmodels/models/} instead).
+ * across every namespace except {@code minecraft} (vanilla — handled by Bedrock).
+ * All plugin namespaces are processed uniformly; there is no FMM-specific carve-out.
  *
  * <p>This is the entry point of the generic Java→Bedrock pipeline. Subsequent phases
  * (model walker, base-item resolver, geometry/attachable emission) consume the
@@ -26,7 +25,7 @@ import java.util.Set;
  */
 public final class GenericJavaScanner {
 
-    private static final Set<String> SKIP_NAMESPACES = Set.of("minecraft", "freeminecraftmodels");
+    private static final Set<String> SKIP_NAMESPACES = Set.of("minecraft");
 
     private GenericJavaScanner() {}
 
@@ -50,7 +49,7 @@ public final class GenericJavaScanner {
             scanItemsDir(namespace, itemsDir, "", result);
         }
 
-        Logger.info("[BedrockConverter] Generic scanner: discovered " + result.size()
+        BedrockLog.info("[BedrockConverter] Generic scanner: discovered " + result.size()
                 + " items definition files across " + namespaceDirs.length + " namespace(s).");
         return result;
     }
@@ -69,7 +68,7 @@ public final class GenericJavaScanner {
                     JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
                     out.add(new ItemsDefinition(namespace, fullRel, entry, root));
                 } catch (Exception e) {
-                    Logger.warn("[BedrockConverter] Failed to parse items definition "
+                    BedrockLog.warn("[BedrockConverter] Failed to parse items definition "
                             + entry.getPath() + ": " + e.getMessage());
                 }
             }

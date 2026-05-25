@@ -21,7 +21,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.logging.Level;
@@ -440,18 +439,5 @@ public final class MagmaguyRspClient implements AutoCloseable {
      *                    (notably {@code SESSION_NOT_FOUND}); null otherwise
      */
     public record Sha1Result(boolean matched, RspError errorOrNull) {
-    }
-
-    /**
-     * Snapshot of the set of backend packs the proxy currently knows about. Originally
-     * the shape returned by a hypothetical {@code /rsp/network/<key>/manifest} endpoint
-     * on magmaguy.com; in the current design it's assembled by
-     * {@code BackendMetadataPoller} on the proxy from per-backend {@code /.rspm-pack-info.json}
-     * responses. Class kept here for namespace stability across the proxy + NetworkSync
-     * pipeline.
-     */
-    public record ManifestResult(List<Entry> entries) {
-        public record Entry(String uuid, String url, String sha1, int priority, long lastSeenMillis) {
-        }
     }
 }

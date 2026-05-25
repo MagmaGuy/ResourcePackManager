@@ -4,9 +4,8 @@ import java.util.List;
 
 /**
  * One Geyser custom-item-v2 definition entry produced by the generic pipeline.
- * Mirrors the field-order convention of {@code FmmGeyserMappingBuilder}: an entry's
- * serialised JSON emits keys in the order {@code type, bedrock_identifier, display_name,
- * predicate, bedrock_options, components, model}.
+ * Serialised JSON emits keys in the order {@code type, bedrock_identifier, display_name,
+ * predicate, bedrock_options, components, model} (matches {@code GeyserBaseDefinition.MAP_CODEC}).
  *
  * @param bedrockIdentifier Bedrock-side identifier, e.g. {@code "elitemobs:gear/bronze_sword"}.
  *                          Per Rainbow's {@code BedrockItemMapper.java:256-261}, when the source

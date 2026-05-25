@@ -47,6 +47,11 @@
         </dependency>
         <dependency>
             <groupId>com.magmaguy</groupId>
+            <artifactId>resourcepackmanager-bedrock</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.magmaguy</groupId>
             <artifactId>resourcepackmanager-http-common</artifactId>
             <version>${project.version}</version>
         </dependency>

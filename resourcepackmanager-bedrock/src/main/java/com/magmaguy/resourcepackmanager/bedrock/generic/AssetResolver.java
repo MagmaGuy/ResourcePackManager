@@ -4,7 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import java.io.File;
 import java.io.FileReader;
@@ -90,7 +90,7 @@ public final class AssetResolver {
             if (!parsed.isJsonObject()) return Optional.empty();
             return Optional.of(parsed.getAsJsonObject());
         } catch (Exception e) {
-            Logger.warn("[BedrockConverter] Failed to parse JSON " + file.getPath() + ": " + e.getMessage());
+            BedrockLog.warn("[BedrockConverter] Failed to parse JSON " + file.getPath() + ": " + e.getMessage());
             return Optional.empty();
         }
     }
@@ -106,12 +106,12 @@ public final class AssetResolver {
 
         while (currentRef != null) {
             if (depth++ >= MAX_PARENT_DEPTH) {
-                Logger.warn("[BedrockConverter] Parent chain exceeded MAX_PARENT_DEPTH (" + MAX_PARENT_DEPTH
+                BedrockLog.warn("[BedrockConverter] Parent chain exceeded MAX_PARENT_DEPTH (" + MAX_PARENT_DEPTH
                         + ") starting from " + modelRef + "; stopping");
                 break;
             }
             if (!chain.add(currentRef)) {
-                Logger.warn("[BedrockConverter] Parent chain cycle detected starting from "
+                BedrockLog.warn("[BedrockConverter] Parent chain cycle detected starting from "
                         + modelRef + " (loop on " + currentRef + "); stopping");
                 break;
             }
