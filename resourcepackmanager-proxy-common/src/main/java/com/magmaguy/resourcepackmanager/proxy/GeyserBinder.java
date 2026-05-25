@@ -76,9 +76,22 @@ public final class GeyserBinder {
     private void onSession(SessionLoadResourcePacksEvent event) {
         MergedPack pack = current;
         if (pack == null) {
-            // Network sync hasn't produced a pack yet (first proxy boot before backends
-            // have uploaded, or all manifest entries stale). Skip silently — Bedrock
-            // client gets no RPM pack for this one session.
+            // NetworkSync hasn't produced a merged pack yet — most commonly because
+            // the server-side /rsp/network/<key>/manifest endpoint isn't shipped (the
+            // manifest poll throws UnsupportedOperationException and bails). Without
+            // a fallback Bedrock players would get no RPM pack at all in network mode.
+            // Try the plugin-message advertisement cache populated by backends via the
+            // rspm:pack channel.
+            PackAdvertCache.Advert advert = PackAdvertCache.getPrimary();
+            if (advert == null) return;
+            try {
+                event.register(ResourcePack.create(PackCodec.url(advert.url())));
+                logger.info("[fallback] Bedrock pack served from " + advert.url()
+                        + " (backend " + advert.backendUuid()
+                        + ", via plugin-message cache; will be replaced when the network-merged pack endpoint ships)");
+            } catch (Throwable t) {
+                logger.warn("Failed to register fallback pack URL for Bedrock session: " + advert.url(), t);
+            }
             return;
         }
         try {

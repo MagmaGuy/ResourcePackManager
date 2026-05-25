@@ -6,16 +6,23 @@ import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.proxy.GeyserBinder;
 import com.magmaguy.resourcepackmanager.proxy.MergedPack;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
+import com.magmaguy.resourcepackmanager.proxy.PackAdvertCache;
 import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Dependency;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.ServerConnection;
+import com.velocitypowered.api.proxy.messages.ChannelMessageSource;
+import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import org.geysermc.geyser.api.event.EventRegistrar;
 import org.slf4j.Logger;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
 import java.nio.file.Path;
 
 @Plugin(
@@ -30,6 +37,14 @@ import java.nio.file.Path;
 )
 public final class RspmVelocityPlugin {
 
+    /**
+     * Plugin-messaging channel backends use to advertise their pack URL+sha1 to the
+     * proxy. Two-segment lowercase channel ID — valid for modern Minecraft. Mirrors
+     * {@code PackAdvertiser.CHANNEL} on the backend.
+     */
+    private static final MinecraftChannelIdentifier RSPM_PACK_CHANNEL =
+            MinecraftChannelIdentifier.from("rspm:pack");
+
     private final ProxyServer proxy;
     private final Logger slf4j;
     private final Path dataDir;
@@ -39,6 +54,7 @@ public final class RspmVelocityPlugin {
     private MagmaguyRspClient httpClient;
     private NetworkSync sync;
     private GeyserBinder bedrock;
+    private Path advertCacheFile;
 
     @Inject
     public RspmVelocityPlugin(ProxyServer proxy, Logger slf4j, @DataDirectory Path dataDir) {
@@ -115,6 +131,14 @@ public final class RspmVelocityPlugin {
             logger.warn("[RSPM] Geyser-Velocity not detected. Bedrock pack delivery disabled. Install Geyser-Velocity to deliver packs to Bedrock players.");
         }
 
+        // Register the rspm:pack plugin-messaging channel and warm the cache from disk
+        // so a proxy restart doesn't lose advertisements before backends re-advertise.
+        // The cache is the Bedrock-pack fallback consumed by GeyserBinder when
+        // NetworkSync hasn't produced a merged pack yet.
+        this.advertCacheFile = dataDir.resolve("known-backends.properties");
+        proxy.getChannelRegistrar().register(RSPM_PACK_CHANNEL);
+        PackAdvertCache.load(advertCacheFile);
+
         // First poll after 5s so the rest of the proxy / Geyser finishes startup; then every 30s.
         this.sync.start(5_000L, 30_000L);
         logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + "). Java pack push is handled by backends; this proxy plugin is Bedrock-only.");
@@ -137,5 +161,53 @@ public final class RspmVelocityPlugin {
         // but we still call its callback so the binder is consistent.
         if (bedrock != null) bedrock.onMergedPackReady(pack);
         logger.info("Merged pack ready at " + pack.url() + " (sha1 " + pack.sha1Hex() + ")");
+    }
+
+    /**
+     * Receive {@code rspm:pack} advertisements pushed by backends via
+     * {@code Player.sendPluginMessage} from {@code PackAdvertiser}. Payload is three
+     * length-prefixed UTF strings — backend UUID, pack URL, SHA-1 hex — written with
+     * {@link java.io.DataOutputStream#writeUTF}.
+     *
+     * <p>Source check: ignore messages whose source isn't a {@link ServerConnection},
+     * i.e. messages forged by clients on the same channel. Result is marked
+     * {@code handled} so Velocity doesn't blindly forward the message anywhere else.</p>
+     */
+    @Subscribe
+    public void onPluginMessage(PluginMessageEvent event) {
+        if (!event.getIdentifier().equals(RSPM_PACK_CHANNEL)) return;
+        ChannelMessageSource source = event.getSource();
+        if (!(source instanceof ServerConnection)) {
+            // Drop client-originating spoofs.
+            event.setResult(PluginMessageEvent.ForwardResult.handled());
+            return;
+        }
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(event.getData()))) {
+            String backendUuid = in.readUTF();
+            String url = in.readUTF();
+            String sha1Hex = in.readUTF();
+            byte[] sha1 = hexToBytes(sha1Hex);
+            PackAdvertCache.register(backendUuid, url, sha1);
+            if (advertCacheFile != null) PackAdvertCache.save(advertCacheFile);
+            logger.info("[plugin-msg] cached pack advert from backend " + backendUuid + " -> " + url);
+        } catch (Exception e) {
+            logger.warn("[plugin-msg] Failed to parse rspm:pack advert", e);
+        }
+        // Always claim the message as ours so it isn't bounced onward.
+        event.setResult(PluginMessageEvent.ForwardResult.handled());
+    }
+
+    private static byte[] hexToBytes(String hex) {
+        if (hex == null || hex.isEmpty()) return new byte[0];
+        int len = hex.length();
+        if ((len & 1) != 0) return new byte[0];
+        byte[] out = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            int hi = Character.digit(hex.charAt(i), 16);
+            int lo = Character.digit(hex.charAt(i + 1), 16);
+            if (hi < 0 || lo < 0) return new byte[0];
+            out[i / 2] = (byte) ((hi << 4) | lo);
+        }
+        return out;
     }
 }
