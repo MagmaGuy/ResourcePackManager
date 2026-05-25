@@ -7,6 +7,7 @@ import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.network.NetworkManifestPoll;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
+import com.magmaguy.resourcepackmanager.network.PackAdvertiser;
 import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient.UploadResult;
@@ -54,6 +55,7 @@ public class AutoHost {
     private static final int DEFAULT_SOCKET_TIMEOUT = 60;
     private static final int UPLOAD_SOCKET_TIMEOUT = 300; // 5 minutes for file uploads
 
+    @Getter
     @Setter
     private static boolean done = false;
 
@@ -68,6 +70,7 @@ public class AutoHost {
 
     /** Local self-host server when the magmaguy.com upload fails or is force-skipped. */
     private static volatile PackHttpServer selfHostServer = null;
+    @Getter
     private static volatile String selfHostedUrl = null;
 
     private AutoHost() {
@@ -393,6 +396,10 @@ public class AutoHost {
             for (Player p : Bukkit.getOnlinePlayers()) {
                 sendResourcePack(p);
             }
+            // Also push the freshly-known URL+sha1 to the proxy via plugin
+            // messaging so its Bedrock fallback cache stays current after a
+            // re-mix. No-op outside network mode.
+            PackAdvertiser.advertiseToAll();
         });
     }
 
