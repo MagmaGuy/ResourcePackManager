@@ -5,6 +5,7 @@ import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
+import com.magmaguy.resourcepackmanager.network.NetworkManifestPoll;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
 import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
@@ -38,6 +39,17 @@ public class AutoHost {
     // Consistent UUID for identifying ResourcePackManager's pack when using multiple resource packs
     private static final UUID RESOURCE_PACK_UUID = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d");
 
+    /**
+     * Stable UUID for the network-merged pack. MUST match
+     * {@code com.magmaguy.resourcepackmanager.proxy.MergedPack.NETWORK_PACK_UUID}
+     * in resourcepackmanager-proxy-common — duplicated here because the bukkit
+     * module doesn't depend on proxy-common. 1.20.3+ clients dedupe repeat
+     * pushes of the same {@code (URL, sha1, UUID)} as a no-op, so every backend
+     * in the network can push this UUID and the client only sees one prompt at
+     * first backend connect.
+     */
+    private static final UUID NETWORK_PACK_UUID = UUID.fromString("b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e");
+
     // Timeout settings for HTTP requests (in seconds)
     private static final int DEFAULT_SOCKET_TIMEOUT = 60;
     private static final int UPLOAD_SOCKET_TIMEOUT = 300; // 5 minutes for file uploads
@@ -62,25 +74,63 @@ public class AutoHost {
     }
 
     public static void sendResourcePack(Player player) {
-        if (NetworkMode.isActive()) return;  // proxy plugin handles client pack push
-        if (!done) return;
         String url;
-        if (selfHostedUrl != null) {
-            url = selfHostedUrl;
-        } else if (rspUUID != null) {
-            url = MagmaguyRspClient.BASE_URL + rspUUID;
+        byte[] hash;
+        UUID packUuid;
+
+        if (NetworkMode.isActive()) {
+            // Network mode: prefer the network-merged URL when NetworkManifestPoll
+            // has a cached value. Every backend in the network pushes the same
+            // (URL, sha1, UUID), and 1.20.3+ clients dedupe repeat pushes as a
+            // no-op — one prompt at first backend connect, zero re-prompts on
+            // /server switches.
+            String mergedUrl = NetworkManifestPoll.getCachedMergedUrl();
+            byte[] mergedHash = NetworkManifestPoll.getCachedMergedSha1Bytes();
+            if (mergedUrl != null && mergedHash != null) {
+                url = mergedUrl;
+                hash = mergedHash;
+                packUuid = NETWORK_PACK_UUID;
+            } else {
+                // Fallback: server-side manifest endpoint isn't shipped yet (or
+                // hasn't returned a merged entry yet). Push this backend's own
+                // pack URL — divergent across backends in the network (client
+                // re-prompts on /server) but functional. Once the server ships
+                // the manifest endpoint, backends pick up the merged URL on the
+                // next NetworkManifestPoll cycle and start pushing it instead.
+                if (selfHostedUrl != null) {
+                    url = selfHostedUrl;
+                    hash = Mix.getFinalSHA1Bytes();
+                    packUuid = RESOURCE_PACK_UUID;
+                } else if (rspUUID != null && done) {
+                    url = MagmaguyRspClient.BASE_URL + rspUUID;
+                    hash = Mix.getFinalSHA1Bytes();
+                    packUuid = RESOURCE_PACK_UUID;
+                } else {
+                    return;
+                }
+            }
         } else {
-            return;
+            // Standalone (non-network) mode — original behavior unchanged.
+            if (!done && selfHostedUrl == null) return;
+            if (selfHostedUrl != null) {
+                url = selfHostedUrl;
+            } else if (rspUUID != null) {
+                url = MagmaguyRspClient.BASE_URL + rspUUID;
+            } else {
+                return;
+            }
+            hash = Mix.getFinalSHA1Bytes();
+            packUuid = RESOURCE_PACK_UUID;
         }
+
         Logger.info("Sending resource pack to " + player.getName());
 
-        byte[] hash = Mix.getFinalSHA1Bytes();
         String prompt = DefaultConfig.getResourcePackPrompt();
         boolean force = DefaultConfig.isForceResourcePack();
 
         if (ServerVersionHelper.supportsMultipleResourcePacks()) {
             // 1.20.3+ supports multiple resource packs - use addResourcePack to coexist with other plugins
-            player.addResourcePack(RESOURCE_PACK_UUID, url, hash, prompt, force);
+            player.addResourcePack(packUuid, url, hash, prompt, force);
         } else {
             // Older versions - use setResourcePack (replaces any existing packs)
             player.setResourcePack(url, hash, prompt, force);
@@ -107,6 +157,12 @@ public class AutoHost {
                 ResourcePackManager.plugin.getLogger(),
                 DEFAULT_SOCKET_TIMEOUT,
                 UPLOAD_SOCKET_TIMEOUT);
+
+        // In network mode, start polling /rsp/network/<key>/manifest so this
+        // backend knows the network-merged URL to push to Java clients.
+        if (NetworkMode.isActive()) {
+            NetworkManifestPoll.start(client);
+        }
 
         keepAlive = new BukkitRunnable() {
             int counter = 0;
@@ -281,6 +337,7 @@ public class AutoHost {
     }
 
     public static void shutdown() {
+        NetworkManifestPoll.stop();
         if (keepAlive != null) keepAlive.cancel();
         // Abort any in-flight HTTP request (initialize / sha1 / upload). Without
         // this, a multi-MB upload can keep the async task alive past onDisable
@@ -313,16 +370,14 @@ public class AutoHost {
     /**
      * On first success after (re)initialize(), push the pack to any players
      * already online — covers the /reload scenario where players don't trigger
-     * a fresh PlayerJoinEvent.
+     * a fresh PlayerJoinEvent. {@link #sendResourcePack(Player)} picks the
+     * correct URL (merged vs. per-backend) based on
+     * {@link NetworkManifestPoll}'s cache, so the same broadcast path works in
+     * both standalone and network modes.
      */
     private static void sendToOnlinePlayersIfFirstUpload() {
         if (firstUpload) {
-            // In network mode the proxy plugin pushes the pack to Java players at
-            // proxy login. Backends never push directly, so the recovery broadcast
-            // here would just be a duplicate (and potentially wrong-URL) send.
-            if (!NetworkMode.isActive()) {
-                broadcastResourcePackSync();
-            }
+            broadcastResourcePackSync();
             firstUpload = false;
         }
     }

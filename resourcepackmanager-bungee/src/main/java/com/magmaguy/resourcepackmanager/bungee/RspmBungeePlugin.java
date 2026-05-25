@@ -17,7 +17,6 @@ public final class RspmBungeePlugin extends Plugin {
     private MagmaguyRspClient httpClient;
     private NetworkSync sync;
     private GeyserBinder bedrock;
-    private BungeeResourcePackPusher javaPushPacket;
 
     @Override
     public void onEnable() {
@@ -88,21 +87,9 @@ public final class RspmBungeePlugin extends Plugin {
             getLogger().warning("[RSPM] Geyser-BungeeCord not detected. Bedrock pack delivery disabled. Install Geyser-BungeeCord to deliver packs to Bedrock players.");
         }
 
-        // Register the clientbound resource-pack-push packet against
-        // BungeeCord's native protocol API (no Protocolize). Done once per
-        // JVM via a static guard inside ensureRegistered().
-        try {
-            BungeeResourcePackPusher.ensureRegistered();
-            this.javaPushPacket = new BungeeResourcePackPusher(logger, config.forceResourcePack());
-            getProxy().getPluginManager().registerListener(this, this.javaPushPacket);
-            logger.info("[RSPM] Java resource-pack push registered via native Bungee Protocol API - clients will receive the merged pack on PostLoginEvent.");
-        } catch (Throwable t) {
-            logger.warn("[RSPM] Failed to register Java resource-pack push via native Bungee API. Bedrock pack delivery via Geyser is unaffected; Java clients will not receive the merged pack on this proxy.", t);
-        }
-
         // First poll after 5s so the rest of the proxy / Geyser finishes startup; then every 30s.
         this.sync.start(5_000L, 30_000L);
-        logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + ").");
+        logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + "). Java pack push is handled by backends; this proxy plugin is Bedrock-only.");
     }
 
     @Override
@@ -119,7 +106,6 @@ public final class RspmBungeePlugin extends Plugin {
 
     private void onMergedPackReady(MergedPack pack) {
         if (bedrock != null) bedrock.onMergedPackReady(pack);
-        if (javaPushPacket != null) javaPushPacket.onMergedPackReady(pack);
         logger.info("Merged pack ready at " + pack.url() + " (sha1 " + pack.sha1Hex() + ")");
     }
 }

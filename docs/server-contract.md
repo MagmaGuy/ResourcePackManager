@@ -123,7 +123,16 @@ Serves the Bedrock-variant pack for the given uuid (uploaded via `/rsp/upload?va
 
 ### `GET /rsp/network/<network-key>/manifest`
 
-Returns the current set of backends registered to a network.
+Returns the current set of backends registered to a network, **plus** the network-merged pack entry. Polled by both:
+
+- the proxy plugin (`NetworkSync`) — uses backend entries as the merge inputs
+- every backend (`NetworkManifestPoll`) — uses the merged-pack entry to discover the network-merged URL + sha1 to push to its own Java clients via `Player.setResourcePack`
+
+The merged-pack entry is identified by either:
+- `uuid == "merged"` (preferred — explicit marker), or
+- `url` ending in `/merged` (fallback — derived from `POST /rsp/network/<key>/merged` canonical URL).
+
+If a backend can't identify the merged entry, it falls back to pushing its own per-backend pack URL (divergent across backends, client re-prompts on `/server` switches). This keeps Java pack push functional even if the manifest endpoint is shipped before backends understand the merged-entry shape.
 
 **Response (success):**
 ```json

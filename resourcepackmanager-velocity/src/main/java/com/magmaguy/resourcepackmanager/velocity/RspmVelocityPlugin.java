@@ -7,15 +7,12 @@ import com.magmaguy.resourcepackmanager.proxy.GeyserBinder;
 import com.magmaguy.resourcepackmanager.proxy.MergedPack;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
 import com.velocitypowered.api.event.Subscribe;
-import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Dependency;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
-import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
-import com.velocitypowered.api.proxy.player.ResourcePackInfo;
 import org.geysermc.geyser.api.event.EventRegistrar;
 import org.slf4j.Logger;
 
@@ -25,7 +22,7 @@ import java.nio.file.Path;
         id = "resourcepackmanager",
         name = "ResourcePackManager",
         version = "1.8.0",
-        description = "Network-side companion to ResourcePackManager. Delivers the merged pack to Java + Bedrock clients via this proxy.",
+        description = "Network-side companion to ResourcePackManager. Delivers the merged pack to Bedrock clients via Geyser on this proxy.",
         authors = {"MagmaGuy"},
         dependencies = {
                 @Dependency(id = "geyser", optional = true)
@@ -120,7 +117,7 @@ public final class RspmVelocityPlugin {
 
         // First poll after 5s so the rest of the proxy / Geyser finishes startup; then every 30s.
         this.sync.start(5_000L, 30_000L);
-        logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + ").");
+        logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + "). Java pack push is handled by backends; this proxy plugin is Bedrock-only.");
     }
 
     @Subscribe
@@ -132,24 +129,6 @@ public final class RspmVelocityPlugin {
                 httpClient.close();
             } catch (Exception ignored) {
             }
-        }
-    }
-
-    @Subscribe
-    public void onPostLogin(PostLoginEvent event) {
-        if (sync == null) return;
-        MergedPack pack = sync.current();
-        if (pack == null) return;
-        Player player = event.getPlayer();
-        try {
-            ResourcePackInfo info = proxy.createResourcePackBuilder(pack.url())
-                    .setHash(pack.sha1Bytes())
-                    .setId(pack.packUuid())
-                    .setShouldForce(config.forceResourcePack())
-                    .build();
-            player.sendResourcePackOffer(info);
-        } catch (Throwable t) {
-            logger.warn("Failed to offer resource pack to " + player.getUsername(), t);
         }
     }
 

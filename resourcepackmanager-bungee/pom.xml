@@ -23,17 +23,6 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
-            <!-- BungeeCord's internal protocol module: DefinedPacket, Protocol,
-                 ProtocolConstants. Provided by the running proxy at runtime;
-                 we only need it on the compile classpath so we can subclass
-                 DefinedPacket directly. The registerPacket call itself is
-                 reflective (private method). -->
-            <groupId>net.md-5</groupId>
-            <artifactId>bungeecord-protocol</artifactId>
-            <version>${bungeecord.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
             <groupId>org.geysermc.geyser</groupId>
             <artifactId>api</artifactId>
             <scope>provided</scope>
