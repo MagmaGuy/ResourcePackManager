@@ -15,18 +15,14 @@ import java.nio.file.Files;
  * deliberate divergence for FMM's use case (see materials note below).
  *
  * Emits:
- *  - materials.default = "entity_emissive_alpha" (Bedrock Wiki vanilla material
- *    list: "Emissive, Alpha Channel, Transparency"). Rainbow uses
- *    "entity_alphatest"; we diverge because FMM frequently spawns furniture
- *    armor stands intersecting floor/wall blocks, and "entity_alphatest"
- *    samples block-light at the entity position, rendering the model pitch
- *    black inside solid blocks on Bedrock. "entity_emissive_alpha" preserves
- *    alpha cutout while adding emissive contribution so the model stays
- *    visible regardless of block light. Note: emissivity is alpha-proportional
- *    per Bedrock spec (the-bedrock-notebook.dev materials/topics/defines),
- *    so fully-opaque pixels still partially receive lighting — if in-game
- *    testing shows persistent dimming, the fallback is to nudge texture
- *    alpha 255 -> 254 in TextureStitcher.
+ *  - materials.default = {@code entity_emissive_alpha} (alpha cutout + emissive
+ *    blend). Rainbow uses {@code entity_alphatest}; we diverge so the model
+ *    isn't pitch-black when the bone armor stand sits inside a solid block.
+ *    Known limitation: emissivity is alpha-proportional per Bedrock spec, so
+ *    fully-opaque pixels still partially sample world light and dim in dark
+ *    spots. A custom material file with {@code USE_ONLY_EMISSIVE} would fix
+ *    this fully but was tried and didn't load (Bedrock either rejected the
+ *    file shape or the inheritance form silently — needs more investigation).
  *  - animations.first_person / third_person / head referencing the three
  *    animations produced by {@link FmmAnimationGenerator}.
  *  - scripts.animate with three context-conditional entries (no pre_animation
@@ -142,16 +138,13 @@ public class FmmAttachableGenerator {
         JsonObject description = new JsonObject();
         description.addProperty("identifier", identifier);
 
-        // Materials: "entity_emissive_alpha" preserves alpha cutout AND was the
-        // Wave-1 state that resolved the alpha-transparency complaint. Note that
-        // it does NOT fix the "inside-a-block renders pitch black" symptom on its
-        // own: Bedrock's USE_EMISSIVE define is alpha-proportional, so opaque
-        // (alpha=255) pixels still sample block-light at the entity position.
-        // A custom material with USE_ONLY_EMISSIVE was attempted but Bedrock's
-        // custom-material inheritance form ("name:parent") errors silently in
-        // 1.16.100+, so that path is dead (MS Learn + Bedrock Wiki concur). The
-        // real fix for the inside-a-block dark render is FMM-side (raise the
-        // armor stand Y or equivalent) — material-side is exhausted.
+        // Materials: stock entity_emissive_alpha + entity_alphatest_glint. We tried
+        // shipping a custom material with USE_ONLY_EMISSIVE (see BedrockMaterialEmitter)
+        // to fix the "armor stand inside a solid block renders pitch black" problem,
+        // but Bedrock didn't load the custom material file and the attachables
+        // resolved to nothing → all models invisible. Reverted while we figure out
+        // the correct material-pack shape. The dimming inside blocks stays as a
+        // known issue; the model-INVISIBLE regression is worse than dimming.
         JsonObject materials = new JsonObject();
         materials.addProperty("default", "entity_emissive_alpha");
         materials.addProperty("enchanted", "entity_alphatest_glint");

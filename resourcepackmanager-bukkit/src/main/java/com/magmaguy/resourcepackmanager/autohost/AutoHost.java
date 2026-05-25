@@ -79,7 +79,20 @@ public class AutoHost {
         // clients. Cross-backend merging is a Bedrock-only feature in this design
         // (proxy mixes + serves merged pack via Geyser); Java clients on multi-
         // backend networks see per-backend packs. See docs/network-mode.md.
-        if (!done && selfHostedUrl == null) return;
+        //
+        // Not-ready path: pack is still being mixed / uploaded. The player will
+        // get the pack automatically once AutoHost finishes (broadcastResourcePackSync
+        // re-pushes to every online player on first-success), so they don't need
+        // to rejoin — but they need to KNOW that's the situation rather than
+        // silently see no pack prompt and assume the server is broken. This
+        // warning supersedes the Bedrock-side "pack not ready" modal Geyser-side
+        // fires on the proxy: if the BACKEND'S pack isn't built, neither Java nor
+        // Bedrock can ever work, so the Java/backend warning is the root-cause
+        // signal admins should see first.
+        if (!done && selfHostedUrl == null) {
+            warnPackNotReady(player);
+            return;
+        }
         if (selfHostedUrl != null) {
             url = selfHostedUrl;
         } else if (rspUUID != null) {
@@ -330,6 +343,43 @@ public class AutoHost {
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    /**
+     * Notify a player + the operator when {@link #sendResourcePack} fired before
+     * the pack is ready (mix still running, upload not yet succeeded). The player
+     * will get the pack automatically once {@link #sendToOnlinePlayersIfFirstUpload}
+     * fires — they don't need to rejoin — but they need to KNOW the pack is
+     * still being built rather than silently see no prompt and assume the server
+     * is broken or the plugin is misconfigured.
+     *
+     * <p>This is the ROOT-CAUSE warning for "no resource pack visible on this
+     * server." If the backend's pack isn't built yet, neither Java nor Bedrock
+     * delivery can ever succeed — so the operator should see this BEFORE chasing
+     * the Bedrock-side "pack not ready" modal Geyser fires on the proxy.</p>
+     */
+    private static void warnPackNotReady(Player player) {
+        // Operator-facing: loud console banner so it's hard to miss.
+        Logger.warn("=====================================================================");
+        Logger.warn("⚠  RSPM: '" + player.getName() + "' joined before the resource pack is ready.");
+        Logger.warn("⚠  Pack state: mixed=" + (Mix.getFinalResourcePack() != null)
+                + ", uploadedOrSelfHosted=" + (done || selfHostedUrl != null));
+        Logger.warn("⚠  Effect: they're connected with NO resource pack right now.");
+        Logger.warn("⚠  Auto-recovery: they'll receive the pack automatically as soon as");
+        Logger.warn("⚠                 mixing+upload finish (typically <30s after boot).");
+        Logger.warn("⚠                 No need for them to rejoin.");
+        Logger.warn("=====================================================================");
+
+        // Player-facing: deferred 1 tick so the join greeting/welcome messages
+        // don't shove our warning off-screen. Bedrock-via-Floodgate players
+        // also see this (Floodgate routes them through the same PlayerJoinEvent),
+        // which is fine — for those players this signal supersedes the proxy-
+        // side Geyser modal anyway since the root cause is on the backend.
+        Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
+            if (!player.isOnline()) return;
+            player.sendMessage("§c§l⚠ §e§l[RSPM] §r§eResource pack still building on this server.");
+            player.sendMessage("§7You'll receive it automatically in a few seconds — no need to rejoin.");
+        }, 20L);
+    }
 
     /**
      * On first success after (re)initialize(), push the pack to any players
