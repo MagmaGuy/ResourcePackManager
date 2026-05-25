@@ -15,12 +15,18 @@ final class RspmBungeeConfig {
     private final boolean forceResourcePack;
     private final int selfHostPort;
     private final String selfHostExternalHost;
+    private final int backendMetadataPort;
 
-    private RspmBungeeConfig(String networkKey, boolean forceResourcePack, int selfHostPort, String selfHostExternalHost) {
+    private RspmBungeeConfig(String networkKey,
+                             boolean forceResourcePack,
+                             int selfHostPort,
+                             String selfHostExternalHost,
+                             int backendMetadataPort) {
         this.networkKey = networkKey;
         this.forceResourcePack = forceResourcePack;
         this.selfHostPort = selfHostPort;
         this.selfHostExternalHost = selfHostExternalHost;
+        this.backendMetadataPort = backendMetadataPort;
     }
 
     String networkKey() {
@@ -39,6 +45,10 @@ final class RspmBungeeConfig {
         return selfHostExternalHost;
     }
 
+    int backendMetadataPort() {
+        return backendMetadataPort;
+    }
+
     static RspmBungeeConfig loadOrCreate(Path dataDir) throws IOException {
         Files.createDirectories(dataDir);
         Path configFile = dataDir.resolve("config.yml");
@@ -53,7 +63,8 @@ final class RspmBungeeConfig {
                     (String) data.getOrDefault("network-key", ""),
                     (Boolean) data.getOrDefault("force-resource-pack", false),
                     ((Number) data.getOrDefault("self-host-port", 25567)).intValue(),
-                    (String) data.getOrDefault("self-host-external-host", "")
+                    (String) data.getOrDefault("self-host-external-host", ""),
+                    ((Number) data.getOrDefault("backend-metadata-port", 25567)).intValue()
             );
         }
     }
@@ -68,13 +79,18 @@ final class RspmBungeeConfig {
                 # Force clients to accept the pack (kick on decline). Default: false.
                 force-resource-pack: false
 
-                # Port for the self-host HTTP fallback (used when uploading the merged pack
-                # to magmaguy.com fails). You must open this port in your firewall manually.
+                # Port for the self-host HTTP server (serves the proxy-merged pack to Bedrock
+                # via Geyser). You must open this port in your firewall manually.
                 self-host-port: 25567
 
                 # Public hostname/IP clients use to reach the self-host server. Leave empty
                 # for auto-detect (best-effort).
                 self-host-external-host: ""
+
+                # TCP port the proxy will hit on every backend to fetch /.rspm-pack-info.json.
+                # Must match the backend RPM's `selfHostPort` config (also 25567 by default).
+                # Override here if you run RPM on a non-default port on the backends.
+                backend-metadata-port: 25567
                 """;
         Files.writeString(configFile, yaml);
     }

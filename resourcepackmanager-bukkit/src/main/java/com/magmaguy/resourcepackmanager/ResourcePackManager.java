@@ -19,7 +19,6 @@ import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderCommand;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderDismissedConfig;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderWarningListener;
-import com.magmaguy.resourcepackmanager.network.PackAdvertiser;
 import com.magmaguy.resourcepackmanager.network.ProxyExtensionExtractor;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
@@ -92,7 +91,6 @@ public class ResourcePackManager extends JavaPlugin {
             Logger.info("Disabling ResourcePackManager during initialization");
             ThirdPartyResourcePack.shutdown();
             AutoHost.shutdown();
-            PackAdvertiser.shutdown();
             GeyserPackProvider.unregister();
             HandlerList.unregisterAll(this);
             MagmaCore.shutdown(this);
@@ -101,7 +99,6 @@ public class ResourcePackManager extends JavaPlugin {
         Logger.info("Disabling ResourcePackManager");
         ThirdPartyResourcePack.shutdown();
         AutoHost.shutdown();
-        PackAdvertiser.shutdown();
         GeyserPackProvider.unregister();
         HandlerList.unregisterAll(this);
         MagmaCore.shutdown(this);
@@ -157,11 +154,6 @@ public class ResourcePackManager extends JavaPlugin {
 
         initializationContext.step("Proxy Extension Extractor");
         ProxyExtensionExtractor.extractIfNetworkMode(this);
-
-        // Plugin-messaging advertiser — backends in network mode push their pack URL
-        // to the proxy on each PlayerJoinEvent. No-op in standalone mode.
-        initializationContext.step("Pack Advertiser");
-        PackAdvertiser.initialize(this);
 
         initializationContext.step("Commands");
         CommandManager commandManager = new CommandManager(this, "resourcepackmanager");

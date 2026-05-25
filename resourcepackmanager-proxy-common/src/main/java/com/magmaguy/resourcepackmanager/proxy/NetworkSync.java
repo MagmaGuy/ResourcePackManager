@@ -1,9 +1,7 @@
 package com.magmaguy.resourcepackmanager.proxy;
 
-import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient.ManifestResult;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient.ManifestResult.Entry;
-import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient.UploadResult;
 import com.magmaguy.resourcepackmanager.http.PackHttpServer;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixEngine;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixInput;
@@ -27,38 +25,42 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
- * Proxy-side orchestrator. Polls magmaguy.com for the current set of backend pack URLs
- * registered under our network-key, downloads each, runs the shared {@link MixEngine}
- * to merge them, publishes the merged pack (uploaded to magmaguy.com or self-hosted on
- * upload failure), and notifies a callback when a new merged pack is ready. The callback
- * is responsible for actually pushing to clients (Java via the proxy's pack-offer API,
- * Bedrock via Geyser's session subscriber).
+ * Proxy-side orchestrator. Pulls the current backend manifest from a
+ * {@link Supplier} (typically backed by {@link BackendMetadataPoller}),
+ * downloads each backend's pack, runs the shared {@link MixEngine} to merge
+ * them, self-hosts the merged pack on a local {@link PackHttpServer}, and
+ * notifies a callback when a new merged pack is ready. The callback is
+ * responsible for actually pushing to clients (Bedrock via Geyser's session
+ * subscriber; Java pack push is handled by individual backends).
  *
- * <p>One instance per network-key. The proxy plugin instantiates it once per startup
- * with the resolved network-key from config and starts the polling loop.</p>
+ * <p>One instance per network-key. The proxy plugin instantiates it once per
+ * startup with the resolved network-key from config and starts the polling
+ * loop.</p>
  *
  * <p>This class is platform-neutral — it does not import anything from
  * {@code org.bukkit}, {@code com.velocitypowered}, {@code net.md_5.bungee}, or
- * {@code org.geysermc}. Velocity and Bungee entrypoints in later phases wire it up
- * with their own {@link ProxyLogger} and {@link ProxySchedulerAdapter}
- * implementations.</p>
+ * {@code org.geysermc}. Velocity and Bungee entrypoints wire it up with their
+ * own {@link ProxyLogger} and {@link ProxySchedulerAdapter} implementations.</p>
  */
 public final class NetworkSync {
 
     /**
-     * Entries older than this are considered stale and excluded from the mix. 8 hours
-     * is comfortably longer than any sensible backend keep-alive interval (AutoHost
-     * pings every 5 minutes) but short enough that a permanently-departed backend
-     * stops contributing within a day.
+     * Entries older than this are considered stale and excluded from the mix.
+     * The {@link BackendMetadataPoller} stamps {@code lastSeenMillis} on every
+     * successful poll, so a fresh entry stays fresh as long as the backend is
+     * reachable. 8 hours is comfortably longer than any sensible
+     * {@code BackendMetadataPoller} interval but short enough that a
+     * permanently-departed backend stops contributing within a day.
      */
     static final long STALE_THRESHOLD_MILLIS = 8L * 60L * 60L * 1000L;
 
     private final ProxyLogger logger;
     private final ProxySchedulerAdapter scheduler;
-    private final MagmaguyRspClient client;
+    private final Supplier<ManifestResult> manifestSource;
     private final MixEngine mixer;
     private final File workingDir;
     private final String networkKey;
@@ -80,7 +82,7 @@ public final class NetworkSync {
     public NetworkSync(
             ProxyLogger logger,
             ProxySchedulerAdapter scheduler,
-            MagmaguyRspClient client,
+            Supplier<ManifestResult> manifestSource,
             MixerLogger mixerLogger,
             File workingDir,
             String networkKey,
@@ -89,7 +91,7 @@ public final class NetworkSync {
             Consumer<MergedPack> onMergedPackReady) {
         this.logger = logger;
         this.scheduler = scheduler;
-        this.client = client;
+        this.manifestSource = manifestSource;
         this.mixer = new MixEngine(mixerLogger);
         this.workingDir = workingDir;
         this.networkKey = networkKey;
@@ -130,25 +132,18 @@ public final class NetworkSync {
         }
     }
 
-    /** Manifest poll + mix + publish. Synchronous on the scheduler's async thread. */
+    /** Mix + publish. Synchronous on the scheduler's async thread. */
     private void pollOnce() {
         try {
-            ManifestResult manifest;
-            try {
-                manifest = client.fetchNetworkManifest(networkKey);
-            } catch (UnsupportedOperationException e) {
-                // Server-side network endpoints not implemented yet. Don't spam logs —
-                // this is expected until magmaguy.com adds the manifest endpoint.
-                return;
-            }
+            ManifestResult manifest = manifestSource.get();
+            if (manifest == null) return;
 
-            // Drop entries whose backends haven't checked in recently. A "stale" backend
-            // is one that's gone away (proxy survived a restart it didn't, or the
-            // backend crashed) — we don't want its old pack continuing to influence
-            // the merge indefinitely.
+            // Drop entries whose backends haven't checked in recently. Even though
+            // BackendMetadataPoller stamps fresh entries every cycle, this guard
+            // protects against a stale snapshot lingering if the poller itself
+            // ever stalls.
             List<Entry> active = filterStale(manifest.entries(), System.currentTimeMillis(), STALE_THRESHOLD_MILLIS);
             if (active.isEmpty()) {
-                logger.info("Network manifest empty (or all backends stale); skipping mix.");
                 return;
             }
 
@@ -189,10 +184,10 @@ public final class NetworkSync {
             MixInput input = new MixInput(orderedPacks, mixerWorkDir, mixerOutDir, workingDir, "rspm-network", false);
             MixOutput out = mixer.run(input);
 
-            // Publish: upload to magmaguy.com first, fall back to self-host on failure.
-            String publishedUrl = publishMergedPack(out.mergedZip());
+            // Publish on the proxy's own self-host server.
+            String publishedUrl = startOrRefreshSelfHost(out.mergedZip());
             if (publishedUrl == null) {
-                logger.warn("Failed to publish merged pack via both upload and self-host.");
+                logger.warn("Failed to self-host merged pack on port " + selfHostPort + ".");
                 return;
             }
 
@@ -270,28 +265,6 @@ public final class NetworkSync {
         if (response.statusCode() != 200) {
             throw new IOException("Pack download " + url + " returned HTTP " + response.statusCode());
         }
-    }
-
-    /**
-     * Try uploading to magmaguy.com; if that fails (or throws
-     * {@link UnsupportedOperationException} because the server hasn't implemented the
-     * network-merged endpoint yet), fall back to self-hosting on
-     * {@link #selfHostPort}. Returns the URL clients should use, or {@code null} if
-     * both paths fail.
-     */
-    private String publishMergedPack(File mergedZip) {
-        try {
-            UploadResult result = client.uploadNetworkMerged(networkKey, mergedZip);
-            if (result.success() && result.urlOrNull() != null) {
-                return result.urlOrNull();
-            }
-            logger.info("Merged pack upload to magmaguy.com failed; falling back to self-host.");
-        } catch (UnsupportedOperationException e) {
-            // server doesn't have the endpoint yet — fall through to self-host
-        } catch (IOException e) {
-            logger.info("Merged pack upload threw IOException; falling back to self-host: " + e.getMessage());
-        }
-        return startOrRefreshSelfHost(mergedZip);
     }
 
     /**

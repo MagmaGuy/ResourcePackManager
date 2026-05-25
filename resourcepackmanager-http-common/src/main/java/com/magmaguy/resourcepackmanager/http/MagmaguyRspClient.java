@@ -226,10 +226,10 @@ public final class MagmaguyRspClient implements AutoCloseable {
      *         or a parsed {@link RspError} on failure (also logged).
      */
     public UploadResult upload(String uuid, File pack) throws IOException {
-        return doUpload(BASE_URL + "upload", uuid, pack, null);
+        return doUpload(BASE_URL + "upload", uuid, pack);
     }
 
-    private UploadResult doUpload(String url, String uuid, File pack, String networkKey) throws IOException {
+    private UploadResult doUpload(String url, String uuid, File pack) throws IOException {
         CloseableHttpClient uploadClient = buildClient(uploadSocketTimeoutSeconds);
         inFlight = uploadClient;
         try {
@@ -237,12 +237,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
             builder.addTextBody("uuid", uuid, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
-            if (networkKey != null) {
-                builder.addTextBody(
-                        "network-key",
-                        networkKey,
-                        ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
-            }
             builder.addBinaryBody("file", pack, ContentType.APPLICATION_OCTET_STREAM, pack.getName());
 
             uploadRequest.setEntity(builder.build());
@@ -321,54 +315,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
         } finally {
             inFlight = null;
         }
-    }
-
-    // ------------------------------------------------------------------
-    // New protocol (Phase 3+) — stubs until magmaguy.com adds endpoints
-    // ------------------------------------------------------------------
-
-    /**
-     * Upload a Bedrock-variant pack under the same UUID.
-     * POST {@code /rsp/upload?variant=bedrock&uuid=<u>}.
-     *
-     * @throws UnsupportedOperationException until the server adds variant support
-     */
-    public UploadResult uploadBedrockVariant(String uuid, File pack) throws IOException {
-        throw new UnsupportedOperationException(
-                "Bedrock-variant uploads not yet implemented server-side");
-    }
-
-    /**
-     * Upload tagged for a network. POST {@code /rsp/upload} with a {@code network-key}
-     * form field added alongside the regular {@code uuid} + {@code file} fields.
-     *
-     * <p>If the server does not yet recognize the {@code network-key} field (Phase 3
-     * server contract), it ignores the extra field and the upload still succeeds as
-     * a regular upload — the desired graceful-degradation behavior.</p>
-     */
-    public UploadResult uploadNetworkTagged(String uuid, File pack, String networkKey) throws IOException {
-        return doUpload(BASE_URL + "upload", uuid, pack, networkKey);
-    }
-
-    /**
-     * GET {@code /rsp/network/<key>/manifest}. Returns the current set of
-     * backend pack URLs registered in this network.
-     *
-     * @throws UnsupportedOperationException until the server adds network endpoints
-     */
-    public ManifestResult fetchNetworkManifest(String networkKey) throws IOException {
-        throw new UnsupportedOperationException(
-                "Network manifest not yet implemented server-side");
-    }
-
-    /**
-     * POST {@code /rsp/network/<key>/merged}. Uploads the proxy-merged network pack.
-     *
-     * @throws UnsupportedOperationException until the server adds network endpoints
-     */
-    public UploadResult uploadNetworkMerged(String networkKey, File mergedPack) throws IOException {
-        throw new UnsupportedOperationException(
-                "Network merged upload not yet implemented server-side");
     }
 
     // ------------------------------------------------------------------
@@ -496,6 +442,14 @@ public final class MagmaguyRspClient implements AutoCloseable {
     public record Sha1Result(boolean matched, RspError errorOrNull) {
     }
 
+    /**
+     * Snapshot of the set of backend packs the proxy currently knows about. Originally
+     * the shape returned by a hypothetical {@code /rsp/network/<key>/manifest} endpoint
+     * on magmaguy.com; in the current design it's assembled by
+     * {@code BackendMetadataPoller} on the proxy from per-backend {@code /.rspm-pack-info.json}
+     * responses. Class kept here for namespace stability across the proxy + NetworkSync
+     * pipeline.
+     */
     public record ManifestResult(List<Entry> entries) {
         public record Entry(String uuid, String url, String sha1, int priority, long lastSeenMillis) {
         }

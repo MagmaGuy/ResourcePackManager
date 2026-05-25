@@ -1,13 +1,12 @@
 package com.magmaguy.resourcepackmanager.autohost;
 
+import com.google.gson.JsonObject;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
-import com.magmaguy.resourcepackmanager.network.NetworkManifestPoll;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
-import com.magmaguy.resourcepackmanager.network.PackAdvertiser;
 import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient.UploadResult;
@@ -35,21 +34,16 @@ import java.util.UUID;
  * {@link #done}), the keep-alive scheduler, and the Bukkit-specific player
  * notification path. The HTTP request/response plumbing is delegated to a
  * shared {@link MagmaguyRspClient} from {@code resourcepackmanager-http-common}.</p>
+ *
+ * <p>In network mode this class also runs a small always-on
+ * {@link PackHttpServer} that exposes {@link PackHttpServer#METADATA_PATH} for
+ * the proxy plugin's {@code BackendMetadataPoller} to discover this backend's
+ * current pack URL+sha1. The metadata route returns 200 with null fields when
+ * a pack hasn't been uploaded yet so the proxy can poll without seeing 404s.</p>
  */
 public class AutoHost {
     // Consistent UUID for identifying ResourcePackManager's pack when using multiple resource packs
     private static final UUID RESOURCE_PACK_UUID = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d");
-
-    /**
-     * Stable UUID for the network-merged pack. MUST match
-     * {@code com.magmaguy.resourcepackmanager.proxy.MergedPack.NETWORK_PACK_UUID}
-     * in resourcepackmanager-proxy-common — duplicated here because the bukkit
-     * module doesn't depend on proxy-common. 1.20.3+ clients dedupe repeat
-     * pushes of the same {@code (URL, sha1, UUID)} as a no-op, so every backend
-     * in the network can push this UUID and the client only sees one prompt at
-     * first backend connect.
-     */
-    private static final UUID NETWORK_PACK_UUID = UUID.fromString("b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e");
 
     // Timeout settings for HTTP requests (in seconds)
     private static final int DEFAULT_SOCKET_TIMEOUT = 60;
@@ -79,52 +73,21 @@ public class AutoHost {
     public static void sendResourcePack(Player player) {
         String url;
         byte[] hash;
-        UUID packUuid;
+        UUID packUuid = RESOURCE_PACK_UUID;
 
-        if (NetworkMode.isActive()) {
-            // Network mode: prefer the network-merged URL when NetworkManifestPoll
-            // has a cached value. Every backend in the network pushes the same
-            // (URL, sha1, UUID), and 1.20.3+ clients dedupe repeat pushes as a
-            // no-op — one prompt at first backend connect, zero re-prompts on
-            // /server switches.
-            String mergedUrl = NetworkManifestPoll.getCachedMergedUrl();
-            byte[] mergedHash = NetworkManifestPoll.getCachedMergedSha1Bytes();
-            if (mergedUrl != null && mergedHash != null) {
-                url = mergedUrl;
-                hash = mergedHash;
-                packUuid = NETWORK_PACK_UUID;
-            } else {
-                // Fallback: server-side manifest endpoint isn't shipped yet (or
-                // hasn't returned a merged entry yet). Push this backend's own
-                // pack URL — divergent across backends in the network (client
-                // re-prompts on /server) but functional. Once the server ships
-                // the manifest endpoint, backends pick up the merged URL on the
-                // next NetworkManifestPoll cycle and start pushing it instead.
-                if (selfHostedUrl != null) {
-                    url = selfHostedUrl;
-                    hash = Mix.getFinalSHA1Bytes();
-                    packUuid = RESOURCE_PACK_UUID;
-                } else if (rspUUID != null && done) {
-                    url = MagmaguyRspClient.BASE_URL + rspUUID;
-                    hash = Mix.getFinalSHA1Bytes();
-                    packUuid = RESOURCE_PACK_UUID;
-                } else {
-                    return;
-                }
-            }
+        // Standalone and network mode both push the backend's OWN pack URL to Java
+        // clients. Cross-backend merging is a Bedrock-only feature in this design
+        // (proxy mixes + serves merged pack via Geyser); Java clients on multi-
+        // backend networks see per-backend packs. See docs/network-mode.md.
+        if (!done && selfHostedUrl == null) return;
+        if (selfHostedUrl != null) {
+            url = selfHostedUrl;
+        } else if (rspUUID != null) {
+            url = MagmaguyRspClient.BASE_URL + rspUUID;
         } else {
-            // Standalone (non-network) mode — original behavior unchanged.
-            if (!done && selfHostedUrl == null) return;
-            if (selfHostedUrl != null) {
-                url = selfHostedUrl;
-            } else if (rspUUID != null) {
-                url = MagmaguyRspClient.BASE_URL + rspUUID;
-            } else {
-                return;
-            }
-            hash = Mix.getFinalSHA1Bytes();
-            packUuid = RESOURCE_PACK_UUID;
+            return;
         }
+        hash = Mix.getFinalSHA1Bytes();
 
         Logger.info("Sending resource pack to " + player.getName());
 
@@ -161,10 +124,12 @@ public class AutoHost {
                 DEFAULT_SOCKET_TIMEOUT,
                 UPLOAD_SOCKET_TIMEOUT);
 
-        // In network mode, start polling /rsp/network/<key>/manifest so this
-        // backend knows the network-merged URL to push to Java clients.
+        // In network mode, start the always-on metadata server immediately so the
+        // proxy plugin's BackendMetadataPoller can hit /.rspm-pack-info.json from
+        // the very first poll, even before the magmaguy.com upload completes.
+        // Returns 200 with null fields until AutoHost finishes uploading.
         if (NetworkMode.isActive()) {
-            NetworkManifestPoll.start(client);
+            startMetadataServerIfNeeded();
         }
 
         keepAlive = new BukkitRunnable() {
@@ -259,10 +224,7 @@ public class AutoHost {
 
         UploadResult result;
         try {
-            String networkKey = NetworkMode.isActive() ? NetworkMode.getNetworkKey() : null;
-            result = (networkKey != null)
-                    ? client.uploadNetworkTagged(rspUUID, Mix.getFinalResourcePack(), networkKey)
-                    : client.upload(rspUUID, Mix.getFinalResourcePack());
+            result = client.upload(rspUUID, Mix.getFinalResourcePack());
         } catch (IOException e) {
             Logger.warn("Failed to communicate with remote server during upload!");
             e.printStackTrace();
@@ -340,7 +302,6 @@ public class AutoHost {
     }
 
     public static void shutdown() {
-        NetworkManifestPoll.stop();
         if (keepAlive != null) keepAlive.cancel();
         // Abort any in-flight HTTP request (initialize / sha1 / upload). Without
         // this, a multi-MB upload can keep the async task alive past onDisable
@@ -373,10 +334,7 @@ public class AutoHost {
     /**
      * On first success after (re)initialize(), push the pack to any players
      * already online — covers the /reload scenario where players don't trigger
-     * a fresh PlayerJoinEvent. {@link #sendResourcePack(Player)} picks the
-     * correct URL (merged vs. per-backend) based on
-     * {@link NetworkManifestPoll}'s cache, so the same broadcast path works in
-     * both standalone and network modes.
+     * a fresh PlayerJoinEvent.
      */
     private static void sendToOnlinePlayersIfFirstUpload() {
         if (firstUpload) {
@@ -396,10 +354,6 @@ public class AutoHost {
             for (Player p : Bukkit.getOnlinePlayers()) {
                 sendResourcePack(p);
             }
-            // Also push the freshly-known URL+sha1 to the proxy via plugin
-            // messaging so its Bedrock fallback cache stays current after a
-            // re-mix. No-op outside network mode.
-            PackAdvertiser.advertiseToAll();
         });
     }
 
@@ -435,14 +389,21 @@ public class AutoHost {
         if (!DefaultConfig.isSelfHostEnabled() && !DefaultConfig.isSelfHostForce()) return false;
         File pack = Mix.getFinalResourcePack();
         if (pack == null) return false;
+        // In network mode the server may already be running (started by
+        // startMetadataServerIfNeeded for the /.rspm-pack-info.json route). Reuse it.
         if (selfHostServer != null) {
-            // Already running — just refresh `done` and notify players.
+            // Already running — derive and cache the self-host URL, mark done,
+            // and notify players. The URL is the pack path on the same server.
+            if (selfHostedUrl == null) {
+                selfHostedUrl = selfHostServer.urlOn(resolveExternalHost());
+                Logger.info("Self-hosting pack at " + selfHostedUrl);
+            }
             done = true;
             broadcastResourcePackSync();
             return true;
         }
         try {
-            PackHttpServer server = PackHttpServer.start(pack, DefaultConfig.getSelfHostPort(), "/rspm.zip");
+            PackHttpServer server = startPackHttpServer(pack);
             String url = server.urlOn(resolveExternalHost());
             selfHostServer = server;
             selfHostedUrl = url;
@@ -455,6 +416,92 @@ public class AutoHost {
                     + " probably in use): " + e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * Network-mode only: start a {@link PackHttpServer} immediately so the
+     * proxy plugin's poller can discover this backend's metadata endpoint right
+     * away, even before {@link #uploadFile()} finishes. The pack-zip route
+     * 404s until {@link Mix#getFinalResourcePack()} appears; the metadata
+     * route always returns 200 with whatever's known so far (null fields
+     * filtered server-side).
+     */
+    private static void startMetadataServerIfNeeded() {
+        if (selfHostServer != null) return;
+        try {
+            File pack = Mix.getFinalResourcePack(); // may be null at this point
+            PackHttpServer server = startPackHttpServer(pack);
+            selfHostServer = server;
+            Logger.info("Started backend metadata server on port " + server.port()
+                    + " (path " + PackHttpServer.METADATA_PATH + ")");
+        } catch (IOException e) {
+            Logger.warn("Failed to start backend metadata HTTP server (port "
+                    + DefaultConfig.getSelfHostPort() + " in use?): " + e.getMessage());
+        }
+    }
+
+    /**
+     * Construct + start the {@link PackHttpServer} with the metadata supplier
+     * always wired. Centralises so the metadata-only startup path and the
+     * fallback-self-host path can't drift apart.
+     */
+    private static PackHttpServer startPackHttpServer(File pack) throws IOException {
+        return PackHttpServer.start(
+                pack,
+                DefaultConfig.getSelfHostPort(),
+                "/rspm.zip",
+                AutoHost::buildMetadataJson);
+    }
+
+    /**
+     * Build the metadata JSON body returned by {@code /.rspm-pack-info.json}.
+     * Always returns a valid 200-body object; fields that aren't known yet
+     * (no UUID assigned, no pack uploaded, etc.) are emitted as JSON null so
+     * the proxy can gracefully skip this backend until it has data.
+     */
+    static String buildMetadataJson() {
+        JsonObject obj = new JsonObject();
+        String uuid = DataConfig.getRspUUID();
+        if (uuid != null && !uuid.isEmpty()) {
+            obj.addProperty("uuid", uuid);
+        } else {
+            obj.add("uuid", com.google.gson.JsonNull.INSTANCE);
+        }
+        String url;
+        if (selfHostedUrl != null) {
+            url = selfHostedUrl;
+        } else if (rspUUID != null && done) {
+            url = MagmaguyRspClient.BASE_URL + rspUUID;
+        } else {
+            url = null;
+        }
+        if (url != null) {
+            obj.addProperty("url", url);
+        } else {
+            obj.add("url", com.google.gson.JsonNull.INSTANCE);
+        }
+        String sha1 = Mix.getFinalSHA1();
+        if (sha1 != null && !sha1.isEmpty()) {
+            obj.addProperty("sha1", sha1);
+        } else {
+            obj.add("sha1", com.google.gson.JsonNull.INSTANCE);
+        }
+        // Resolve the network-key best-effort; outside network mode this falls
+        // through to the autogen UUID path inside NetworkMode.getNetworkKey().
+        // Standalone backends shouldn't be polled in the first place but it
+        // costs nothing to emit a usable value.
+        String networkKey;
+        try {
+            networkKey = NetworkMode.getNetworkKey();
+        } catch (Throwable t) {
+            networkKey = null;
+        }
+        if (networkKey != null && !networkKey.isEmpty()) {
+            obj.addProperty("networkKey", networkKey);
+        } else {
+            obj.add("networkKey", com.google.gson.JsonNull.INSTANCE);
+        }
+        return obj.toString();
     }
 
     /**
