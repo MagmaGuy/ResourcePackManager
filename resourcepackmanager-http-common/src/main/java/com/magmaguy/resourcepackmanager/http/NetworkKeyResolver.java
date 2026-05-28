@@ -43,4 +43,27 @@ public final class NetworkKeyResolver {
             return null;
         }
     }
+
+    /**
+     * 32-character SHA-256 hex prefix of the raw network key. Used as the URL
+     * path component when downloading from the Bedrock relay
+     * ({@code GET /rsp/bedrock/file/<hash>/<backendId>/<kind>}) — the hoster
+     * stores files keyed by this hash and never sees / never stores the raw
+     * key on disk.
+     *
+     * <p>Returns {@code null} on null / too-short input so callers can detect
+     * malformed keys before issuing a request.</p>
+     */
+    public static String shortHashForRelay(String rawKey) {
+        if (rawKey == null || rawKey.length() < 8) return null;
+        try {
+            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+            byte[] hash = sha256.digest(rawKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : hash) sb.append(String.format("%02x", b));
+            return sb.substring(0, 32);
+        } catch (NoSuchAlgorithmException e) {
+            return null;
+        }
+    }
 }

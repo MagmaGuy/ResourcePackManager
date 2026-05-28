@@ -174,7 +174,9 @@ public final class EquipmentAttachableGenerator {
         File sourcePng = new File(mergedJavaPack,
                 "assets/" + texNs + "/textures/entity/equipment/" + layerKey + "/" + texStem + ".png");
         if (!sourcePng.isFile()) {
-            BedrockLog.warn("[BedrockConverter] Equipment texture not found: " + sourcePng.getPath()
+            // Per-armor-piece asset miss — fires once per item that references an
+            // equipment texture not bundled in the merged pack. Demoted to debug.
+            BedrockLog.debug("[BedrockConverter] Equipment texture not found: " + sourcePng.getPath()
                     + " (referenced by " + equipmentRef + " layer=" + layerKey + ")");
             return false;
         }

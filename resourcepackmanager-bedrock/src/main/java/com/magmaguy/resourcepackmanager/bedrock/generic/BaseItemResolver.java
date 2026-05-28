@@ -27,7 +27,8 @@ public final class BaseItemResolver {
 
     /**
      * Base item that FreeMinecraftModels uses as the carrier for every bone armor stand
-     * (see {@code ModelArmorStand.java:35} in FMM — always {@code Material.LEATHER_HORSE_ARMOR}).
+     * (see {@code PacketArmorStandEntity.initializeModel} in EasyMinecraftGoals — always
+     * {@code Material.LEATHER_HORSE_ARMOR}).
      * Every items definition in the {@code freeminecraftmodels} namespace must have a
      * Geyser mapping under this base item too, otherwise Bedrock clients see plain
      * leather-horse-armor-wearing armor stands instead of the custom model. The
@@ -84,9 +85,10 @@ public final class BaseItemResolver {
             return heuristic.get();
         }
 
-        // 4. Generic fallback (log so packs with unusual naming surface in operator's logs)
-        BedrockLog.warn("[BedrockConverter] No base-item rule matched for "
-                + def.itemIdentifier() + "; using generic fallback set");
+        // 4. Generic fallback. Silent — items hitting this path are working
+        // as designed (they just don't have a specific base-item rule). Logging
+        // a WARN per item produced hundreds of lines per mix run with no
+        // diagnostic value.
         return FilenameHeuristic.genericFallback();
     }
 

@@ -58,8 +58,12 @@ public class ThirdPartyResourcePack {
     private boolean stableResourcePackSent = false;
 
     public ThirdPartyResourcePack(String pluginName, String localPath, String url, boolean zips, boolean cluster, String reloadCommand) {
+        this(pluginName, localPath, url, zips, cluster, reloadCommand, "");
+    }
+
+    public ThirdPartyResourcePack(String pluginName, String localPath, String url, boolean zips, boolean cluster, String reloadCommand, String mixerFilenameSuffix) {
         this.pluginName = pluginName;
-        this.mixerFilename = pluginName + "_resource_pack.zip";
+        this.mixerFilename = pluginName + (mixerFilenameSuffix == null ? "" : mixerFilenameSuffix) + "_resource_pack.zip";
         this.url = url;
         this.localPath = localPath;
 
@@ -231,6 +235,18 @@ public class ThirdPartyResourcePack {
                 compatiblePluginConfigFields.isZips(),
                 compatiblePluginConfigFields.isCluster(),
                 compatiblePluginConfigFields.getReloadCommand());
+
+        String additional = compatiblePluginConfigFields.getAdditionalLocalPath();
+        if (additional != null && !additional.isBlank()) {
+            new ThirdPartyResourcePack(
+                    compatiblePluginConfigFields.getPluginName(),
+                    additional,
+                    null,
+                    false,
+                    true,
+                    compatiblePluginConfigFields.getReloadCommand(),
+                    "_shared");
+        }
     }
 
     private void zipThirdPartyPack() {
@@ -257,7 +273,9 @@ public class ThirdPartyResourcePack {
         if (!mixerDir.exists()) mixerDir.mkdir();
 
         // Merge all cluster sub-packs into a temporary directory
-        File clusterTemp = new File(mixerDir.getPath() + File.separatorChar + pluginName + "_cluster_temp");
+        // Derive temp dir name from mixerFilename so multiple registrations under the same pluginName don't collide.
+        String clusterTempName = mixerFilename.replace("_resource_pack.zip", "_cluster_temp");
+        File clusterTemp = new File(mixerDir.getPath() + File.separatorChar + clusterTempName);
         if (clusterTemp.exists()) Mix.recursivelyDeleteDirectory(clusterTemp);
         clusterTemp.mkdir();
 

@@ -24,6 +24,9 @@ public class CompatiblePluginConfigFields extends CustomConfigFields {
     @Getter
     @Setter
     private boolean cluster = false;
+    @Getter
+    @Setter
+    private String additionalLocalPath = null;
 
     public CompatiblePluginConfigFields(String filename, boolean isEnabled) {
         super(filename, isEnabled);
@@ -38,6 +41,7 @@ public class CompatiblePluginConfigFields extends CustomConfigFields {
         this.reloadCommand = processString("reloadCommand", reloadCommand, reloadCommand, true);
         this.localPath = processString("localPath", localPath, localPath, true);
         this.cluster = processBoolean("cluster", cluster, cluster, true);
+        this.additionalLocalPath = processString("additionalLocalPath", additionalLocalPath, additionalLocalPath, true);
 
     }
 }

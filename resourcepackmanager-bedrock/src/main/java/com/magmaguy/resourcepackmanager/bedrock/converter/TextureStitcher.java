@@ -159,7 +159,12 @@ public class TextureStitcher {
             String path = BedrockNaming.extractPath(textureRef);
             File textureFile = new File(mergedPackRoot, "assets/" + ns + "/textures/" + path + ".png");
             if (!textureFile.exists()) {
-                BedrockLog.warn("[BedrockConverter] Texture not found: " + textureFile.getPath());
+                // Per-texture miss — happens routinely for models that reference
+                // optional/variant slot keys that aren't present in this build of
+                // the pack. Demoted to debug; the model still emits with its
+                // present textures, and a fully-broken model surfaces as the
+                // "No valid textures loaded" warn below.
+                BedrockLog.debug("[BedrockConverter] Texture not found: " + textureFile.getPath());
                 continue;
             }
 

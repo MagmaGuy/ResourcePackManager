@@ -11,22 +11,48 @@ import java.nio.file.Files;
 
 /**
  * Generates Bedrock attachable definitions for FMM bone models, mirroring
- * Rainbow's {@code BedrockAttachableContext} geometry path 1:1, with one
- * deliberate divergence for FMM's use case (see materials note below).
+ * Rainbow's {@code BedrockAttachableContext} geometry path 1:1.
  *
  * Emits:
- *  - materials.default = {@code entity_emissive_alpha} (alpha cutout + emissive
- *    blend). Rainbow uses {@code entity_alphatest}; we diverge so the model
- *    isn't pitch-black when the bone armor stand sits inside a solid block.
- *    Known limitation: emissivity is alpha-proportional per Bedrock spec, so
- *    fully-opaque pixels still partially sample world light and dim in dark
- *    spots. A custom material file with {@code USE_ONLY_EMISSIVE} would fix
- *    this fully but was tried and didn't load (Bedrock either rejected the
- *    file shape or the inheritance form silently — needs more investigation).
+ *  - materials.default = {@code entity_emissive_alpha} (stock Bedrock material,
+ *    alpha cutout + alpha-proportional emissive). Opaque pixels still sample
+ *    world light, so models render dark when the entity origin lands inside a
+ *    solid block — see "Known limitation: Bedrock dark-in-shadow" below for
+ *    the full story.
  *  - animations.first_person / third_person / head referencing the three
  *    animations produced by {@link FmmAnimationGenerator}.
  *  - scripts.animate with three context-conditional entries (no pre_animation
  *    indirection; matches BedrockAttachableContext.java:68-75).
+ *
+ * <h2>Known limitation: Bedrock dark-in-shadow</h2>
+ * Bedrock samples world-light at the entity origin (unlike Java, which samples
+ * at rendered geometry). FMM's packet armor stands often sit with their origin
+ * ~1.438 blocks below the visible model — frequently inside the ground — so
+ * world_light reads 0 and the bone renders pitch black on Bedrock clients.
+ *
+ * <p>Three fixes were attempted and rejected in May 2026:
+ * <ol>
+ *   <li><b>Custom .material file</b> ({@code rspm_unlit:entity_emissive_alpha}
+ *       with {@code USE_ONLY_EMISSIVE}). Bedrock 1.16.100+ broke material
+ *       inheritance from vanilla materials; the client emits a flood of
+ *       content-log errors and the pack fails to load.</li>
+ *   <li><b>Per-viewer entity Y-lift</b> (FMM-side) + pack-side compensation
+ *       (geometry pivot offset OR head-animation translation). Both pack-side
+ *       compensations create an offset between the cube and its rotation
+ *       centre (the armor stand head bone pivot), so head_pose rotations swing
+ *       the bone in an arc instead of rotating it in place. Geometrically
+ *       impossible to fix without abandoning either lighting or rotation.</li>
+ *   <li><b>Material swap to {@code entity_emissive}</b> (alpha = emissive
+ *       intensity, .tga texture). Gives fullbright but eliminates the alpha
+ *       channel needed for transparency. {@code entity_emissive_layer} would
+ *       give both but isn't valid for attachables (not in the attachable
+ *       schema).</li>
+ * </ol>
+ *
+ * <p>There is no vanilla-supported Bedrock material that provides both
+ * transparency AND opaque-pixel-fullbright for attachables. The limitation is
+ * accepted: place FMM models in well-lit areas, or accept dark rendering when
+ * the entity origin is buried.
  */
 public class FmmAttachableGenerator {
 
@@ -138,13 +164,9 @@ public class FmmAttachableGenerator {
         JsonObject description = new JsonObject();
         description.addProperty("identifier", identifier);
 
-        // Materials: stock entity_emissive_alpha + entity_alphatest_glint. We tried
-        // shipping a custom material with USE_ONLY_EMISSIVE (see BedrockMaterialEmitter)
-        // to fix the "armor stand inside a solid block renders pitch black" problem,
-        // but Bedrock didn't load the custom material file and the attachables
-        // resolved to nothing → all models invisible. Reverted while we figure out
-        // the correct material-pack shape. The dimming inside blocks stays as a
-        // known issue; the model-INVISIBLE regression is worse than dimming.
+        // Materials: stock entity_emissive_alpha + entity_alphatest_glint.
+        // See the class-level "Known limitation: Bedrock dark-in-shadow" javadoc
+        // for why no fullbright-with-transparency material is currently used.
         JsonObject materials = new JsonObject();
         materials.addProperty("default", "entity_emissive_alpha");
         materials.addProperty("enchanted", "entity_alphatest_glint");

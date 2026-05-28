@@ -1,5 +1,5 @@
 name: ResourcePackManager
-version: 1.8.0
+version: 2.0.0
 main: com.magmaguy.resourcepackmanager.bungee.RspmBungeePlugin
 author: MagmaGuy
 description: Network-side companion to ResourcePackManager. Delivers the merged pack to Java + Bedrock clients via this proxy.

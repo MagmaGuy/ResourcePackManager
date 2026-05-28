@@ -25,7 +25,7 @@ public class DefaultConfig extends ConfigurationFile {
     @Getter
     private static String bedrockGeyserFolder = "";
     @Getter
-    private static String networkKey = "";
+    private static boolean bedrockConverterDebug = false;
     @Getter
     private static boolean selfHostEnabled = true;
     @Getter
@@ -36,6 +36,8 @@ public class DefaultConfig extends ConfigurationFile {
     private static String selfHostExternalHost = "";
     @Getter
     private static boolean selfHostForce = false;
+    @Getter
+    private static boolean preferSelfHost = true;
 
 
     public DefaultConfig() {
@@ -95,13 +97,23 @@ public class DefaultConfig extends ConfigurationFile {
                 List.of("Path to the Geyser packs folder. Leave empty to auto-detect."),
                 fileConfiguration, "bedrockGeyserFolder", "");
 
-        networkKey = ConfigurationEngine.setString(
+        bedrockConverterDebug = ConfigurationEngine.setBoolean(
                 List.of(
-                        "Pin a network key explicitly. Leave empty to auto-generate on first boot (recommended).",
-                        "Multi-backend networks: paste the SAME network key into every backend's RPM config",
-                        "AND into the proxy plugin's config to link them. The key is logged prominently",
-                        "on every boot when network mode is active."),
-                fileConfiguration, "networkKey", "");
+                        "Enables verbose per-item / per-bone progress logging from the Bedrock conversion pipeline.",
+                        "Default false — when Geyser is installed the converter walks every items definition in the",
+                        "merged Java pack and previously emitted dozens to hundreds of progress and 'unsupported",
+                        "Java condition X' lines per /reload, which looked alarming despite indicating normal",
+                        "operation. Leave this off for clean console output; flip on if you are debugging a Bedrock",
+                        "conversion issue and want to see every per-item / per-attachable / per-mapping step."),
+                fileConfiguration, "bedrockConverterDebug", false);
+
+        // network-key is intentionally NOT a config option. It's auto-derived
+        // from plugins/floodgate/key.pem on every backend and on the proxy.
+        // Floodgate requires the same key.pem across the network for Bedrock
+        // players to connect at all, so the derived value matches everywhere
+        // automatically. The old "paste this key into the proxy config" flow
+        // was a major source of misconfiguration (typos silently broke the
+        // proxy↔backend link) and is removed entirely. See NetworkMode#getNetworkKey.
 
         selfHostEnabled = ConfigurationEngine.setBoolean(
                 List.of(
@@ -122,26 +134,84 @@ public class DefaultConfig extends ConfigurationFile {
                         "Set to any positive value to force an explicit port (legacy behaviour, default was 25567)."),
                 fileConfiguration, "selfHostPort", -1);
 
+        // Versioned key — `networkHttpOffset` (no suffix) was the v1 key with default 100.
+        // That default broke on shared/managed Minecraft hosting (alienhost.me, Pterodactyl
+        // tenants, etc.) where each game container gets only ~4–10 consecutive ports.
+        // MC + 100 fell outside the container's allocated port range, the HTTP server
+        // bound internally but the host firewall dropped external traffic, and the proxy
+        // got a silent CONNECT_FAILED forever. v2 ships with default 1 so MC + 1 stays
+        // well inside even the narrowest container allocations. Self-hosted admins who
+        // have a real reason to use a bigger offset just set this knob; nothing forces
+        // them to v1's 100.
+        //
+        // The old `networkHttpOffset` key is intentionally NOT read here — operators
+        // who upgrade from v1 get the v2 default written to config.yml on next boot.
+        // The dead v1 key sits in their config as a harmless artifact until they choose
+        // to clean it up.
         networkHttpOffset = ConfigurationEngine.setInt(
                 List.of(
                         "Offset added to the Minecraft server port to derive the HTTP port when selfHostPort = -1.",
-                        "Default 100 => MC 25565 -> HTTP 25665, MC 25671 -> HTTP 25771, etc.",
-                        "Must match the proxy plugin's network-http-offset config. Admins rarely need to change",
-                        "this — bump it only if 100 happens to collide with something already on the host."),
-                fileConfiguration, "networkHttpOffset", 100);
+                        "Default 1 => MC 25565 -> HTTP 25566, MC 25584 -> HTTP 25585, etc.",
+                        "Why 1: most shared / managed Minecraft hosting (Pterodactyl-based panels, etc.)",
+                        "  allocates a narrow port range per container (often only 4–10 ports). Larger",
+                        "  offsets land outside the range and the host firewall silently blocks the HTTP",
+                        "  port. Offset 1 fits even tight allocations. Self-hosted admins with full port",
+                        "  control can bump this to any value, but they MUST also bump the proxy's",
+                        "  network-http-offset-v2 to match.",
+                        "Note: if your host enables rcon by default on MC port + 1, choose 2 or 3 instead",
+                        "  to avoid a collision. Check server.properties `rcon.port=`."),
+                fileConfiguration, "networkHttpOffset-v2", 1);
 
         selfHostExternalHost = ConfigurationEngine.setString(
                 List.of(
                         "Public hostname or IP that clients use to reach your self-host server.",
-                        "Leave empty to auto-detect via Bukkit.getIp() / InetAddress (best-effort).",
-                        "If clients connect from outside your LAN, set this to your public hostname (e.g. play.example.com)."),
+                        "Leave empty to auto-detect, in priority order:",
+                        "  1. api.ipify.org / checkip.amazonaws.com (returns the public IPv4 of THIS host)",
+                        "  2. Bukkit.getIp() (the server's bind address — usually 0.0.0.0 or a LAN IP)",
+                        "  3. InetAddress.getLocalHost() (best-effort)",
+                        "  4. localhost (last-resort fallback; clients outside the box won't reach this)",
+                        "If preferSelfHost=true (the default) and auto-detection lands on a non-routable",
+                        "address (10.*, 172.16-31.*, 192.168.*, 127.*) the reachability probe will fail",
+                        "and the plugin will switch to remote hosting. Set this explicitly to your public",
+                        "hostname (e.g. play.example.com) for the most reliable self-host setup."),
                 fileConfiguration, "selfHostExternalHost", "");
 
         selfHostForce = ConfigurationEngine.setBoolean(
                 List.of(
-                        "Skip the magmaguy.com upload attempt entirely and self-host directly.",
-                        "Mainly for testing the self-host path. In production, leave this false so auto-upload is tried first.",
-                        "When true, this overrides selfHostEnabled (self-hosting always happens)."),
+                        "Skip ALL other delivery paths and force self-hosting.",
+                        "Mainly for testing the self-host path. Bypasses both the reachability probe AND the remote upload.",
+                        "When true, this overrides preferSelfHost and selfHostEnabled (self-hosting always happens)."),
                 fileConfiguration, "selfHostForce", false);
+
+        preferSelfHost = ConfigurationEngine.setBoolean(
+                List.of(
+                        "Default (true): try self-hosting FIRST, then run two sanity checks before",
+                        "committing to it:",
+                        "  1. The resolved external host must NOT be RFC1918 / loopback / link-local",
+                        "     (i.e. clients on the internet have at least a chance of reaching it).",
+                        "  2. A localhost HEAD request to the self-host HTTP server must return 200",
+                        "     with a non-empty body (catches port collisions, missing pack file,",
+                        "     misconfigured routes).",
+                        "If both pass: keep self-hosting (zero bandwidth cost to magmaguy.com, lower",
+                        "latency for clients close to your server).",
+                        "If either fails: tear down the self-host server and fall back to uploading",
+                        "the pack to magmaguy.com's CDN (the legacy behaviour).",
+                        "",
+                        "Set to false to use the legacy order unconditionally: try magmaguy.com upload",
+                        "first, fall back to self-host only on upload failure. Most operators should",
+                        "leave this at true — it's kinder to magmaguy.com's bandwidth.",
+                        "",
+                        "Limitation: these checks CANNOT detect a server with a public IP whose HTTP",
+                        "port is firewalled. If clients can't download the self-hosted pack despite",
+                        "the checks passing, either open the firewall port OR set preferSelfHost: false.",
+                        "",
+                        "Either set selfHostExternalHost to your public hostname, OR ensure the plugin",
+                        "can reach api.ipify.org / checkip.amazonaws.com to auto-detect a public IPv4.",
+                        "If neither yields a routable host, self-host is skipped and the plugin uses",
+                        "remote hosting.",
+                        "",
+                        "Ignored when selfHostForce=true (force overrides everything) or selfHostEnabled=false",
+                        "(self-host disabled entirely => always remote)."),
+                fileConfiguration, "preferSelfHost", true);
     }
 }

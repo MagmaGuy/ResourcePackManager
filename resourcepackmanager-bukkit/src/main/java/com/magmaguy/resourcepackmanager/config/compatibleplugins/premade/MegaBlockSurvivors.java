@@ -9,6 +9,7 @@ public class MegaBlockSurvivors extends CompatiblePluginConfigFields {
         super("megablock_survivors", true);
         setPluginName("MegaBlockSurvivors");
         setLocalPath("MegaBlockSurvivors" + File.separatorChar + "resourcepack");
+        setAdditionalLocalPath("MegaBlockSurvivors" + File.separatorChar + "resource_pack");
         setZips(false);
     }
 }

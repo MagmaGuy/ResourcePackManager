@@ -31,21 +31,25 @@ public final class RspmBungeePlugin extends Plugin {
             return;
         }
 
-        String effectiveKey = config.networkKey();
+        // Network key is derived SOLELY from plugins/floodgate/key.pem on this proxy.
+        // There is no config-pasted override path — that was retired pre-release after
+        // typo'd pastes silently broke the proxy↔backend link. Floodgate already
+        // requires this file to be the same on every backend AND on the proxy for
+        // Bedrock players to authenticate, so the derived value matches every
+        // backend's automatically. The only setup step is: install Floodgate.
+        java.nio.file.Path keyPem = getDataFolder().getParentFile().toPath()   // plugins/
+                .resolve("floodgate")
+                .resolve("key.pem");
+        String effectiveKey = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver
+                .deriveFromFloodgateKey(keyPem);
         if (effectiveKey == null || effectiveKey.isBlank()) {
-            // Auto-derive from Floodgate key.pem on the proxy
-            java.nio.file.Path keyPem = getDataFolder().getParentFile().toPath()   // plugins/
-                    .resolve("floodgate")
-                    .resolve("key.pem");
-            effectiveKey = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver.deriveFromFloodgateKey(keyPem);
-            if (effectiveKey != null) {
-                getLogger().info("[RSPM] Network-key auto-derived from Floodgate key.pem (" + effectiveKey + "). Override via network-key in config.yml if needed.");
-            }
-        }
-        if (effectiveKey == null || effectiveKey.isBlank()) {
-            getLogger().warning("[RSPM] No network-key. Floodgate key.pem missing from plugins/floodgate/ — install Floodgate on this proxy, or set network-key explicitly in config.yml. Plugin idle.");
+            getLogger().warning("[RSPM] Floodgate key.pem missing from plugins/floodgate/key.pem on this proxy.");
+            getLogger().warning("[RSPM] RSPM cannot link to any backend without it. Install Floodgate on this");
+            getLogger().warning("[RSPM] proxy (it's required for Bedrock players to connect anyway), then");
+            getLogger().warning("[RSPM] restart. Plugin idle.");
             return;
         }
+        getLogger().info("[RSPM] Network-key auto-derived from Floodgate key.pem ✓");
 
         MixerLogger mixerLogger = new MixerLogger() {
             @Override
@@ -81,8 +85,8 @@ public final class RspmBungeePlugin extends Plugin {
             if (GeyserMappingsDeployer.isEmptyMappings(previousMergedMappings)) {
                 logger.info("Previous Geyser mappings file exists but is empty (no items); skipping boot-time pre-deploy.");
             } else {
+                // Silent pre-deploy — boot-time internal plumbing, no operator value.
                 GeyserMappingsDeployer.deploy(geyserPluginDir, previousMergedMappings, logger);
-                logger.info("Pre-deployed previous Geyser mappings for boot-time registration.");
             }
         }
 
@@ -94,6 +98,7 @@ public final class RspmBungeePlugin extends Plugin {
                 config.networkHttpOffset(),
                 mixerLogger,
                 geyserPluginDir,
+                effectiveKey,
                 this::onMergedPackReady);
 
         boolean geyserPresent = getProxy().getPluginManager().getPlugin("Geyser-BungeeCord") != null;
@@ -111,7 +116,20 @@ public final class RspmBungeePlugin extends Plugin {
         // if backends are already up. Polls use If-Modified-Since so steady-state
         // cost is ~0 bytes per cycle per backend when nothing changed.
         this.sync.start(2_000L, 5_000L);
-        logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + "). Java pack push is handled by backends; this proxy plugin is Bedrock-only.");
+
+        // /rspm status — Bungee variant. See RspmBungeeStatusCommand class javadoc
+        // for the operator use case; symmetric with the Velocity command.
+        final String resolvedKey = effectiveKey;
+        final java.io.File detectedGeyserDir = geyserPluginDir;
+        getProxy().getPluginManager().registerCommand(this,
+                new RspmBungeeStatusCommand(
+                        this,
+                        () -> RspmBungeePlugin.this.sync,
+                        () -> resolvedKey,
+                        () -> detectedGeyserDir));
+
+        // See Velocity entry — silent on the routine "we booted" line; the
+        // Network-key auto-derived ✓ line above is the only critical boot signal.
     }
 
     @Override

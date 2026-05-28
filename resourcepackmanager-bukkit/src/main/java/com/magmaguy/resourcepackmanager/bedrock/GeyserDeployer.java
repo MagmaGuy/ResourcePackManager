@@ -39,12 +39,22 @@ public class GeyserDeployer {
     public static void deployMappings(File mappingsFile) {
         File geyserDir = detectGeyserDir();
         if (geyserDir == null) {
-            Logger.warn("Geyser installation not detected. Mappings saved to output/ folder.");
-            Logger.warn("Manually copy them to your Geyser custom_mappings/ folder if you're running Geyser elsewhere.");
+            // No local Geyser. On a backend in network mode this is EXPECTED
+            // (Geyser is on the proxy). Silent — the mappings file is already
+            // written to output/, which the proxy fetches via the embedded
+            // HTTP server. Operators with a real "where do I copy these"
+            // question can run /rspm status to see the output path.
             return;
         }
 
-        Logger.info("Detected Geyser at: " + geyserDir.getAbsolutePath());
+        // Per-deploy "Detected Geyser at ..." / "Geyser mappings deployed to ..."
+        // fires once at startup AND once per /reload / pack mix, so on a busy
+        // server it shows up in the console several times in a row even though
+        // it's not surfacing new information (the path doesn't change between
+        // boots). Demoted to BedrockLog.debug, gated on `bedrockConverterDebug`
+        // in config.yml so operators who actually want to verify the detection
+        // worked can opt back in.
+        BedrockLog.debug("Detected Geyser at: " + geyserDir.getAbsolutePath());
 
         File mappingsDir = new File(geyserDir, "custom_mappings");
         mappingsDir.mkdirs();
@@ -52,9 +62,10 @@ public class GeyserDeployer {
             Files.copy(mappingsFile.toPath(),
                     new File(mappingsDir, mappingsFile.getName()).toPath(),
                     StandardCopyOption.REPLACE_EXISTING);
-            Logger.info("Geyser mappings deployed to " + mappingsDir.getAbsolutePath()
+            BedrockLog.debug("Geyser mappings deployed to " + mappingsDir.getAbsolutePath()
                     + " — restart Geyser to apply mapping changes (the pack itself is served live).");
         } catch (IOException e) {
+            // Real I/O failure — keep at warn so operators see the deploy actually broke.
             Logger.warn("Failed to copy mappings to Geyser custom_mappings/ directory: " + e.getMessage());
         }
     }
