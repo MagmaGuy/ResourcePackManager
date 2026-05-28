@@ -15,6 +15,7 @@ import com.magmaguy.resourcepackmanager.bedrock.BukkitBedrockConverterContext;
 import com.magmaguy.resourcepackmanager.bedrock.GeyserPackProvider;
 import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
 import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
+import com.magmaguy.resourcepackmanager.commands.StatusCommand;
 import com.magmaguy.resourcepackmanager.config.BedrockDisplayOffsetsConfig;
 import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderCommand;
@@ -166,6 +167,7 @@ public class ResourcePackManager extends JavaPlugin {
         commandManager.registerCommand(new ReloadCommand());
         commandManager.registerCommand(new DataComplianceRequestCommand());
         commandManager.registerCommand(new ItemsAdderCommand());
+        commandManager.registerCommand(new StatusCommand());
 
         initializationContext.step("Metrics");
         new Metrics(this, 22867);

@@ -71,6 +71,19 @@ public interface BedrockConverterContext {
     void deployMappingsIfNeeded(File mappingsFile);
 
     /**
+     * True iff the operator has opted in to verbose per-item / per-bone progress
+     * logging from the Bedrock conversion pipeline. When {@code false} (the
+     * default), {@link BedrockLog#debug(String)} calls are no-ops and the
+     * console stays quiet except for genuine errors and the per-cycle summary
+     * line. Backend impl reads {@code DefaultConfig.isBedrockConverterDebug()};
+     * proxy impl can fall through to the {@code false} default unless it adds
+     * its own knob.
+     */
+    default boolean isBedrockConverterDebug() {
+        return false;
+    }
+
+    /**
      * Snapshot of the 12 user-tunable display-transform offsets passed to
      * {@code FmmAnimationGenerator}. Backend impl reads its YAML-backed config;
      * proxy impl returns {@link BedrockDisplayOffsets.Snapshot#defaults()}

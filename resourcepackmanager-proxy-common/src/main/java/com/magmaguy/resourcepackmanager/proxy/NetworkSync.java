@@ -1,5 +1,6 @@
 package com.magmaguy.resourcepackmanager.proxy;
 
+import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
 import com.magmaguy.resourcepackmanager.http.PackHttpServer;
 import com.magmaguy.resourcepackmanager.mixer.bedrock.BedrockMappingsMerger;
 import com.magmaguy.resourcepackmanager.mixer.bedrock.BedrockPackMerger;
@@ -95,6 +96,16 @@ public final class NetworkSync {
     private final File geyserPluginDir;
     private final Consumer<MergedPack> onMergedPackReady;
     private final HttpClient http;
+    /**
+     * Network key for this proxy. Used to look up Bedrock-relay entries
+     * uploaded by backends that this proxy can't reach directly (typical of
+     * shared-hosting setups where MC ports are exposed but adjacent ports
+     * aren't). May be null when Floodgate isn't installed — in that case
+     * the relay-fallback path is skipped silently.
+     */
+    private final String networkKey;
+    /** Lazily constructed client for the relay-fallback path. Null until first use. */
+    private volatile MagmaguyRspClient relayClient;
 
     private final File inboxRoot;
     private final File mergedDir;
@@ -111,6 +122,65 @@ public final class NetworkSync {
     /** Hashes that were last successfully merged. Avoids re-merging identical state. */
     private Set<String> lastMergedHashes = null;
 
+    // --- diagnostic state ---
+    // We deliberately avoided per-poll WARN logging in fetchIfChanged because
+    // a transient network blip on every backend would spam the proxy console.
+    // BUT — in the field we hit setups where the proxy COULD NOT REACH ANY
+    // BACKEND (Velocity server-list address mismatch, Docker NAT, firewall
+    // between hosts) and silently produced no merged pack. From the operator's
+    // perspective: NetworkSync says "starting", then nothing. Hours of
+    // wondering what's wrong. The diagnostic state below fixes that:
+    //
+    //   - Every fetch records a per-(backend, path) FetchOutcome with the URL
+    //     attempted and what happened (HTTP code, IOException class+message,
+    //     etc.). Exposed via the snapshot() accessor for /rspm status on the
+    //     proxy side.
+    //   - When N consecutive poll cycles produce an empty inbox AND we have
+    //     backends to poll, we log a single multi-line warning summarizing
+    //     every URL tried and its outcome. Once-only — gated by
+    //     unreachableWarningFired — so a long-broken setup doesn't spam.
+
+    /** Latest fetch outcome per (backend, path) — keyed by "<sanitized-name>:<path>". */
+    private final java.util.concurrent.ConcurrentHashMap<String, FetchOutcome> lastFetchOutcomes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Number of consecutive poll cycles that produced an empty inbox. */
+    private int consecutiveEmptyPolls = 0;
+
+    /**
+     * After this many empty-inbox cycles, fire the "no backend reachable" warning.
+     * 4 cycles × 5s default interval = 20s before the warning fires — enough that
+     * a backend that's slow to start its HTTP server doesn't trigger a false alarm,
+     * but fast enough that a genuinely-broken setup gets actionable feedback before
+     * the operator gives up.
+     */
+    private static final int UNREACHABLE_WARNING_THRESHOLD_CYCLES = 4;
+
+    /** Latch: fire the warning at most once per "stuck" period to avoid console spam. */
+    private boolean unreachableWarningFired = false;
+
+    /**
+     * One backend-path fetch attempt's outcome. {@link Kind} tells the operator
+     * whether the backend was unreachable at the network layer, present but
+     * returning the wrong status, or working — each implies a different fix.
+     */
+    public record FetchOutcome(Kind kind, int httpStatus, String detail, java.time.Instant at) {
+        public enum Kind {
+            /** 200 OK — fetch succeeded, content saved to inbox. */
+            OK_200,
+            /** 304 Not Modified — backend confirmed our If-Modified-Since cache. Healthy. */
+            NOT_MODIFIED_304,
+            /** 404 — backend hasn't produced this file yet. Common on first boot before mix completes. */
+            NOT_FOUND_404,
+            /** Non-2xx/3xx/4xx response — backend is reachable but returning the wrong code. */
+            UNEXPECTED_STATUS,
+            /** IOException during the request — backend unreachable at network layer. */
+            CONNECT_FAILED,
+            /** Other exception (URI parse, etc.). */
+            OTHER_ERROR
+        }
+    }
+
     public NetworkSync(
             ProxyLogger logger,
             ProxySchedulerAdapter scheduler,
@@ -119,6 +189,7 @@ public final class NetworkSync {
             int networkHttpOffset,
             MixerLogger mixerLogger,
             File geyserPluginDir,
+            String networkKey,
             Consumer<MergedPack> onMergedPackReady) {
         this.logger = logger;
         this.scheduler = scheduler;
@@ -127,6 +198,7 @@ public final class NetworkSync {
         this.networkHttpOffset = networkHttpOffset;
         this.mixerLogger = mixerLogger;
         this.geyserPluginDir = geyserPluginDir;
+        this.networkKey = networkKey;
         this.onMergedPackReady = onMergedPackReady;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(PER_BACKEND_TIMEOUT)
@@ -189,6 +261,11 @@ public final class NetworkSync {
             task.cancel();
             pollTask = null;
         }
+        MagmaguyRspClient rc = relayClient;
+        if (rc != null) {
+            try { rc.close(); } catch (Exception ignored) {}
+            relayClient = null;
+        }
     }
 
     /** The most recently published merged pack, or {@code null} if none yet. */
@@ -214,12 +291,24 @@ public final class NetworkSync {
             List<BackendListProvider.Backend> backends = safeListBackends();
             if (backends.isEmpty()) {
                 // No backends configured. Reset stability so we don't accidentally
-                // re-merge an empty inbox into Geyser.
+                // re-merge an empty inbox into Geyser. Also fire a one-shot warning
+                // — operators were spending hours wondering why nothing happens, when
+                // the answer was "Velocity hasn't registered any backends yet".
                 stableCount = 0;
+                consecutiveEmptyPolls++;
+                maybeFireUnreachableWarning(backends);
                 return;
             }
 
-            // Step 1: fetch per backend.
+            // Step 1: fetch per backend using the configured offset. If the offset
+            // doesn't work for some backends (typical of shared/managed hosting
+            // where the host doesn't expose adjacent ports), the unreachable-warning
+            // machinery will fire after a few empty cycles to surface the problem.
+            // We deliberately do NOT crawl ports as a fallback — that's port-scan
+            // behavior from the host's perspective and triggers anti-abuse heuristics.
+            // The remote-relay path (via the magmaguy.com hoster) is the categorical
+            // answer for setups where direct fetching can't work.
+            boolean anyDirectFetchFailedHard = false;
             for (BackendListProvider.Backend b : backends) {
                 String sanitized = sanitizeBackendName(b.name());
                 File backendInbox = new File(inboxRoot, sanitized);
@@ -229,10 +318,48 @@ public final class NetworkSync {
                         new File(backendInbox, INBOX_BEDROCK_ZIP_NAME));
                 fetchIfChanged(b, PackHttpServer.GEYSER_MAPPINGS_PATH,
                         new File(backendInbox, INBOX_MAPPINGS_NAME));
+                // Track whether direct fetch is fundamentally failing for any
+                // backend this cycle — a hard failure (network unreachable /
+                // bad URL parse) is the signal that the relay-fallback path
+                // is worth trying. NOT_FOUND_404 alone is not — that means
+                // the backend is up but hasn't produced output yet, and the
+                // relay won't have anything either in that case.
+                FetchOutcome z = lastFetchOutcomes.get(sanitized + ":" + PackHttpServer.BEDROCK_PACK_PATH);
+                FetchOutcome m = lastFetchOutcomes.get(sanitized + ":" + PackHttpServer.GEYSER_MAPPINGS_PATH);
+                if (isHardFailure(z) || isHardFailure(m)) anyDirectFetchFailedHard = true;
+            }
+
+            // Step 1.5: relay fallback. If direct fetch failed hard for at
+            // least one backend AND we have a network key, ask the magmaguy.com
+            // hoster for any Bedrock files that BACKENDS uploaded to the relay
+            // under this network's namespace. The relay is the bridge for
+            // setups where the proxy can't directly reach a backend's HTTP
+            // port — typical of shared / managed Minecraft hosting where MC
+            // ports are exposed but adjacent ports are firewalled. On
+            // dedicated hosts where direct fetch works, this path is never
+            // entered and the relay entries (if any) idle for 30 min and
+            // TTL-expire on the hoster.
+            if (anyDirectFetchFailedHard) {
+                fetchFromRelay();
             }
 
             // Step 2: hash every file in inbox/.
             Set<String> currentHashes = sha1OfEveryInboxFile();
+
+            // Diagnostic: track consecutive empty-inbox cycles so we can warn
+            // the operator after a sensible delay if NOTHING is coming through.
+            // Reset on first success — operator-visible state goes back to
+            // "healthy" and a future failure can fire the warning again.
+            if (currentHashes.isEmpty()) {
+                consecutiveEmptyPolls++;
+                maybeFireUnreachableWarning(backends);
+            } else {
+                if (consecutiveEmptyPolls > 0 && unreachableWarningFired) {
+                    logger.info("NetworkSync: recovered — at least one backend produced content this cycle.");
+                }
+                consecutiveEmptyPolls = 0;
+                unreachableWarningFired = false;
+            }
 
             // Step 3: stability gate.
             if (currentHashes.equals(lastInboxHashes)) {
@@ -262,6 +389,105 @@ public final class NetworkSync {
     }
 
     /**
+     * Fire the "no backend reachable" diagnostic warning at most once per
+     * stuck period. Surfaces exactly which URLs were attempted and what each
+     * one returned (or how it failed) so the operator can see the bug at a
+     * glance: typically either velocity.toml lists a host the proxy can't
+     * reach, OR the host is reachable but the HTTP-offset port is wrong, OR
+     * there's a firewall in between.
+     *
+     * <p>Latch — gated by {@link #unreachableWarningFired} — so a setup that
+     * stays broken doesn't print this every 5 s. The warning is rearmed on
+     * recovery (see pollOnce reset of the latch).
+     */
+    private void maybeFireUnreachableWarning(List<BackendListProvider.Backend> backends) {
+        if (unreachableWarningFired) return;
+        if (consecutiveEmptyPolls < UNREACHABLE_WARNING_THRESHOLD_CYCLES) return;
+        unreachableWarningFired = true;
+
+        logger.warn("=====================================================================");
+        logger.warn("⚠ RSPM NetworkSync: " + consecutiveEmptyPolls
+                + " consecutive poll cycles produced no merged pack content.");
+        if (backends.isEmpty()) {
+            logger.warn("⚠ Backend list is EMPTY — the proxy plugin manager reports no");
+            logger.warn("⚠ registered servers. Causes: (a) velocity.toml has no [servers]");
+            logger.warn("⚠ block populated yet, (b) the BackendListProvider call failed,");
+            logger.warn("⚠ (c) the proxy software is rejecting all server registrations.");
+            logger.warn("⚠ Check that `/server` lists at least one backend on this proxy.");
+        } else {
+            logger.warn("⚠ Backends polled this cycle: " + backends.size());
+            for (BackendListProvider.Backend b : backends) {
+                String key = sanitizeBackendName(b.name());
+                FetchOutcome zipOutcome = lastFetchOutcomes.get(key + ":" + PackHttpServer.BEDROCK_PACK_PATH);
+                FetchOutcome mapOutcome = lastFetchOutcomes.get(key + ":" + PackHttpServer.GEYSER_MAPPINGS_PATH);
+                logger.warn("⚠   • " + b.name() + " @ " + b.host() + ":" + b.mcPort()
+                        + "  → HTTP @ " + b.host() + ":" + (b.mcPort() + networkHttpOffset));
+                logger.warn("⚠       /bedrock.zip:   " + describe(zipOutcome));
+                logger.warn("⚠       /mappings.json: " + describe(mapOutcome));
+            }
+            logger.warn("⚠ Most common fixes:");
+            logger.warn("⚠   • CONNECT_FAILED on every backend → the proxy cannot reach the");
+            logger.warn("⚠     HTTP port. Check that velocity.toml has the backend address");
+            logger.warn("⚠     the proxy can actually reach (not e.g. a Docker-internal name");
+            logger.warn("⚠     that doesn't resolve from the proxy's network), and that");
+            logger.warn("⚠     mcPort + " + networkHttpOffset + " (the network-http-offset) is");
+            logger.warn("⚠     open between this proxy and the backend host.");
+            logger.warn("⚠   • NOT_FOUND_404 on every backend → backend(s) up but not producing");
+            logger.warn("⚠     a Bedrock pack. Run `/rspm status` on each backend; the");
+            logger.warn("⚠     'Bedrock Pack' diagnostic block will tell you why.");
+        }
+        logger.warn("⚠ This warning fires once per stuck period; recovery is logged when");
+        logger.warn("⚠ a backend starts producing content.");
+        logger.warn("=====================================================================");
+    }
+
+    /** Pretty-print a {@link FetchOutcome} for the diagnostic banner. */
+    private static String describe(FetchOutcome o) {
+        if (o == null) return "(not yet attempted this session)";
+        return switch (o.kind()) {
+            case OK_200 -> "OK 200 (served)";
+            case NOT_MODIFIED_304 -> "304 Not Modified (cached, healthy)";
+            case NOT_FOUND_404 -> "404 Not Found — backend hasn't produced this file yet";
+            case UNEXPECTED_STATUS -> "HTTP " + o.httpStatus() + " — backend up but wrong status";
+            case CONNECT_FAILED -> "Connect failed — " + o.detail();
+            case OTHER_ERROR -> "Error — " + o.detail();
+        };
+    }
+
+    /**
+     * Read-only snapshot of NetworkSync's current state, suitable for rendering
+     * by {@code /rspm status} on the proxy side. Captured atomically enough for
+     * a single status print — the underlying state can still change between
+     * field reads, but that's fine for a human-facing diagnostic.
+     */
+    public Snapshot snapshot() {
+        return new Snapshot(
+                backendList.listBackends(),
+                new java.util.HashMap<>(lastFetchOutcomes),
+                consecutiveEmptyPolls,
+                unreachableWarningFired,
+                current,
+                mergedBedrockZip.isFile() ? mergedBedrockZip : null,
+                mergedMappings.isFile() ? mergedMappings : null,
+                networkHttpOffset);
+    }
+
+    /**
+     * Snapshot of NetworkSync state for diagnostic commands. Immutable except
+     * for the {@code FetchOutcome} map which is a defensive copy taken inside
+     * {@link #snapshot()}.
+     */
+    public record Snapshot(
+            List<BackendListProvider.Backend> backends,
+            java.util.Map<String, FetchOutcome> fetchOutcomes,
+            int consecutiveEmptyPolls,
+            boolean unreachableWarningFired,
+            MergedPack currentMergedPack,
+            File mergedBedrockZip,
+            File mergedMappings,
+            int networkHttpOffset) {}
+
+    /**
      * Run the file-union merge across every backend's inbox and publish the result.
      * Backends with no zip in their inbox are skipped silently.
      */
@@ -275,6 +501,21 @@ public final class NetworkSync {
             File map = new File(backendInbox, INBOX_MAPPINGS_NAME);
             if (zip.isFile()) zips.add(zip);
             if (map.isFile()) mappings.add(map);
+        }
+        // Pull in anything fetched via the relay-fallback path. These live
+        // under inbox/relay-<id>/ — sibling dirs to the velocity.toml-keyed
+        // ones. Merging them in the same step means relay-delivered content
+        // is indistinguishable from direct-delivered content in the final
+        // pack, which is the whole point of the bridge.
+        File[] relayDirs = inboxRoot.listFiles(f ->
+                f.isDirectory() && f.getName().startsWith("relay-"));
+        if (relayDirs != null) {
+            for (File rd : relayDirs) {
+                File zip = new File(rd, INBOX_BEDROCK_ZIP_NAME);
+                File map = new File(rd, INBOX_MAPPINGS_NAME);
+                if (zip.isFile()) zips.add(zip);
+                if (map.isFile()) mappings.add(map);
+            }
         }
 
         if (zips.isEmpty() && mappings.isEmpty()) {
@@ -320,6 +561,97 @@ public final class NetworkSync {
     }
 
     // ------------------------------------------------------------------
+    // Bedrock relay fallback
+    // ------------------------------------------------------------------
+
+    private static boolean isHardFailure(FetchOutcome o) {
+        if (o == null) return false;
+        return o.kind() == FetchOutcome.Kind.CONNECT_FAILED
+                || o.kind() == FetchOutcome.Kind.OTHER_ERROR
+                || o.kind() == FetchOutcome.Kind.UNEXPECTED_STATUS;
+    }
+
+    /**
+     * Consult the magmaguy.com Bedrock relay for entries uploaded under this
+     * network's key and pull them into a {@code relay-&lt;backendId&gt;} subdir
+     * of the inbox. The downstream merge step picks them up alongside the
+     * direct-fetched files — so a single proxy can have some backends
+     * delivering via direct HTTP and others via the relay, transparently.
+     *
+     * <p>Outcomes are recorded under a synthetic key
+     * ({@code "relay-&lt;backendId&gt;:&lt;path&gt;"}) so {@code /rspm status} on
+     * the proxy shows relay activity distinctly from direct fetches.</p>
+     */
+    private void fetchFromRelay() {
+        if (networkKey == null || networkKey.isBlank()) return;
+        MagmaguyRspClient rc = relayClient;
+        if (rc == null) {
+            // 30s socket timeout for list/download — relay fetches are small
+            // (a few MB at most for Bedrock zips) and the magmaguy.com endpoint
+            // is on a known reliable host.
+            rc = new MagmaguyRspClient(java.util.logging.Logger.getLogger("RSPM-NetworkSync"),
+                    30, 60);
+            relayClient = rc;
+        }
+        String networkKeyHash = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver
+                .shortHashForRelay(networkKey);
+        if (networkKeyHash == null) return;
+
+        List<MagmaguyRspClient.BedrockRelayEntry> entries;
+        try {
+            entries = rc.listBedrockRelay(networkKey);
+        } catch (IOException e) {
+            logger.warn("Bedrock relay list failed: " + e.getMessage());
+            return;
+        }
+
+        for (MagmaguyRspClient.BedrockRelayEntry e : entries) {
+            String safeId = sanitizeBackendName(e.backendId());
+            File relayDir = new File(inboxRoot, "relay-" + safeId);
+            //noinspection ResultOfMethodCallIgnored
+            relayDir.mkdirs();
+            String localName = "zip".equals(e.kind())
+                    ? INBOX_BEDROCK_ZIP_NAME
+                    : INBOX_MAPPINGS_NAME;
+            File dest = new File(relayDir, localName);
+
+            // Skip download if our local copy already matches the relay's sha1.
+            // The hoster reports sha1 of the uploaded file; if our last-fetched
+            // file hashes the same, nothing changed and we don't burn bandwidth.
+            if (dest.isFile() && e.sha1OrNull() != null) {
+                byte[] local = sha1OfFile(dest);
+                if (local != null && hex(local).equalsIgnoreCase(e.sha1OrNull())) {
+                    lastFetchOutcomes.put("relay-" + safeId + ":" + e.kind(),
+                            new FetchOutcome(FetchOutcome.Kind.NOT_MODIFIED_304, 304,
+                                    "relay sha1 match", java.time.Instant.now()));
+                    continue;
+                }
+            }
+
+            try {
+                boolean ok = rc.downloadBedrockRelay(networkKeyHash, e.backendId(), e.kind(), dest);
+                if (ok) {
+                    lastFetchOutcomes.put("relay-" + safeId + ":" + e.kind(),
+                            new FetchOutcome(FetchOutcome.Kind.OK_200, 200,
+                                    "via relay (" + e.sizeBytes() + " bytes)",
+                                    java.time.Instant.now()));
+                } else {
+                    lastFetchOutcomes.put("relay-" + safeId + ":" + e.kind(),
+                            new FetchOutcome(FetchOutcome.Kind.NOT_FOUND_404, 404,
+                                    "relay entry vanished between list and download",
+                                    java.time.Instant.now()));
+                }
+            } catch (IOException ioe) {
+                lastFetchOutcomes.put("relay-" + safeId + ":" + e.kind(),
+                        new FetchOutcome(FetchOutcome.Kind.OTHER_ERROR, 0,
+                                "relay download — " + ioe.getClass().getSimpleName()
+                                        + ": " + ioe.getMessage(),
+                                java.time.Instant.now()));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // HTTP fetch
     // ------------------------------------------------------------------
 
@@ -332,6 +664,8 @@ public final class NetworkSync {
     private void fetchIfChanged(BackendListProvider.Backend b, String path, File dest) {
         int httpPort = b.mcPort() + networkHttpOffset;
         String url = "http://" + b.host() + ":" + httpPort + path;
+        String outcomeKey = sanitizeBackendName(b.name()) + ":" + path;
+        java.time.Instant now = java.time.Instant.now();
         try {
             HttpRequest.Builder reqBuilder = HttpRequest.newBuilder(URI.create(url))
                     .timeout(PER_BACKEND_TIMEOUT)
@@ -354,6 +688,8 @@ public final class NetworkSync {
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 Files.deleteIfExists(tmp.toPath());
+                lastFetchOutcomes.put(outcomeKey,
+                        new FetchOutcome(FetchOutcome.Kind.OTHER_ERROR, 0, "interrupted at " + url, now));
                 return;
             }
 
@@ -361,6 +697,8 @@ public final class NetworkSync {
             if (status == 304) {
                 // Unchanged; delete the (empty) temp file the body handler created.
                 Files.deleteIfExists(tmp.toPath());
+                lastFetchOutcomes.put(outcomeKey,
+                        new FetchOutcome(FetchOutcome.Kind.NOT_MODIFIED_304, 304, url, now));
                 return;
             }
             if (status == 404) {
@@ -369,11 +707,15 @@ public final class NetworkSync {
                 // previous copy, leave it: removing it would make us re-merge on
                 // every poll cycle.
                 Files.deleteIfExists(tmp.toPath());
+                lastFetchOutcomes.put(outcomeKey,
+                        new FetchOutcome(FetchOutcome.Kind.NOT_FOUND_404, 404, url, now));
                 return;
             }
             if (status != 200) {
                 Files.deleteIfExists(tmp.toPath());
                 logger.warn("Backend " + b.name() + " " + url + " returned HTTP " + status);
+                lastFetchOutcomes.put(outcomeKey,
+                        new FetchOutcome(FetchOutcome.Kind.UNEXPECTED_STATUS, status, url, now));
                 return;
             }
 
@@ -384,11 +726,26 @@ public final class NetworkSync {
             } catch (IOException atomicFailed) {
                 Files.move(tmp.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING);
             }
+            lastFetchOutcomes.put(outcomeKey,
+                    new FetchOutcome(FetchOutcome.Kind.OK_200, 200, url, now));
         } catch (IOException e) {
-            // Connect refused, etc. — backend is down or RPM isn't loaded yet.
-            // No log per backend per poll; that would spam.
+            // Connect refused / connection timeout / unknown host — backend is
+            // either down, on a different host/port than velocity.toml suggests,
+            // or there's a firewall in the way. We deliberately don't log per-
+            // backend per-poll (that would spam every 5s), but we DO record the
+            // outcome so the diagnostic warning at the cycle level (triggered
+            // after UNREACHABLE_WARNING_THRESHOLD_CYCLES) AND /rspm status on
+            // the proxy can both surface it.
+            lastFetchOutcomes.put(outcomeKey,
+                    new FetchOutcome(FetchOutcome.Kind.CONNECT_FAILED, 0,
+                            url + " — " + e.getClass().getSimpleName()
+                                    + (e.getMessage() != null ? ": " + e.getMessage() : ""),
+                            now));
         } catch (Throwable t) {
             logger.warn("Unexpected fetch failure for " + url + ": " + t.getMessage());
+            lastFetchOutcomes.put(outcomeKey,
+                    new FetchOutcome(FetchOutcome.Kind.OTHER_ERROR, 0,
+                            url + " — " + t.getClass().getSimpleName(), now));
         }
     }
 

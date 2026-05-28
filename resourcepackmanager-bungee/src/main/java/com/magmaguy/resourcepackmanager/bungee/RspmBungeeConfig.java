@@ -11,20 +11,13 @@ import java.util.Map;
 
 final class RspmBungeeConfig {
 
-    private final String networkKey;
     private final boolean forceResourcePack;
     private final int networkHttpOffset;
 
-    private RspmBungeeConfig(String networkKey,
-                             boolean forceResourcePack,
+    private RspmBungeeConfig(boolean forceResourcePack,
                              int networkHttpOffset) {
-        this.networkKey = networkKey;
         this.forceResourcePack = forceResourcePack;
         this.networkHttpOffset = networkHttpOffset;
-    }
-
-    String networkKey() {
-        return networkKey;
     }
 
     boolean forceResourcePack() {
@@ -45,18 +38,22 @@ final class RspmBungeeConfig {
             Yaml yaml = new Yaml();
             Map<String, Object> data = yaml.load(r);
             if (data == null) data = new LinkedHashMap<>();
-            // New canonical key: network-http-offset (added to each backend's MC port
-            // to derive its HTTP port). Default 100. Older configs that used a fixed
-            // backend-http-port / backend-metadata-port / self-host-port are ignored —
-            // the new per-backend derivation supersedes them. Admins who explicitly
-            // set those keys before will get the default offset and likely need to
-            // re-bind any non-default ports via the BACKEND's selfHostPort config.
-            int offset = 100;
-            if (data.containsKey("network-http-offset")) {
-                offset = ((Number) data.get("network-http-offset")).intValue();
+            // network-key was removed as a config option in pre-release. It used to be
+            // a manual paste from the backend log, but typos in the pasted value
+            // silently broke the proxy↔backend link. The key is now derived solely
+            // from plugins/floodgate/key.pem on this proxy — Floodgate already
+            // requires that file to be the same across the whole network for Bedrock
+            // auth, so the derived value matches every backend automatically.
+
+            // Versioned offset key — see RspmVelocityConfig / DefaultConfig for the
+            // full rationale. v1's default of 100 broke on shared / managed hosting;
+            // v2 ships with default 1, which fits even narrow per-container port
+            // allocations.
+            int offset = 1;
+            if (data.containsKey("network-http-offset-v2")) {
+                offset = ((Number) data.get("network-http-offset-v2")).intValue();
             }
             return new RspmBungeeConfig(
-                    (String) data.getOrDefault("network-key", ""),
                     (Boolean) data.getOrDefault("force-resource-pack", false),
                     offset
             );
@@ -64,22 +61,37 @@ final class RspmBungeeConfig {
     }
 
     private static void writeDefaults(Path configFile) throws IOException {
+        // No `network-key` entry by default. The key is auto-derived from
+        // `plugins/floodgate/key.pem` on this proxy at boot — that's the same
+        // key.pem every backend uses (Floodgate REQUIRES it to be shared for
+        // Bedrock players to connect), so the resulting network-key matches
+        // every backend's automatically. Operators who set a `network-key:` line
+        // manually in this YAML were a common source of misconfiguration —
+        // typos in the pasted key silently broke the link between proxy and
+        // backend. The resolution code still honors the key if present
+        // (advanced override), but the default config no longer suggests it.
         String yaml = """
                 # ResourcePackManager-BungeeCord config.
-                # Paste the network-key your backend RPM logged on startup.
-
-                network-key: ""
+                # The network-key is auto-derived from plugins/floodgate/key.pem on this
+                # proxy — make sure Floodgate is installed (it must be, for Bedrock
+                # players to reach the proxy) and that the same key.pem is shared with
+                # every backend (Floodgate requires this anyway). No manual setup needed.
 
                 # Force clients to accept the pack (kick on decline). Default: false.
                 force-resource-pack: false
 
                 # Offset added to each backend's Minecraft port to derive the HTTP port
-                # this proxy will hit for /bedrock.zip and /mappings.json. Default 100
-                # => MC 25565 -> HTTP 25665, MC 25671 -> HTTP 25771, etc. Must match
-                # each backend's `networkHttpOffset` config. Admins rarely need to
-                # change this — bump it only if 100 collides with something on the
-                # backend host.
-                network-http-offset: 100
+                # this proxy will hit for /bedrock.zip and /mappings.json. Default 1.
+                # Why so small: shared / managed Minecraft hosting (Pterodactyl panels,
+                # etc.) allocates a narrow port range per container — offset 100 lands
+                # outside the range and the host firewall silently drops the request.
+                # Offset 1 fits even tight allocations. Must match each backend's
+                # `networkHttpOffset-v2`. Bump this only if you fully control the host's
+                # firewall AND want a larger gap between MC port and HTTP port.
+                #
+                # Note: if a backend has rcon enabled on MC port + 1, choose 2 or 3 to
+                # avoid a port collision.
+                network-http-offset-v2: 1
                 """;
         Files.writeString(configFile, yaml);
     }

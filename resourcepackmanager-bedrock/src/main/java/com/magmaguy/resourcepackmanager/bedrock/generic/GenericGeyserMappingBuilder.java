@@ -111,7 +111,11 @@ public final class GenericGeyserMappingBuilder {
                 Files.move(tmpFile.toPath(), outputFile.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             }
-            BedrockLog.info("[BedrockConverter] Wrote merged Geyser mappings: "
+            // The per-cycle "Bedrock conversion complete: N mappings" line in
+            // BedrockConversion already reports the same total; this longer
+            // "wrote merged Geyser mappings -> <abspath>" line is a second
+            // copy of the same information demoted to debug to avoid double-logging.
+            BedrockLog.debug("[BedrockConverter] Wrote merged Geyser mappings: "
                     + total + " entries across " + baseCount + " base items -> "
                     + outputFile.getAbsolutePath());
         } catch (IOException e) {

@@ -49,7 +49,10 @@ public final class GenericJavaScanner {
             scanItemsDir(namespace, itemsDir, "", result);
         }
 
-        BedrockLog.info("[BedrockConverter] Generic scanner: discovered " + result.size()
+        // Per-mix scanner status — useful when debugging "why isn't my pack converting"
+        // but pure noise on a clean run (the per-cycle conversion summary already says
+        // how many mappings were emitted). Demoted to debug.
+        BedrockLog.debug("[BedrockConverter] Generic scanner: discovered " + result.size()
                 + " items definition files across " + namespaceDirs.length + " namespace(s).");
         return result;
     }

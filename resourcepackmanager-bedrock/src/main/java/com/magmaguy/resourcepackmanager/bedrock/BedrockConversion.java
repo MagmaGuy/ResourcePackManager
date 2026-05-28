@@ -13,6 +13,7 @@ import com.magmaguy.resourcepackmanager.bedrock.generic.MappedItemRegistry;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ResolvedLeaf;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ResolvedModel;
 import com.magmaguy.resourcepackmanager.bedrock.model.BedrockManifest;
+import com.magmaguy.resourcepackmanager.bedrock.util.BedrockShortName;
 import com.magmaguy.resourcepackmanager.bedrock.util.BedrockZip;
 
 import java.io.File;
@@ -67,8 +68,21 @@ public class BedrockConversion {
         File previousMappings = ctx.previousMappingsFile();
         if (previousMappings == null || !previousMappings.exists()) return;
 
-        ctx.deployMappingsIfNeeded(previousMappings);
-        ctx.logger().info("Pre-deployed previous Geyser mappings for boot-time registration.");
+        // Install both the platform logger sink AND the debug toggle for the
+        // boot-time pre-deploy path. Without the sink install, any
+        // BedrockLog.debug() in GeyserDeployer would route through the no-op
+        // default sink and never print even when debug was opted into. Reset
+        // the sink afterwards so the next BedrockConversion.generate() can
+        // install its own (which it would do anyway, but cleanliness matters
+        // for the single-helper standalone-test case BedrockLog was designed
+        // around).
+        BedrockLog.set(ctx.logger());
+        BedrockLog.setDebug(ctx.isBedrockConverterDebug());
+        try {
+            ctx.deployMappingsIfNeeded(previousMappings);
+        } finally {
+            BedrockLog.set(null);
+        }
     }
 
     /**
@@ -83,30 +97,22 @@ public class BedrockConversion {
      */
     public static void generate(File mergedJavaPack, File outputDir, BedrockConverterContext ctx) {
         BedrockLog.set(ctx.logger());
+        BedrockLog.setDebug(ctx.isBedrockConverterDebug());
         BedrockDisplayOffsets.set(ctx.displayOffsets());
         try {
-            if (!ctx.isBedrockConversionEnabled()) {
-                BedrockLog.info("Bedrock conversion disabled in context; skipping.");
-                return;
-            }
-            if (!ctx.isBedrockTargetPresent()) {
-                BedrockLog.info("No Bedrock target (Geyser/Floodgate) detected. Skipping Bedrock conversion.");
-                return;
-            }
+            if (!ctx.isBedrockConversionEnabled()) return;
+            if (!ctx.isBedrockTargetPresent()) return;
 
-            BedrockLog.info("Starting Bedrock resource pack conversion for GeyserMC...");
+            // Per-mix "Starting Bedrock resource pack conversion..." fires every
+            // /reload and every mix cycle; demoted to debug so a clean run only
+            // emits the single "Bedrock conversion complete: N mappings" summary.
+            BedrockLog.debug("Starting Bedrock resource pack conversion for GeyserMC...");
 
             // Create the Bedrock pack staging directory and copy the pack icon.
             File bedrockDir = new File(outputDir, BEDROCK_PACK_NAME);
             if (bedrockDir.exists()) recursivelyDelete(bedrockDir);
             bedrockDir.mkdirs();
             copyPackIcon(mergedJavaPack, bedrockDir);
-
-            // (Removed BedrockMaterialEmitter.emit call — the custom-material approach
-            //  to fix the "armor stand inside block renders dark" problem produced a
-            //  worse regression (models entirely invisible) because the material file
-            //  didn't load the way we expected. The BedrockMaterialEmitter class is
-            //  kept for now as a code reference while we figure out the correct shape.)
 
             // Single, namespace-agnostic conversion pipeline. The generic scanner walks
             // every items definition under assets/<ns>/items/** (including the
@@ -123,14 +129,16 @@ public class BedrockConversion {
             // output from the previous run so the backend's /bedrock.zip route 404s
             // cleanly instead of serving last cycle's content forever.
             if (registry.totalMappings() == 0) {
-                BedrockLog.info("No convertible content in merged pack — skipping Bedrock pack emission this cycle.");
+                // No convertible content this cycle. Clear out previous-run output
+                // so the backend's /bedrock.zip route 404s cleanly instead of
+                // serving last cycle's content forever. Silent — operator doesn't
+                // need to know about routine cleanup.
                 recursivelyDelete(bedrockDir);
                 File staleZip = new File(outputDir, BEDROCK_PACK_NAME + ".zip");
                 File staleMappings = new File(outputDir, GEYSER_MAPPINGS_NAME);
                 if (staleZip.exists()) {
                     try {
                         Files.deleteIfExists(staleZip.toPath());
-                        BedrockLog.info("Deleted stale Bedrock pack zip from previous run: " + staleZip.getAbsolutePath());
                     } catch (IOException e) {
                         BedrockLog.warn("Failed to delete stale Bedrock pack zip: " + e.getMessage());
                     }
@@ -138,7 +146,6 @@ public class BedrockConversion {
                 if (staleMappings.exists()) {
                     try {
                         Files.deleteIfExists(staleMappings.toPath());
-                        BedrockLog.info("Deleted stale Geyser mappings from previous run: " + staleMappings.getAbsolutePath());
                     } catch (IOException e) {
                         BedrockLog.warn("Failed to delete stale Geyser mappings: " + e.getMessage());
                     }
@@ -179,9 +186,6 @@ public class BedrockConversion {
 
             BedrockLog.info("Bedrock conversion complete: " + registry.totalMappings() + " mappings ("
                     + registry.uniqueModelsWritten() + " unique models).");
-            BedrockLog.info("Bedrock pack: " + bedrockZip.getAbsolutePath());
-            BedrockLog.info("Geyser mappings: " + mappingsFile.getAbsolutePath());
-            BedrockLog.info("Bedrock pack is served live per-session; mapping changes apply on next server restart.");
 
         } catch (Exception e) {
             BedrockLog.warn("Bedrock conversion failed: " + e.getMessage());
@@ -226,11 +230,10 @@ public class BedrockConversion {
 
                 for (ResolvedLeaf leaf : leaves) {
                     Optional<ResolvedModel> modelOpt = assetResolver.resolveModel(leaf.modelRef());
-                    if (modelOpt.isEmpty()) {
-                        BedrockLog.warn("[BedrockConverter] Could not resolve model " + leaf.modelRef()
-                                + " (referenced by " + def.itemIdentifier() + "); skipping");
-                        continue;
-                    }
+                    // Unresolved models are silently skipped — aggregate count is
+                    // visible in the final "Bedrock conversion complete: X mappings"
+                    // summary. Per-item warns spam the console without diagnostic value.
+                    if (modelOpt.isEmpty()) continue;
                     ResolvedModel resolved = modelOpt.get();
 
                     // Split namespace and path from the model reference (e.g.
@@ -238,8 +241,14 @@ public class BedrockConversion {
                     int colon = leaf.modelRef().indexOf(':');
                     String namespace = colon > 0 ? leaf.modelRef().substring(0, colon) : "minecraft";
                     String rawPath = colon > 0 ? leaf.modelRef().substring(colon + 1) : leaf.modelRef();
-                    String pathPart = rawPath.replace('/', '_');
-                    String iconKey = namespace + "." + pathPart;
+
+                    // Short, opaque, deterministic stems. Previously we concatenated
+                    // the full Java namespace + path + base item into file paths and
+                    // identifiers; this routinely produced 100+ char file paths inside
+                    // the Bedrock pack and triggered Geyser's "exceeds 80 characters"
+                    // warning hundreds of times per merge. See BedrockShortName javadoc.
+                    String modelHash = BedrockShortName.forModel(leaf.modelRef());
+                    String iconKey = modelHash;
 
                     if (resolved.isFlatBuiltin()) {
                         boolean firstTime = registry.registerModelOnce(leaf.modelRef());
@@ -251,8 +260,8 @@ public class BedrockConversion {
                         String itemsStem = def.itemsRelPath();
                         String javaItemModel = def.itemIdentifier();
                         for (String base : baseItems) {
-                            String baseSafe = base.replace("minecraft:", "").replace(':', '_').replace('/', '_');
-                            String tierBedrockId = namespace + ":" + pathPart + "__" + baseSafe;
+                            String mappingHash = BedrockShortName.forBaseMapping(leaf.modelRef(), base);
+                            String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
                             registry.addMapping(base, new GeyserDefinitionEntry(
                                     tierBedrockId,
                                     javaItemModel,
@@ -260,14 +269,14 @@ public class BedrockConversion {
                                     iconKey,
                                     resolved.isHandheldVariant()
                             ));
-                            String attachableOut = namespace + "/" + pathPart + "__" + baseSafe;
+                            String attachableOut = mappingHash;
                             EquipmentAttachableGenerator.tryEnrichWithArmorAttachable(
                                     tierBedrockId, attachableOut, namespace, itemsStem,
                                     base, assetResolver, mergedJavaPack, bedrockDir);
                         }
                         flatEmitted++;
                     } else {
-                        if (!emitGenericThreeD(leaf, resolved, namespace, pathPart, iconKey,
+                        if (!emitGenericThreeD(leaf, resolved, modelHash, iconKey,
                                 def.itemIdentifier(),
                                 baseItems, registry, modelAssetsCache,
                                 mergedJavaPack, bedrockDir, iconTextureMap)) {
@@ -278,10 +287,9 @@ public class BedrockConversion {
                 }
             }
 
-            BedrockLog.info("[BedrockConverter] Generic pipeline: emitted "
-                    + flatEmitted + " flat-icon leaves and " + threeEmitted + " 3D leaves; "
-                    + registry.uniqueModelsWritten() + " unique models written; "
-                    + registry.totalMappings() + " total mappings accumulated.");
+            // Per-pipeline emission counts are folded into the final
+            // "Bedrock conversion complete" summary in generate() — no need
+            // to also log them here.
         } catch (Exception e) {
             BedrockLog.warn("[BedrockConverter] Generic pipeline failed: " + e.getMessage());
         }
@@ -289,8 +297,7 @@ public class BedrockConversion {
 
     private static boolean emitGenericThreeD(ResolvedLeaf leaf,
                                              ResolvedModel resolved,
-                                             String namespace,
-                                             String pathPart,
+                                             String modelHash,
                                              String iconKey,
                                              String javaItemModel,
                                              List<String> baseItems,
@@ -299,13 +306,25 @@ public class BedrockConversion {
                                              File mergedJavaPack,
                                              File bedrockDir,
                                              Map<String, String> iconTextureMap) {
-        String genericModelName = namespace;
-        String modelSafeBoneName = pathPart;
+        // modelHash is the short, opaque, deterministic stem (see BedrockShortName)
+        // used for every per-model file path in the Bedrock pack — texture atlas,
+        // geometry, animation, and the iconKey under which the per-model rendered
+        // inventory icon is registered with Geyser. Keeping a single stem across
+        // all four file types means a future diff against the pack ZIP is trivial:
+        // grep <modelHash> finds every file produced for that source model.
 
         SharedModelAssets shared;
         if (registry.registerModelOnce(leaf.modelRef())) {
+            // Pass the short stem as both modelName and boneName to the stitcher.
+            // Internally the stitcher concatenates them with "__" / "/" for the
+            // per-bone icon and atlas file paths; passing the same short hash on
+            // both sides yields <hash>__<hash>.png (≈25 chars) — short enough
+            // to stay well under Bedrock's 80-char file-path warning threshold.
+            // The original Java model ref is still preserved in modelAssetsCache
+            // for cross-base-item asset reuse, and BedrockLog messages here include
+            // leaf.modelRef() so the hash never becomes opaque during debugging.
             TextureStitcher.StitchResult stitch = TextureStitcher.stitchSingleModel(
-                    genericModelName, modelSafeBoneName, resolved.mergedJson(),
+                    modelHash, modelHash, resolved.mergedJson(),
                     mergedJavaPack, bedrockDir);
             if (stitch == null) {
                 BedrockLog.warn("[BedrockConverter] Failed to stitch textures for generic 3D model "
@@ -313,8 +332,8 @@ public class BedrockConversion {
                 return false;
             }
 
-            String geometryIdentifier = "geometry." + namespace + "." + pathPart;
-            String geometryOutputPath = genericModelName + "/" + modelSafeBoneName;
+            String geometryIdentifier = "geometry." + BedrockShortName.BEDROCK_NAMESPACE + "." + modelHash;
+            String geometryOutputPath = modelHash;
             String resultGeoId = FmmGeometryConverter.convertWithIdentifier(
                     geometryIdentifier, geometryOutputPath, resolved.mergedJson(),
                     stitch.spriteMap(), stitch.atlasWidth(), stitch.atlasHeight(),
@@ -325,8 +344,8 @@ public class BedrockConversion {
                 return false;
             }
 
-            String animBaseId = namespace + "." + pathPart;
-            String animFileBase = genericModelName + "__" + modelSafeBoneName;
+            String animBaseId = BedrockShortName.BEDROCK_NAMESPACE + "." + modelHash;
+            String animFileBase = modelHash;
             FmmAnimationGenerator.AnimationIds animIds = FmmAttachableGenerator.prepareAnimations(
                     animBaseId, animFileBase, resolved.mergedJson(), bedrockDir);
             if (animIds == null) {
@@ -335,8 +354,7 @@ public class BedrockConversion {
                 return false;
             }
 
-            String safeIconStem = iconKey;
-            String iconRel = "textures/items/" + safeIconStem;
+            String iconRel = "textures/items/" + iconKey;
             File iconFile = new File(bedrockDir, iconRel + ".png");
             boolean rendered = IconRenderer.renderIcon(resolved.mergedJson(), mergedJavaPack, iconFile);
             if (!rendered) {
@@ -355,9 +373,9 @@ public class BedrockConversion {
 
         boolean anyEmitted = false;
         for (String base : baseItems) {
-            String baseSafe = base.replace("minecraft:", "").replace(':', '_').replace('/', '_');
-            String tierBedrockId = namespace + ":" + pathPart + "__" + baseSafe;
-            String attachableOutPath = genericModelName + "/" + modelSafeBoneName + "__" + baseSafe;
+            String mappingHash = BedrockShortName.forBaseMapping(leaf.modelRef(), base);
+            String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
+            String attachableOutPath = mappingHash;
 
             String result = FmmAttachableGenerator.writeAttachable(
                     tierBedrockId, attachableOutPath,
@@ -397,7 +415,9 @@ public class BedrockConversion {
             }
         }
         if (layer0 == null) {
-            BedrockLog.warn("[BedrockConverter] Flat-icon model " + resolved.identifier()
+            // Per-item structural skip — expected on any flat-builtin model that
+            // doesn't expose a layer0/0 texture key. Demoted to debug.
+            BedrockLog.debug("[BedrockConverter] Flat-icon model " + resolved.identifier()
                     + " has no layer0/0 texture reference; skipping");
             return false;
         }
@@ -406,7 +426,9 @@ public class BedrockConversion {
         String texPath = colon >= 0 ? layer0.substring(colon + 1) : layer0;
         File source = new File(mergedJavaPack, "assets/" + ns + "/textures/" + texPath + ".png");
         if (!source.isFile()) {
-            BedrockLog.warn("[BedrockConverter] Flat-icon texture not found: " + source.getPath());
+            // Per-item asset miss — typically a layer0 that points at a vanilla
+            // texture not bundled in the merged pack. Demoted to debug.
+            BedrockLog.debug("[BedrockConverter] Flat-icon texture not found: " + source.getPath());
             return false;
         }
         String iconRel = "textures/items/" + safeId;
@@ -443,7 +465,6 @@ public class BedrockConversion {
                 new com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
                         .toJson(root, writer);
             }
-            BedrockLog.info("[BedrockConverter] Generated item_texture.json with " + iconTextureMap.size() + " entries.");
         } catch (IOException e) {
             BedrockLog.warn("[BedrockConverter] Failed to write item_texture.json: " + e.getMessage());
         }

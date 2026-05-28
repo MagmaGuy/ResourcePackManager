@@ -98,7 +98,11 @@ public class FmmGeometryConverter {
 
         if (cubes.isEmpty()) return null;
 
-        // Bone pivot = center of bounding box, X inverted
+        // Bone pivot = center of bounding box, X inverted. The visual Y offset
+        // needed to compensate for FMM's Bedrock-only entity Y-lift is applied as
+        // an animation translation in FmmAnimationGenerator (HEAD_BASE_POS_Y), NOT
+        // as a pivot offset here — moving the pivot away from cube centre breaks
+        // rotations.
         double pivotX = -((minX + maxX) / 2.0);
         double pivotY = (minY + maxY) / 2.0;
         double pivotZ = (minZ + maxZ) / 2.0;
@@ -256,7 +260,10 @@ public class FmmGeometryConverter {
                     // that strictness with a warn-and-skip rather than silent acceptance.
                     int normalized = ((raw % 360) + 360) % 360;
                     if (normalized % 90 != 0) {
-                        BedrockLog.warn("[BedrockConverter] face rotation " + raw + " on " + faceName
+                        // Per-face rotation note — fires once per off-quadrant face in
+                        // the source model. Cosmetic (the face still emits without
+                        // rotation), so demote to debug.
+                        BedrockLog.debug("[BedrockConverter] face rotation " + raw + " on " + faceName
                                 + " is not a multiple of 90; ignoring (Rainbow parity).");
                     } else {
                         faceRotation = normalized;

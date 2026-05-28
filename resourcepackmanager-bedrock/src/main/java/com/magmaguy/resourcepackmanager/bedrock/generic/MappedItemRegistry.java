@@ -51,7 +51,11 @@ public final class MappedItemRegistry {
     public void addMapping(String baseItem, GeyserDefinitionEntry entry) {
         String key = baseItem + "|" + entry.bedrockIdentifier() + "|" + predicateShape(entry.predicates());
         if (!emittedEntryKeys.add(key)) {
-            BedrockLog.warn("[BedrockConverter] Duplicate generic mapping skipped: base=" + baseItem
+            // Per-duplicate dedup notice — expected on any pack that emits the same
+            // (model, base item) tuple from more than one items-definition path (e.g.
+            // multiple EliteMobs tiers that all resolve to the same base sword id).
+            // Demoted to debug; not actionable for operators.
+            BedrockLog.debug("[BedrockConverter] Duplicate generic mapping skipped: base=" + baseItem
                     + " id=" + entry.bedrockIdentifier());
             return;
         }

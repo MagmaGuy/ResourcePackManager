@@ -5,6 +5,7 @@ import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.BedrockDisplayOffsetsConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
+import com.magmaguy.resourcepackmanager.network.NetworkMode;
 import org.bukkit.Bukkit;
 
 import java.io.File;
@@ -51,20 +52,34 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
 
     @Override
     public boolean isBedrockTargetPresent() {
-        // Either Geyser-Spigot (local Geyser) or Floodgate (proxy-side Geyser
-        // talking back to this backend) signals that a Bedrock client could
-        // ever consume the produced pack. Note: in network mode the backend
-        // shouldn't actually serve its own Bedrock pack to clients — the proxy
-        // does — but we still WANT the conversion to happen on the backend so
-        // backend admins can inspect the per-backend Bedrock pack in
-        // plugins/ResourcePackManager/output/ for debugging.
+        // Three independent reasons a Bedrock pack might be consumed downstream:
+        //
+        // 1. Local Geyser-Spigot — Bedrock players hit this backend directly
+        //    through a Geyser instance on the same JVM. Pack served locally.
+        // 2. Local Floodgate (without proxy) — covers standalone setups where
+        //    Floodgate runs on the backend and pairs with some other Geyser.
+        // 3. Network mode — proxy has Geyser+Floodgate, this backend has
+        //    neither but its converted Bedrock pack is fetched over HTTP by
+        //    the proxy plugin and merged into the network-wide pack. This is
+        //    THE common production case (proxy-fronted multi-backend network),
+        //    and missing it here caused the backend to silently skip Bedrock
+        //    conversion and serve a 404 on /bedrock.zip to the proxy — see the
+        //    Dec 2026 user report where a Velocity-forwarded Paper backend had
+        //    no Floodgate/Geyser locally and produced no Bedrock pack despite
+        //    NetworkMode reporting ACTIVE via the paper-global.yml signal.
         return Bukkit.getPluginManager().getPlugin("Geyser-Spigot") != null
-                || Bukkit.getPluginManager().getPlugin("floodgate") != null;
+                || Bukkit.getPluginManager().getPlugin("floodgate") != null
+                || NetworkMode.isActive();
     }
 
     @Override
     public boolean isBedrockConversionEnabled() {
         return DefaultConfig.isBedrockConversionEnabled();
+    }
+
+    @Override
+    public boolean isBedrockConverterDebug() {
+        return DefaultConfig.isBedrockConverterDebug();
     }
 
     @Override

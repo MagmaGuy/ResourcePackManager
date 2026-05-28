@@ -9,6 +9,7 @@ public class FreeMinecraftModels extends CompatiblePluginConfigFields {
         super("free_minecraft_models", true);
         setPluginName("FreeMinecraftModels");
         setLocalPath("FreeMinecraftModels" + File.separatorChar + "output" + File.separatorChar + "FreeMinecraftModels.zip");
+        setAdditionalLocalPath("FreeMinecraftModels" + File.separatorChar + "resource_pack");
         setReloadCommand("freeminecraftmodels reload");
     }
 }

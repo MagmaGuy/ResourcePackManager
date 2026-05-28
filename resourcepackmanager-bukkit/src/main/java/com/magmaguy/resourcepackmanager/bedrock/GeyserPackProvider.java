@@ -52,31 +52,20 @@ public final class GeyserPackProvider {
      */
     public static void register() {
         if (registered) return;
-        if (!DefaultConfig.isBedrockConversionEnabled()) {
-            Logger.info("Bedrock conversion disabled in config; skipping Geyser pack provider.");
-            return;
-        }
+        if (!DefaultConfig.isBedrockConversionEnabled()) return;
         if (NetworkMode.isActive()) {
-            // Backend is behind a proxy that owns Geyser. We don't register a SessionLoadResourcePacks
-            // subscriber here because Geyser isn't on this JVM. The proxy plugin (resourcepackmanager-velocity /
-            // resourcepackmanager-bungee, see Phase 4+ of the network-mode plan) handles Bedrock pack registration
-            // from the proxy side; backend RPM only needs to ensure the pack zip is uploaded so the
-            // proxy can fetch it.
-            Logger.info("Network mode: ACTIVE (Floodgate present, Geyser-Spigot absent on backend).");
-            Logger.info("Bedrock pack delivery is handled by the proxy plugin; backend RPM skips local Geyser registration.");
-            // Boot banner: log the network key prominently every boot so admins can re-find it
-            // after console history rotates. NetworkMode.getNetworkKey() auto-generates on first
-            // boot and persists to data.yml.
-            String networkKey = NetworkMode.getNetworkKey();
-            Logger.info("[RSPM] ===== NETWORK MODE =====");
-            Logger.info("[RSPM] Network key: " + networkKey);
-            Logger.info("[RSPM] Use this same key on your proxy plugin and any other backends in this network.");
-            Logger.info("[RSPM] ========================");
+            // Backend is behind a proxy that owns Geyser. We don't register a
+            // SessionLoadResourcePacks subscriber here because Geyser isn't on
+            // this JVM. The proxy plugin handles Bedrock pack registration from
+            // its side; backend RSPM only needs to ensure the pack zip is
+            // produced so the proxy can fetch it. Silent on the routine
+            // "we're a backend in network mode" case — /rspm status surfaces
+            // the same info on demand and the network-mode boot banner only
+            // added noise to every backend's startup.
             return;
         }
         if (Bukkit.getPluginManager().getPlugin("Geyser-Spigot") == null) {
             // Standalone server with no Geyser at all. Nothing to do.
-            Logger.info("Geyser-Spigot not detected; skipping Geyser pack provider.");
             return;
         }
         // One-shot migration: prior RSPM versions copied our pack zip into Geyser's
@@ -93,7 +82,6 @@ public final class GeyserPackProvider {
                     SessionLoadResourcePacksEvent.class,
                     GeyserPackProvider::onSessionLoadResourcePacks);
             registered = true;
-            Logger.info("Geyser pack provider registered — Bedrock clients will receive the live mixed pack on connect.");
         } catch (Throwable t) {
             // Defensive: any incompatibility with the running Geyser version (the API
             // surface we compile against is 2.9.6, runtime may differ) shouldn't kill
@@ -108,9 +96,10 @@ public final class GeyserPackProvider {
             java.nio.file.Path geyserPacksDir = GeyserApi.api().packDirectory();
             if (geyserPacksDir == null) return;
             java.nio.file.Path legacy = geyserPacksDir.resolve("ResourcePackManager_Bedrock.zip");
-            if (java.nio.file.Files.deleteIfExists(legacy)) {
-                Logger.info("Removed legacy Bedrock pack copy from Geyser packs/ folder (now served live per-session).");
-            }
+            // One-time silent migration: prior versions dropped the pack into
+            // Geyser's packs/ folder. Just delete the leftover if found —
+            // operator doesn't need to know.
+            java.nio.file.Files.deleteIfExists(legacy);
         } catch (Throwable ignored) {
             // Best-effort cleanup; not fatal if it fails.
         }

@@ -69,7 +69,6 @@ public final class GeyserBinder {
                     SessionLoadResourcePacksEvent.class,
                     this::onSession);
             registered = true;
-            logger.info("GeyserBinder registered — Bedrock clients will receive the network merged pack on session load.");
         } catch (Throwable t) {
             logger.warn("Failed to register GeyserBinder; Bedrock clients will not receive the network pack until restart with a compatible Geyser.", t);
         }
@@ -99,12 +98,17 @@ public final class GeyserBinder {
 
     private void onSession(SessionLoadResourcePacksEvent event) {
         MergedPack pack = current;
+        String playerName = safePlayerName(event);
         if (pack == null) {
             // NetworkSync hasn't completed its first merge yet (no backend has
             // produced a /bedrock.zip we could pull). Loudly notify the operator
             // AND the player — without a pack the player will see no custom
             // models and the obvious next step is "reconnect once the merge
             // catches up." Silent failure here cost the user hours of debugging.
+            if (BedrockDeliveryDebugLog.isEnabled()) {
+                logger.info("[RSPM-BedrockDebug] GeyserBinder.onSession: pack=null at session-load for "
+                        + playerName + " — no merge has completed yet on this proxy.");
+            }
             notifyPackUnavailable(event, "the proxy hasn't completed its first merge cycle yet "
                     + "(backend(s) may still be starting up — typically resolves within 60s)");
             return;
@@ -119,11 +123,38 @@ public final class GeyserBinder {
         }
         try {
             event.register(ResourcePack.create(PackCodec.path(packFile.toPath())));
+            if (BedrockDeliveryDebugLog.isEnabled()) {
+                // One line per Bedrock session load — gives the operator the
+                // exact (player, pack-sha1, pack-bytes, on-disk path) tuple
+                // for the pack actually announced to this client. Pair this
+                // with the FMM-side [FMM-BedrockDebug] lines (matching on
+                // player name) to see the entire chain: which pack the
+                // client received → which bones FMM tried to display.
+                logger.info("[RSPM-BedrockDebug] GeyserBinder.onSession: announced pack to "
+                        + playerName + " — sha1=" + safeShortSha(pack.sha1Hex())
+                        + " bytes=" + packFile.length()
+                        + " path=" + packFile.getAbsolutePath());
+            }
         } catch (Throwable t) {
             logger.warn("Failed to register pack for Bedrock session from " + packFile.getAbsolutePath(), t);
             notifyPackUnavailable(event, "Geyser refused the merged pack — "
                     + "see proxy log for the stack trace");
         }
+    }
+
+    /** Best-effort player-name extraction for log lines; never throws. */
+    private static String safePlayerName(SessionLoadResourcePacksEvent event) {
+        try {
+            return event.connection().bedrockUsername();
+        } catch (Throwable t) {
+            return "<unknown>";
+        }
+    }
+
+    /** Compact sha1 prefix for logs — full hash is too long to be useful at a glance. */
+    private static String safeShortSha(String full) {
+        if (full == null || full.length() < 8) return "(unknown)";
+        return full.substring(0, 8);
     }
 
     /**

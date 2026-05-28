@@ -9,6 +9,7 @@ public class ResourcePackManager extends CompatiblePluginConfigFields {
         super("resource_pack_manager", true);
         setPluginName("ResourcePackManager");
         setLocalPath("ResourcePackManager" + File.separatorChar + "blueprint" + File.separatorChar + "blueprint.zip");
+        setAdditionalLocalPath("ResourcePackManager" + File.separatorChar + "resource_pack");
         setReloadCommand("rspm reload");
     }
 }

@@ -25,7 +25,7 @@ import java.nio.file.Path;
 @Plugin(
         id = "resourcepackmanager",
         name = "ResourcePackManager",
-        version = "1.8.0",
+        version = "2.0.0",
         description = "Network-side companion to ResourcePackManager. Delivers the merged pack to Bedrock clients via Geyser on this proxy.",
         authors = {"MagmaGuy"},
         dependencies = {
@@ -60,21 +60,25 @@ public final class RspmVelocityPlugin {
             return;
         }
 
-        String effectiveKey = config.networkKey();
+        // Network key is derived SOLELY from plugins/floodgate/key.pem on this proxy.
+        // There is no config-pasted override path — that was retired pre-release after
+        // typo'd pastes silently broke the proxy↔backend link. Floodgate already
+        // requires this file to be the same on every backend AND on the proxy for
+        // Bedrock players to authenticate, so the derived value matches every
+        // backend's automatically. The only setup step is: install Floodgate.
+        Path keyPem = dataDir.getParent()   // plugins/
+                .resolve("floodgate")
+                .resolve("key.pem");
+        String effectiveKey = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver
+                .deriveFromFloodgateKey(keyPem);
         if (effectiveKey == null || effectiveKey.isBlank()) {
-            // Auto-derive from Floodgate key.pem on the proxy
-            Path keyPem = dataDir.getParent()   // plugins/
-                    .resolve("floodgate")
-                    .resolve("key.pem");
-            effectiveKey = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver.deriveFromFloodgateKey(keyPem);
-            if (effectiveKey != null) {
-                slf4j.info("[RSPM] Network-key auto-derived from Floodgate key.pem ({}). Override via network-key in config.yml if needed.", effectiveKey);
-            }
-        }
-        if (effectiveKey == null || effectiveKey.isBlank()) {
-            slf4j.warn("[RSPM] No network-key. Floodgate key.pem missing from plugins/floodgate/ — install Floodgate on this proxy, or set network-key explicitly in config.yml. Plugin idle.");
+            slf4j.warn("[RSPM] Floodgate key.pem missing from plugins/floodgate/key.pem on this proxy.");
+            slf4j.warn("[RSPM] RSPM cannot link to any backend without it. Install Floodgate on this");
+            slf4j.warn("[RSPM] proxy (it's required for Bedrock players to connect anyway), then");
+            slf4j.warn("[RSPM] restart. Plugin idle.");
             return;
         }
+        slf4j.info("[RSPM] Network-key auto-derived from Floodgate key.pem ✓");
 
         MixerLogger mixerLogger = new MixerLogger() {
             @Override
@@ -113,8 +117,8 @@ public final class RspmVelocityPlugin {
             if (GeyserMappingsDeployer.isEmptyMappings(previousMergedMappings)) {
                 logger.info("Previous Geyser mappings file exists but is empty (no items); skipping boot-time pre-deploy.");
             } else {
+                // Silent pre-deploy — boot-time internal plumbing, no operator value.
                 GeyserMappingsDeployer.deploy(geyserPluginDir, previousMergedMappings, logger);
-                logger.info("Pre-deployed previous Geyser mappings for boot-time registration.");
             }
         }
 
@@ -126,6 +130,7 @@ public final class RspmVelocityPlugin {
                 config.networkHttpOffset(),
                 mixerLogger,
                 geyserPluginDir,
+                effectiveKey,
                 this::onMergedPackReady);
 
         boolean geyserPresent = proxy.getPluginManager().getPlugin("geyser").isPresent();
@@ -144,7 +149,95 @@ public final class RspmVelocityPlugin {
         // If-Modified-Since so steady-state cost is ~0 bytes per cycle per backend
         // when nothing changed — cheap enough to leave fast.
         this.sync.start(2_000L, 5_000L);
-        logger.info("RSPM proxy plugin started (network-key=" + effectiveKey + "). Java pack push is handled by backends; this proxy plugin is Bedrock-only.");
+
+        // Register /rspm status. The status command captures live NetworkSync state
+        // (backend list, fetch outcomes, merge state) — operators run this when
+        // Bedrock players aren't getting the pack and the proxy log has been quiet,
+        // which is the exact failure mode the silent-IOException path in
+        // fetchIfChanged created in production before the diagnostic snapshot existed.
+        // Final-effective for the lambda — local copy of effectiveKey so the supplier
+        // captures the boot-time resolved value.
+        final String resolvedKey = effectiveKey;
+        final File detectedGeyserDir = geyserPluginDir;
+        com.velocitypowered.api.command.CommandManager commandManager = proxy.getCommandManager();
+        com.velocitypowered.api.command.CommandMeta meta = commandManager.metaBuilder("rspm").build();
+        commandManager.register(meta,
+                new com.velocitypowered.api.command.SimpleCommand() {
+                    private final RspmVelocityStatusCommand status = new RspmVelocityStatusCommand(
+                            proxy.getPluginManager().getPlugin("resourcepackmanager").orElseThrow(),
+                            proxy,
+                            () -> RspmVelocityPlugin.this.sync,
+                            () -> resolvedKey,
+                            () -> detectedGeyserDir);
+
+                    @Override
+                    public void execute(Invocation invocation) {
+                        String[] args = invocation.arguments();
+                        if (args.length >= 1 && args[0].equalsIgnoreCase("status")) {
+                            status.execute(invocation);
+                            return;
+                        }
+                        if (args.length >= 1 && args[0].equalsIgnoreCase("debug")) {
+                            handleDebugSubcommand(invocation, args);
+                            return;
+                        }
+                        invocation.source().sendMessage(net.kyori.adventure.text.Component
+                                .text("Usage: /rspm <status|debug bedrock [on|off]>"));
+                    }
+
+                    /**
+                     * {@code /rspm debug bedrock [on|off]} — runtime toggle for the
+                     * {@code [RSPM-BedrockDebug]} log stream emitted by
+                     * {@link com.magmaguy.resourcepackmanager.proxy.GeyserBinder}.
+                     * Intentionally not stored in config (would be too easy to leave
+                     * on; the logging is verbose). State resets on proxy restart.
+                     */
+                    private void handleDebugSubcommand(Invocation invocation, String[] args) {
+                        // args[0] = "debug"; expect args[1] = "bedrock"; args[2] = optional on/off
+                        if (args.length < 2 || !"bedrock".equalsIgnoreCase(args[1])) {
+                            invocation.source().sendMessage(net.kyori.adventure.text.Component.text(
+                                    "Usage: /rspm debug bedrock [on|off] — currently only the 'bedrock' subsystem is supported."));
+                            return;
+                        }
+                        if (args.length < 3) {
+                            boolean cur = com.magmaguy.resourcepackmanager.proxy
+                                    .BedrockDeliveryDebugLog.isEnabled();
+                            invocation.source().sendMessage(net.kyori.adventure.text.Component.text(
+                                    "[RSPM] Bedrock delivery debug logging is currently "
+                                            + (cur ? "ON" : "OFF")
+                                            + ". Use /rspm debug bedrock on|off to change."));
+                            return;
+                        }
+                        boolean target;
+                        switch (args[2].toLowerCase()) {
+                            case "on", "true", "enable", "enabled" -> target = true;
+                            case "off", "false", "disable", "disabled" -> target = false;
+                            default -> {
+                                invocation.source().sendMessage(net.kyori.adventure.text.Component.text(
+                                        "Unknown state '" + args[2] + "'. Expected 'on' or 'off'."));
+                                return;
+                            }
+                        }
+                        com.magmaguy.resourcepackmanager.proxy.BedrockDeliveryDebugLog.setEnabled(target);
+                        invocation.source().sendMessage(net.kyori.adventure.text.Component.text(
+                                "[RSPM] Bedrock delivery debug logging is now "
+                                        + (target ? "ON" : "OFF")
+                                        + ". Log lines prefixed with [RSPM-BedrockDebug]. "
+                                        + (target
+                                            ? "Reproduce the issue then turn this OFF."
+                                            : "")));
+                    }
+
+                    @Override
+                    public boolean hasPermission(Invocation invocation) {
+                        return status.hasPermission(invocation);
+                    }
+                });
+
+        // Startup is intentionally silent on the routine "we booted" line —
+        // /rspm status surfaces the same information on demand and the
+        // Network-key auto-derived ✓ line above already confirms the
+        // critical handshake is good.
     }
 
     @Subscribe

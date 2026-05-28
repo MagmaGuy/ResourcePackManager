@@ -40,7 +40,11 @@ public final class ItemModelTreeWalker {
     public static List<ResolvedLeaf> walk(ItemsDefinition def, AssetResolver resolver) {
         JsonObject root = def.root();
         if (root == null || !root.has("model") || !root.get("model").isJsonObject()) {
-            BedrockLog.warn("[BedrockConverter] Items definition " + def.itemIdentifier()
+            // Per-item structural skip — fires once per malformed items definition
+            // and the user can't act on it without knowing what to fix. Demoted to
+            // debug; the per-cycle "Bedrock conversion complete: N mappings" line
+            // is the operator-facing signal.
+            BedrockLog.debug("[BedrockConverter] Items definition " + def.itemIdentifier()
                     + " has no model object; skipping");
             return List.of();
         }
@@ -56,11 +60,11 @@ public final class ItemModelTreeWalker {
     private static void walk(JsonObject node, List<PredicateRecord> stack,
                              ItemsDefinition def, List<ResolvedLeaf> out) {
         if (node == null) {
-            BedrockLog.warn("[BedrockConverter] Null model node in " + def.itemIdentifier());
+            BedrockLog.debug("[BedrockConverter] Null model node in " + def.itemIdentifier());
             return;
         }
         if (!node.has("type") || !node.get("type").isJsonPrimitive()) {
-            BedrockLog.warn("[BedrockConverter] Model node has no type field in " + def.itemIdentifier());
+            BedrockLog.debug("[BedrockConverter] Model node has no type field in " + def.itemIdentifier());
             return;
         }
         String type = node.get("type").getAsString();
@@ -69,7 +73,7 @@ public final class ItemModelTreeWalker {
             case "minecraft:condition" -> walkCondition(node, stack, def, out);
             case "minecraft:range_dispatch" -> walkRangeDispatch(node, stack, def, out);
             case "minecraft:select" -> walkSelect(node, stack, def, out);
-            default -> BedrockLog.warn("[BedrockConverter] Unsupported model type '" + type
+            default -> BedrockLog.debug("[BedrockConverter] Unsupported model type '" + type
                     + "' in " + def.itemIdentifier());
         }
     }
@@ -81,7 +85,7 @@ public final class ItemModelTreeWalker {
     private static void walkLeaf(JsonObject node, List<PredicateRecord> stack,
                                  ItemsDefinition def, List<ResolvedLeaf> out) {
         if (!node.has("model") || !node.get("model").isJsonPrimitive()) {
-            BedrockLog.warn("[BedrockConverter] minecraft:model leaf without 'model' field in "
+            BedrockLog.debug("[BedrockConverter] minecraft:model leaf without 'model' field in "
                     + def.itemIdentifier());
             return;
         }
@@ -126,7 +130,7 @@ public final class ItemModelTreeWalker {
             case "has_component" -> {
                 geyserProperty = "has_component";
                 if (!node.has("component") || !node.get("component").isJsonPrimitive()) {
-                    BedrockLog.warn("[BedrockConverter] condition.has_component missing 'component' field in "
+                    BedrockLog.debug("[BedrockConverter] condition.has_component missing 'component' field in "
                             + def.itemIdentifier() + "; skipping branch");
                     return;
                 }
@@ -142,7 +146,11 @@ public final class ItemModelTreeWalker {
                 falseExtras.put("index", idxPrim);
             }
             default -> {
-                BedrockLog.warn("[BedrockConverter] Unsupported conditional property '" + rawProperty
+                // "Java condition X has no Geyser equivalent" — one of the highest-volume
+                // patterns in the converter output. Fires per-condition-node per-item, so
+                // a pack with dozens of items using vanilla-only conditions can produce
+                // hundreds of these lines. Demoted to debug.
+                BedrockLog.debug("[BedrockConverter] Unsupported conditional property '" + rawProperty
                         + "' in " + def.itemIdentifier() + "; skipping both branches");
                 return;
             }
@@ -201,7 +209,9 @@ public final class ItemModelTreeWalker {
             case "bundle_fullness" -> geyserProperty = "bundle_fullness";
             case "custom_model_data" -> geyserProperty = "custom_model_data";
             default -> {
-                BedrockLog.warn("[BedrockConverter] Unsupported range_dispatch property '" + rawProperty
+                // Per-property "no Geyser equivalent" — same noise pattern as the
+                // condition branch above. Demoted to debug.
+                BedrockLog.debug("[BedrockConverter] Unsupported range_dispatch property '" + rawProperty
                         + "' in " + def.itemIdentifier() + "; mapping only fallback if present");
                 propertyOk = false;
                 geyserProperty = null;
@@ -210,24 +220,24 @@ public final class ItemModelTreeWalker {
 
         if (propertyOk) {
             if (!node.has("entries") || !node.get("entries").isJsonArray()) {
-                BedrockLog.warn("[BedrockConverter] range_dispatch missing 'entries' array in "
+                BedrockLog.debug("[BedrockConverter] range_dispatch missing 'entries' array in "
                         + def.itemIdentifier());
             } else {
                 JsonArray entries = node.getAsJsonArray("entries");
                 for (JsonElement entryEl : entries) {
                     if (!entryEl.isJsonObject()) {
-                        BedrockLog.warn("[BedrockConverter] range_dispatch entry is not an object in "
+                        BedrockLog.debug("[BedrockConverter] range_dispatch entry is not an object in "
                                 + def.itemIdentifier());
                         continue;
                     }
                     JsonObject entry = entryEl.getAsJsonObject();
                     if (!entry.has("threshold") || !entry.get("threshold").isJsonPrimitive()) {
-                        BedrockLog.warn("[BedrockConverter] range_dispatch entry missing 'threshold' in "
+                        BedrockLog.debug("[BedrockConverter] range_dispatch entry missing 'threshold' in "
                                 + def.itemIdentifier());
                         continue;
                     }
                     if (!entry.has("model") || !entry.get("model").isJsonObject()) {
-                        BedrockLog.warn("[BedrockConverter] range_dispatch entry missing 'model' object in "
+                        BedrockLog.debug("[BedrockConverter] range_dispatch entry missing 'model' object in "
                                 + def.itemIdentifier());
                         continue;
                     }
@@ -301,25 +311,27 @@ public final class ItemModelTreeWalker {
         };
 
         if (!supportedProperty) {
-            BedrockLog.warn("[BedrockConverter] Unsupported select property '" + rawProperty
+            // Per-property "no Geyser equivalent" — same noise pattern as condition /
+            // range_dispatch branches above. Demoted to debug.
+            BedrockLog.debug("[BedrockConverter] Unsupported select property '" + rawProperty
                     + "' in " + def.itemIdentifier() + "; mapping only fallback if present");
         } else {
             int indexExtra = readOptionalInt(node, "index", 0);
             for (JsonElement caseEl : cases) {
                 if (!caseEl.isJsonObject()) {
-                    BedrockLog.warn("[BedrockConverter] select case is not an object in "
+                    BedrockLog.debug("[BedrockConverter] select case is not an object in "
                             + def.itemIdentifier());
                     continue;
                 }
                 JsonObject caseObj = caseEl.getAsJsonObject();
                 if (!caseObj.has("model") || !caseObj.get("model").isJsonObject()) {
-                    BedrockLog.warn("[BedrockConverter] select case missing 'model' object in "
+                    BedrockLog.debug("[BedrockConverter] select case missing 'model' object in "
                             + def.itemIdentifier());
                     continue;
                 }
                 List<JsonElement> whenValues = readWhenValues(caseObj);
                 if (whenValues.isEmpty()) {
-                    BedrockLog.warn("[BedrockConverter] select case missing 'when' value in "
+                    BedrockLog.debug("[BedrockConverter] select case missing 'when' value in "
                             + def.itemIdentifier());
                     continue;
                 }
@@ -346,10 +358,10 @@ public final class ItemModelTreeWalker {
     // Helpers
     // -------------------------------------------------------------------------
 
-    /** Reads a {@code property} string field; emits a warning and returns null if missing/malformed. */
+    /** Reads a {@code property} string field; emits a debug note and returns null if missing/malformed. */
     private static String readProperty(JsonObject node, ItemsDefinition def, String nodeKind) {
         if (!node.has("property") || !node.get("property").isJsonPrimitive()) {
-            BedrockLog.warn("[BedrockConverter] " + nodeKind + " node missing 'property' field in "
+            BedrockLog.debug("[BedrockConverter] " + nodeKind + " node missing 'property' field in "
                     + def.itemIdentifier());
             return null;
         }
@@ -406,7 +418,10 @@ public final class ItemModelTreeWalker {
 
     private static void logUnverifiedOnce(String key, String message) {
         if (unverifiedPropertiesLogged.add(key)) {
-            BedrockLog.warn("[BedrockConverter] " + message);
+            // One-shot per JVM, but the underlying "Java X has no Geyser equivalent"
+            // category still shouldn't show unless an operator opted into debug —
+            // these are normal-operation notes, not actionable warnings.
+            BedrockLog.debug("[BedrockConverter] " + message);
         }
     }
 }

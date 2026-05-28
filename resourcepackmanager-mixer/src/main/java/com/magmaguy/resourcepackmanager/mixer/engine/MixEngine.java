@@ -265,17 +265,14 @@ public final class MixEngine {
                     recursivelyDeleteDirectory(file);
                 }
             }
-            try {
-                Files.delete(directory.toPath());
-            } catch (Exception e) {
-                logger.warn("Failed to delete directory " + directory.getPath());
-            }
+            // Cleanup failures are usually transient (file locks, AV scanners,
+            // GC delays releasing zip handles). Silent — the next mix cycle's
+            // pre-clean catches any leftover, and any real "disk is wedged"
+            // condition surfaces via the subsequent zip / copy failure with
+            // an actionable error.
+            try { Files.delete(directory.toPath()); } catch (Exception ignored) {}
         } else {
-            try {
-                Files.delete(directory.toPath());
-            } catch (IOException e) {
-                logger.warn("Failed to delete file " + directory.getPath());
-            }
+            try { Files.delete(directory.toPath()); } catch (IOException ignored) {}
         }
     }
 
