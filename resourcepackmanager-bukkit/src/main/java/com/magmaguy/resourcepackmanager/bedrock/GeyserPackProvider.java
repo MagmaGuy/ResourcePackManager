@@ -52,6 +52,13 @@ public final class GeyserPackProvider {
      */
     public static void register() {
         if (registered) return;
+        if (Bukkit.getPluginManager().getPlugin("Geyser-Spigot") != null) {
+            // One-shot migration: prior RSPM versions copied our pack zip into Geyser's
+            // packs/ folder. Geyser auto-loads everything in that folder at boot, so
+            // leaving the legacy copy in place can keep stale Bedrock packs alive even
+            // after Bedrock conversion is disabled.
+            cleanupLegacyPackCopy();
+        }
         if (!DefaultConfig.isBedrockConversionEnabled()) return;
         if (NetworkMode.isActive()) {
             // Backend is behind a proxy that owns Geyser. We don't register a
@@ -68,13 +75,6 @@ public final class GeyserPackProvider {
             // Standalone server with no Geyser at all. Nothing to do.
             return;
         }
-        // One-shot migration: prior RSPM versions copied our pack zip into Geyser's
-        // packs/ folder. Geyser auto-loads everything in that folder at boot, so
-        // leaving the legacy copy in place would result in Geyser serving the same
-        // pack twice (once from disk, once from this provider) — duplicate UUIDs
-        // confuse the Bedrock client. Delete it if present; the live-served copy
-        // from output/ supersedes it.
-        cleanupLegacyPackCopy();
         try {
             GeyserApi api = GeyserApi.api();
             api.eventBus().subscribe(

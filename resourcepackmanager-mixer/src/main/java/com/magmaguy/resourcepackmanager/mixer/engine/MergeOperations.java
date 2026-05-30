@@ -17,6 +17,8 @@ import java.util.Map;
 import java.util.Set;
 
 public final class MergeOperations {
+    private static final int LAST_PRE_MINOR_CLIENT_PACK_FORMAT = 64;
+
     private final MixerLogger logger;
 
     public MergeOperations(MixerLogger logger) {
@@ -222,6 +224,100 @@ public final class MergeOperations {
                 + " (" + addedCount + " sources added from base)");
     }
 
+    public void sanitizeMergedModels(File resourcePackRoot) {
+        File assetsDir = new File(resourcePackRoot, "assets");
+        if (!assetsDir.exists() || !assetsDir.isDirectory()) return;
+
+        int[] stats = new int[2];
+        sanitizeModelsRecursively(assetsDir, stats);
+        if (stats[0] > 0 || stats[1] > 0) {
+            logger.collision("Sanitized merged models: added particle textures to " + stats[0]
+                    + " models, clamped invalid UVs in " + stats[1] + " models");
+        }
+    }
+
+    private void sanitizeModelsRecursively(File file, int[] stats) {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children == null) return;
+            for (File child : children) {
+                sanitizeModelsRecursively(child, stats);
+            }
+            return;
+        }
+
+        String path = file.getPath().replace("\\", "/");
+        if (!path.endsWith(".json") || !path.contains("/models/")) return;
+
+        JsonObject json = readJsonFile(file);
+        if (json == null) return;
+
+        boolean addedParticle = addMissingParticleTexture(json);
+        boolean clampedUvs = clampModelUvs(json);
+        if (!addedParticle && !clampedUvs) return;
+
+        try (FileWriter writer = new FileWriter(file)) {
+            new Gson().toJson(json, writer);
+        } catch (IOException e) {
+            logger.warn("Failed to sanitize model JSON: " + file.getPath());
+            return;
+        }
+
+        if (addedParticle) stats[0]++;
+        if (clampedUvs) stats[1]++;
+    }
+
+    private boolean addMissingParticleTexture(JsonObject json) {
+        if (!json.has("textures") || !json.get("textures").isJsonObject()) return false;
+        JsonObject textures = json.getAsJsonObject("textures");
+        if (textures.has("particle")) return false;
+
+        for (String key : textures.keySet()) {
+            JsonElement value = textures.get(key);
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) continue;
+            String texture = value.getAsString();
+            if (texture == null || texture.isBlank() || texture.startsWith("#")) continue;
+            textures.addProperty("particle", texture);
+            return true;
+        }
+
+        return false;
+    }
+
+    private boolean clampModelUvs(JsonObject json) {
+        if (!json.has("elements") || !json.get("elements").isJsonArray()) return false;
+
+        boolean changed = false;
+        for (JsonElement element : json.getAsJsonArray("elements")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject elementObject = element.getAsJsonObject();
+            if (!elementObject.has("faces") || !elementObject.get("faces").isJsonObject()) continue;
+
+            JsonObject faces = elementObject.getAsJsonObject("faces");
+            for (String faceName : faces.keySet()) {
+                JsonElement faceElement = faces.get(faceName);
+                if (!faceElement.isJsonObject()) continue;
+                JsonObject face = faceElement.getAsJsonObject();
+                if (!face.has("uv") || !face.get("uv").isJsonArray()) continue;
+
+                JsonArray uv = face.getAsJsonArray("uv");
+                for (int i = 0; i < uv.size(); i++) {
+                    JsonElement coordinate = uv.get(i);
+                    if (!coordinate.isJsonPrimitive() || !coordinate.getAsJsonPrimitive().isNumber()) continue;
+
+                    double value = coordinate.getAsDouble();
+                    double clamped = Math.max(0.0, Math.min(16.0, value));
+                    if (Double.compare(value, clamped) != 0) {
+                        uv.set(i, new JsonPrimitive(clamped));
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        return changed;
+    }
+
     public void mergePackMcmeta(File sourceFile, File targetFile) throws IOException {
         JsonObject source = readJsonFile(sourceFile);
         JsonObject target = readJsonFile(targetFile);
@@ -236,56 +332,7 @@ public final class MergeOperations {
         if (source.has("pack") && target.has("pack")) {
             JsonObject sourcePack = source.getAsJsonObject("pack");
             JsonObject targetPack = target.getAsJsonObject("pack");
-            if (sourcePack.has("pack_format") && targetPack.has("pack_format")) {
-                int sourceFormat = sourcePack.get("pack_format").getAsInt();
-                int targetFormat = targetPack.get("pack_format").getAsInt();
-                targetPack.addProperty("pack_format", Math.max(sourceFormat, targetFormat));
-            }
-            // 1.21.9+: widen pack.min_format and pack.max_format to cover both packs' supported range.
-            // These supersede the older pack.supported_formats. Either side can declare them; missing
-            // values default to pack_format so a one-sided declaration still widens correctly.
-            int sourceMin = readFormatRangeMin(sourcePack);
-            int sourceMax = readFormatRangeMax(sourcePack);
-            int targetMin = readFormatRangeMin(targetPack);
-            int targetMax = readFormatRangeMax(targetPack);
-            if (sourcePack.has("min_format") || targetPack.has("min_format")
-                    || sourcePack.has("max_format") || targetPack.has("max_format")) {
-                if (sourceMin != Integer.MAX_VALUE || targetMin != Integer.MAX_VALUE) {
-                    int min = Math.min(
-                            sourceMin == Integer.MAX_VALUE ? targetMin : sourceMin,
-                            targetMin == Integer.MAX_VALUE ? sourceMin : targetMin);
-                    targetPack.addProperty("min_format", min);
-                }
-                if (sourceMax != Integer.MIN_VALUE || targetMax != Integer.MIN_VALUE) {
-                    int max = Math.max(
-                            sourceMax == Integer.MIN_VALUE ? targetMax : sourceMax,
-                            targetMax == Integer.MIN_VALUE ? sourceMax : targetMax);
-                    targetPack.addProperty("max_format", max);
-                }
-            }
-        }
-
-        // Merge supported_formats to widest range.
-        // Per minecraft.wiki/w/Pack.mcmeta, supported_formats can be: a 2-int array [min, max],
-        // a single int (a single format version), or an object {min_inclusive, max_inclusive}.
-        // We parse whichever shape each side ships and emit the widened result as a 2-int array.
-        // (Deprecated/removed in 1.21.9+ in favour of pack.min_format/max_format above, but
-        // still seen on older packs in the wild.)
-        if (source.has("supported_formats") || target.has("supported_formats")) {
-            int[] sourceRange = parseSupportedFormatsRange(source.get("supported_formats"));
-            int[] targetRange = parseSupportedFormatsRange(target.get("supported_formats"));
-            if (sourceRange != null && targetRange != null) {
-                JsonArray merged = new JsonArray();
-                merged.add(Math.min(sourceRange[0], targetRange[0]));
-                merged.add(Math.max(sourceRange[1], targetRange[1]));
-                target.add("supported_formats", merged);
-            } else if (sourceRange != null) {
-                JsonArray merged = new JsonArray();
-                merged.add(sourceRange[0]);
-                merged.add(sourceRange[1]);
-                target.add("supported_formats", merged);
-            }
-            // else: only target had a parseable value → keep target's untouched.
+            mergePackFormatDeclaration(sourcePack, targetPack);
         }
 
         // Merge overlay entries from both packs
@@ -337,6 +384,7 @@ public final class MergeOperations {
 
         // Preserve any non-standard top-level keys from source (e.g. "sodium" with ignored_shaders)
         for (String key : source.keySet()) {
+            if (key.equals("supported_formats")) continue;
             if (!target.has(key)) {
                 target.add(key, source.get(key));
             }
@@ -347,6 +395,110 @@ public final class MergeOperations {
         }
 
         logger.collision("Merged pack.mcmeta: " + targetFile.getPath());
+    }
+
+    private void mergePackFormatDeclaration(JsonObject sourcePack, JsonObject targetPack) {
+        boolean sourceHasRange = hasExplicitFormatRange(sourcePack);
+        boolean targetHasRange = hasExplicitFormatRange(targetPack);
+
+        if (!sourceHasRange && !targetHasRange) {
+            if (sourcePack.has("pack_format") && targetPack.has("pack_format")) {
+                int sourceFormat = sourcePack.get("pack_format").getAsInt();
+                int targetFormat = targetPack.get("pack_format").getAsInt();
+                targetPack.addProperty("pack_format", Math.max(sourceFormat, targetFormat));
+            }
+            return;
+        }
+
+        int[] sourceRange = readPackFormatRange(sourcePack);
+        int[] targetRange = readPackFormatRange(targetPack);
+
+        if (sourceRange == null && targetRange == null) return;
+        if (sourceRange == null) {
+            normalizePackFormatDeclaration(targetPack, targetRange[0], targetRange[1]);
+            return;
+        }
+        if (targetRange == null) {
+            normalizePackFormatDeclaration(targetPack, sourceRange[0], sourceRange[1]);
+            return;
+        }
+
+        normalizePackFormatDeclaration(
+                targetPack,
+                Math.min(sourceRange[0], targetRange[0]),
+                Math.max(sourceRange[1], targetRange[1]));
+    }
+
+    private boolean hasExplicitFormatRange(JsonObject pack) {
+        return pack.has("min_format") || pack.has("max_format") || pack.has("supported_formats");
+    }
+
+    private int[] readPackFormatRange(JsonObject pack) {
+        int packFormat = pack.has("pack_format") ? pack.get("pack_format").getAsInt() : -1;
+        int[] supportedRange = parseSupportedFormatsRange(pack.get("supported_formats"));
+
+        if (pack.has("min_format") || pack.has("max_format")) {
+            int min = readFormatRangeMin(pack);
+            int max = readFormatRangeMax(pack);
+
+            if (min == Integer.MAX_VALUE) {
+                min = supportedRange != null ? supportedRange[0] : packFormat;
+            }
+            if (max == Integer.MIN_VALUE) {
+                max = supportedRange != null ? supportedRange[1] : packFormat;
+            }
+            if (min >= 0 && max >= 0) return new int[]{min, max};
+        }
+
+        if (supportedRange != null) return supportedRange;
+        if (packFormat >= 0) return new int[]{packFormat, packFormat};
+        return null;
+    }
+
+    private void normalizePackFormatDeclaration(JsonObject pack, int min, int max) {
+        if (min > max) {
+            int swap = min;
+            min = max;
+            max = swap;
+        }
+
+        if (max > LAST_PRE_MINOR_CLIENT_PACK_FORMAT) {
+            pack.addProperty("min_format", min);
+            pack.addProperty("max_format", max);
+
+            if (min <= LAST_PRE_MINOR_CLIENT_PACK_FORMAT) {
+                JsonArray supportedFormats = new JsonArray();
+                supportedFormats.add(min);
+                supportedFormats.add(LAST_PRE_MINOR_CLIENT_PACK_FORMAT);
+                pack.add("supported_formats", supportedFormats);
+                ensurePackFormatInRange(pack, min, max, min);
+            } else {
+                pack.remove("supported_formats");
+                ensurePackFormatInRange(pack, min, max, min);
+            }
+        } else {
+            pack.remove("min_format");
+            pack.remove("max_format");
+            JsonArray supportedFormats = new JsonArray();
+            supportedFormats.add(min);
+            supportedFormats.add(max);
+            pack.add("supported_formats", supportedFormats);
+            ensurePackFormatInRange(pack, min, max, max);
+        }
+    }
+
+    private void ensurePackFormatInRange(JsonObject pack, int min, int max, int fallback) {
+        if (!pack.has("pack_format")
+                || !pack.get("pack_format").isJsonPrimitive()
+                || !pack.getAsJsonPrimitive("pack_format").isNumber()) {
+            pack.addProperty("pack_format", fallback);
+            return;
+        }
+
+        int packFormat = pack.get("pack_format").getAsInt();
+        if (packFormat < min || packFormat > max) {
+            pack.addProperty("pack_format", fallback);
+        }
     }
 
     /**

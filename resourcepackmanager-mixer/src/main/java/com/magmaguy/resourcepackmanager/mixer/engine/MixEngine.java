@@ -115,6 +115,7 @@ public final class MixEngine {
             // Atlas-overlay reconciliation must happen AFTER all packs have merged into mergedDir,
             // because it reads pack.mcmeta (which itself was JSON-merged from every input).
             merge.mergeBaseAtlasSourcesIntoOverlays(mergedDir);
+            merge.sanitizeMergedModels(mergedDir);
 
             // 4. Zip.
             File mergedZip = new File(outputDir, input.outputName() + ".zip");

@@ -67,13 +67,19 @@ public final class ItemModelTreeWalker {
             BedrockLog.debug("[BedrockConverter] Model node has no type field in " + def.itemIdentifier());
             return;
         }
-        String type = node.get("type").getAsString();
+        // Mojang parses `type` as a ResourceLocation, so an unnamespaced value (e.g. Nexo's
+        // bare "model") is equivalent to the "minecraft:"-prefixed form and renders fine on
+        // Java. Normalise before dispatch — matching how property values are handled below
+        // and how AssetResolver defaults model/parent namespaces — so packs that emit the
+        // bare form aren't silently dropped from the Bedrock conversion.
+        String rawType = node.get("type").getAsString();
+        String type = stripNamespace(rawType);
         switch (type) {
-            case "minecraft:model" -> walkLeaf(node, stack, def, out);
-            case "minecraft:condition" -> walkCondition(node, stack, def, out);
-            case "minecraft:range_dispatch" -> walkRangeDispatch(node, stack, def, out);
-            case "minecraft:select" -> walkSelect(node, stack, def, out);
-            default -> BedrockLog.debug("[BedrockConverter] Unsupported model type '" + type
+            case "model" -> walkLeaf(node, stack, def, out);
+            case "condition" -> walkCondition(node, stack, def, out);
+            case "range_dispatch" -> walkRangeDispatch(node, stack, def, out);
+            case "select" -> walkSelect(node, stack, def, out);
+            default -> BedrockLog.debug("[BedrockConverter] Unsupported model type '" + rawType
                     + "' in " + def.itemIdentifier());
         }
     }
