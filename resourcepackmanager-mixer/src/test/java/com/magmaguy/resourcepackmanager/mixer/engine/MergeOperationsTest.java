@@ -112,6 +112,46 @@ class MergeOperationsTest {
     }
 
     @Test
+    void mergePackMcmeta_newFormatRangeKeepsOldPackFormatValid(@TempDir Path tempDir) throws IOException {
+        File source = tempDir.resolve("source.json").toFile();
+        File target = tempDir.resolve("target.json").toFile();
+
+        Files.writeString(source.toPath(),
+                "{\"pack\":{\"description\":\"new\",\"min_format\":65,\"max_format\":84}}");
+        Files.writeString(target.toPath(),
+                "{\"pack\":{\"description\":\"old\",\"pack_format\":34}}");
+        newOps().mergePackMcmeta(source, target);
+
+        JsonObject result = JsonParser.parseString(Files.readString(target.toPath())).getAsJsonObject();
+        JsonObject pack = result.getAsJsonObject("pack");
+        assertEquals(34, pack.get("pack_format").getAsInt());
+        assertEquals(34, pack.get("min_format").getAsInt());
+        assertEquals(84, pack.get("max_format").getAsInt());
+        JsonArray supportedFormats = pack.getAsJsonArray("supported_formats");
+        assertEquals(34, supportedFormats.get(0).getAsInt());
+        assertEquals(64, supportedFormats.get(1).getAsInt());
+    }
+
+    @Test
+    void mergePackMcmeta_newOnlyRangeReplacesStalePackFormat(@TempDir Path tempDir) throws IOException {
+        File source = tempDir.resolve("source.json").toFile();
+        File target = tempDir.resolve("target.json").toFile();
+
+        Files.writeString(source.toPath(),
+                "{\"pack\":{\"description\":\"source\",\"min_format\":65,\"max_format\":84}}");
+        Files.writeString(target.toPath(),
+                "{\"pack\":{\"description\":\"target\",\"pack_format\":34,\"min_format\":65,\"max_format\":84,\"supported_formats\":[65,84]}}");
+        newOps().mergePackMcmeta(source, target);
+
+        JsonObject result = JsonParser.parseString(Files.readString(target.toPath())).getAsJsonObject();
+        JsonObject pack = result.getAsJsonObject("pack");
+        assertEquals(65, pack.get("pack_format").getAsInt());
+        assertEquals(65, pack.get("min_format").getAsInt());
+        assertEquals(84, pack.get("max_format").getAsInt());
+        assertFalse(pack.has("supported_formats"));
+    }
+
+    @Test
     void mergePackMcmeta_overlayEntries_combinedDeduplicatedByDirectory(@TempDir Path tempDir) throws IOException {
         File source = tempDir.resolve("source.json").toFile();
         File target = tempDir.resolve("target.json").toFile();
@@ -195,11 +235,11 @@ class MergeOperationsTest {
         // target=[20,30]. Expected merged range: [10, 30].
         File s1 = tempDir.resolve("a-source.json").toFile();
         File t1 = tempDir.resolve("a-target.json").toFile();
-        Files.writeString(s1.toPath(), "{\"pack\":{\"pack_format\":34},\"supported_formats\":10}");
-        Files.writeString(t1.toPath(), "{\"pack\":{\"pack_format\":34},\"supported_formats\":[20,30]}");
+        Files.writeString(s1.toPath(), "{\"pack\":{\"pack_format\":34,\"supported_formats\":10}}");
+        Files.writeString(t1.toPath(), "{\"pack\":{\"pack_format\":34,\"supported_formats\":[20,30]}}");
         ops.mergePackMcmeta(s1, t1);
         JsonObject r1 = JsonParser.parseString(Files.readString(t1.toPath())).getAsJsonObject();
-        JsonArray sf1 = r1.getAsJsonArray("supported_formats");
+        JsonArray sf1 = r1.getAsJsonObject("pack").getAsJsonArray("supported_formats");
         assertEquals(10, sf1.get(0).getAsInt());
         assertEquals(30, sf1.get(1).getAsInt());
 
@@ -207,11 +247,11 @@ class MergeOperationsTest {
         // source={"min_inclusive":5,"max_inclusive":12}, target=[20,30] → [5, 30].
         File s2 = tempDir.resolve("b-source.json").toFile();
         File t2 = tempDir.resolve("b-target.json").toFile();
-        Files.writeString(s2.toPath(), "{\"pack\":{\"pack_format\":34},\"supported_formats\":{\"min_inclusive\":5,\"max_inclusive\":12}}");
-        Files.writeString(t2.toPath(), "{\"pack\":{\"pack_format\":34},\"supported_formats\":[20,30]}");
+        Files.writeString(s2.toPath(), "{\"pack\":{\"pack_format\":34,\"supported_formats\":{\"min_inclusive\":5,\"max_inclusive\":12}}}");
+        Files.writeString(t2.toPath(), "{\"pack\":{\"pack_format\":34,\"supported_formats\":[20,30]}}");
         ops.mergePackMcmeta(s2, t2);
         JsonObject r2 = JsonParser.parseString(Files.readString(t2.toPath())).getAsJsonObject();
-        JsonArray sf2 = r2.getAsJsonArray("supported_formats");
+        JsonArray sf2 = r2.getAsJsonObject("pack").getAsJsonArray("supported_formats");
         assertEquals(5, sf2.get(0).getAsInt());
         assertEquals(30, sf2.get(1).getAsInt());
 
@@ -219,13 +259,37 @@ class MergeOperationsTest {
         // source=int 7, target={"min_inclusive":10,"max_inclusive":20} → [7, 20].
         File s3 = tempDir.resolve("c-source.json").toFile();
         File t3 = tempDir.resolve("c-target.json").toFile();
-        Files.writeString(s3.toPath(), "{\"pack\":{\"pack_format\":34},\"supported_formats\":7}");
-        Files.writeString(t3.toPath(), "{\"pack\":{\"pack_format\":34},\"supported_formats\":{\"min_inclusive\":10,\"max_inclusive\":20}}");
+        Files.writeString(s3.toPath(), "{\"pack\":{\"pack_format\":34,\"supported_formats\":7}}");
+        Files.writeString(t3.toPath(), "{\"pack\":{\"pack_format\":34,\"supported_formats\":{\"min_inclusive\":10,\"max_inclusive\":20}}}");
         ops.mergePackMcmeta(s3, t3);
         JsonObject r3 = JsonParser.parseString(Files.readString(t3.toPath())).getAsJsonObject();
-        JsonArray sf3 = r3.getAsJsonArray("supported_formats");
+        JsonArray sf3 = r3.getAsJsonObject("pack").getAsJsonArray("supported_formats");
         assertEquals(7, sf3.get(0).getAsInt());
         assertEquals(20, sf3.get(1).getAsInt());
+    }
+
+    @Test
+    void sanitizeMergedModels_addsParticleTextureAndClampsUvs(@TempDir Path tempDir) throws IOException {
+        Path model = tempDir.resolve("assets/example/models/block/test.json");
+        Files.createDirectories(model.getParent());
+        Files.writeString(model, "{"
+                + "\"textures\":{\"0\":\"example:block/test\"},"
+                + "\"elements\":[{\"faces\":{\"north\":{\"uv\":[-0.5,0,16.25,17],\"texture\":\"#0\"}}}]"
+                + "}");
+
+        newOps().sanitizeMergedModels(tempDir.toFile());
+
+        JsonObject result = JsonParser.parseString(Files.readString(model)).getAsJsonObject();
+        assertEquals("example:block/test", result.getAsJsonObject("textures").get("particle").getAsString());
+        JsonArray uv = result.getAsJsonArray("elements")
+                .get(0).getAsJsonObject()
+                .getAsJsonObject("faces")
+                .getAsJsonObject("north")
+                .getAsJsonArray("uv");
+        assertEquals(0.0, uv.get(0).getAsDouble());
+        assertEquals(0.0, uv.get(1).getAsDouble());
+        assertEquals(16.0, uv.get(2).getAsDouble());
+        assertEquals(16.0, uv.get(3).getAsDouble());
     }
 
     // ------------------------------------------------------------------
