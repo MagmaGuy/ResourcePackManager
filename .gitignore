@@ -48,3 +48,5 @@ $TMPDIR/
 ### Research / debugging workspaces ###
 .rainbow-audit/
 iconrender_test/
+# Local design docs and plan notes - not tracked
+docs/
