@@ -119,6 +119,10 @@ public final class AssetResolver {
 
             Optional<JsonObject> nodeOpt = getRawModel(currentRef);
             if (nodeOpt.isEmpty()) {
+                if (currentRef.equals(modelRef)) {
+                    BedrockLog.debug("[BedrockConverter] Missing model " + modelRef + "; skipping");
+                    return Optional.empty();
+                }
                 // Treat the missing reference as the root parent — typical for vanilla parents
                 // we don't ship (item/generated, item/handheld, etc.).
                 rootParent = currentRef;

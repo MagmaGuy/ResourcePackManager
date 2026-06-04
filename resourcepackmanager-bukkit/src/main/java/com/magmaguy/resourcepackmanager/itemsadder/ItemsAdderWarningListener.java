@@ -63,7 +63,7 @@ public class ItemsAdderWarningListener implements Listener {
         player.sendMessage(ChatColorConverter.convert("&econfigured to let ResourcePackManager host the resource pack."));
         player.sendMessage("");
         player.sendMessage(ChatColorConverter.convert("&7For ResourcePackManager to merge and host the resource pack,"));
-        player.sendMessage(ChatColorConverter.convert("&7ItemsAdder needs to have hosting disabled and protections off."));
+        player.sendMessage(ChatColorConverter.convert("&7ItemsAdder needs hosting disabled, protections off, and normal JSON output."));
         player.sendMessage("");
 
         // Create clickable buttons
@@ -71,7 +71,7 @@ public class ItemsAdderWarningListener implements Listener {
         TextComponent configureButton = new TextComponent(ChatColorConverter.convert("&a&l[Configure Automatically]"));
         configureButton.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/rspm itemsadder configure"));
         configureButton.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                new Text(ChatColorConverter.convert("&aClick to automatically configure ItemsAdder\n&7This will:\n&7- Enable no-host mode\n&7- Disable file protections\n&7- Reload both plugins"))));
+                new Text(ChatColorConverter.convert("&aClick to automatically configure ItemsAdder\n&7This will:\n&7- Enable no-host mode\n&7- Disable file protections\n&7- Disable JSON compression\n&7- Reload both plugins"))));
 
         // Option 2: Dismiss permanently
         TextComponent dismissButton = new TextComponent(ChatColorConverter.convert("&c&l[Dismiss Permanently]"));

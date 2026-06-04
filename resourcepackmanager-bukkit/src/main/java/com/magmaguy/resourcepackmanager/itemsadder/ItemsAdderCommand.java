@@ -82,12 +82,16 @@ public class ItemsAdderCommand extends AdvancedCommand {
             config.set("resource-pack.zip.protect-file-from-unzip.protection_2", false);
             config.set("resource-pack.zip.protect-file-from-unzip.protection_3", false);
 
+            // Keep generated model JSON parseable for RSPM's merge + Bedrock conversion.
+            config.set("resource-pack.zip.compress-json-files", false);
+
             // Save the config
             config.save(configFile);
 
             Logger.sendMessage(sender, "&aItemsAdder configuration updated successfully!");
             Logger.sendMessage(sender, "&7- Enabled no-host mode");
             Logger.sendMessage(sender, "&7- Disabled file protections");
+            Logger.sendMessage(sender, "&7- Disabled JSON compression");
             Logger.sendMessage(sender, "");
             Logger.sendMessage(sender, "&eReloading ItemsAdder...");
 
@@ -95,16 +99,28 @@ public class ItemsAdderCommand extends AdvancedCommand {
             new BukkitRunnable() {
                 @Override
                 public void run() {
-                    // Reload ItemsAdder
                     try {
-                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "iazip");
-                        Logger.sendMessage(sender, "&aItemsAdder reloaded!");
+                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "iareload");
+                        Logger.sendMessage(sender, "&aItemsAdder reload requested!");
                     } catch (Exception e) {
                         Logger.sendMessage(sender, "&cFailed to reload ItemsAdder: " + e.getMessage());
-                        Logger.sendMessage(sender, "&7Try running /iazip manually.");
+                        Logger.sendMessage(sender, "&7Try running /iareload manually.");
                     }
 
-                    // Schedule RSPM reload after ItemsAdder has time to regenerate
+                    new BukkitRunnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "iazip");
+                                Logger.sendMessage(sender, "&aItemsAdder zip regeneration requested!");
+                            } catch (Exception e) {
+                                Logger.sendMessage(sender, "&cFailed to regenerate ItemsAdder zip: " + e.getMessage());
+                                Logger.sendMessage(sender, "&7Try running /iazip manually.");
+                            }
+                        }
+                    }.runTaskLater(ResourcePackManager.plugin, 100L);
+
+                    // Schedule RSPM reload after ItemsAdder has time to reload and regenerate
                     new BukkitRunnable() {
                         @Override
                         public void run() {
@@ -112,7 +128,7 @@ public class ItemsAdderCommand extends AdvancedCommand {
                             ReloadCommand.reloadPlugin(sender);
                             Logger.sendMessage(sender, "&aConfiguration complete! ResourcePackManager is now hosting the merged resource pack.");
                         }
-                    }.runTaskLater(ResourcePackManager.plugin, 100L); // 5 seconds to let IA regenerate
+                    }.runTaskLater(ResourcePackManager.plugin, 300L); // 15 seconds to let IA reload/regenerate
                 }
             }.runTaskLater(ResourcePackManager.plugin, 20L); // 1 second delay
 

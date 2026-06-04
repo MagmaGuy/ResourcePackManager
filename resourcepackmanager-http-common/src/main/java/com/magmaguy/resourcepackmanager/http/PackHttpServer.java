@@ -84,6 +84,12 @@ public final class PackHttpServer implements AutoCloseable {
             }
             exchange.getResponseHeaders().add("Content-Type", "application/zip");
             long length = packFile.length();
+            if (isHead(exchange.getRequestMethod())) {
+                exchange.getResponseHeaders().add("Content-Length", Long.toString(length));
+                exchange.sendResponseHeaders(200, -1);
+                exchange.close();
+                return;
+            }
             exchange.sendResponseHeaders(200, length);
             try (var out = exchange.getResponseBody();
                  var in = new FileInputStream(packFile)) {
@@ -143,6 +149,11 @@ public final class PackHttpServer implements AutoCloseable {
                 exchange.getResponseHeaders().add("Last-Modified",
                         HTTP_DATE.format(Instant.ofEpochSecond(lastModifiedSec)));
                 long length = file.length();
+                if (isHead(exchange.getRequestMethod())) {
+                    exchange.getResponseHeaders().add("Content-Length", Long.toString(length));
+                    exchange.sendResponseHeaders(200, -1);
+                    return;
+                }
                 exchange.sendResponseHeaders(200, length);
                 try (var out = exchange.getResponseBody();
                      var in = new FileInputStream(file)) {
@@ -166,6 +177,10 @@ public final class PackHttpServer implements AutoCloseable {
         } catch (DateTimeParseException e) {
             return null;
         }
+    }
+
+    private static boolean isHead(String method) {
+        return "HEAD".equalsIgnoreCase(method);
     }
 
     /** External URL for clients. Caller picks the public host. */

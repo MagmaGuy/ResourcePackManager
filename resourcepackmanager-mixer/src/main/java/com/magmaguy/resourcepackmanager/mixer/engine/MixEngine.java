@@ -320,7 +320,9 @@ public final class MixEngine {
         }
 
         JsonObject mergedJson;
-        if (merge.isItemsFile(targetFile)) {
+        if (merge.isLegacyItemModel(targetFile)) {
+            mergedJson = merge.mergeLegacyItemModelOverrides(json1, json2);
+        } else if (merge.isItemsFile(targetFile)) {
             mergedJson = merge.mergeItemsModels(json1, json2);
         } else if (targetFile.getName().equals("sounds.json")) {
             mergedJson = merge.mergeSoundsJson(json1, json2);

@@ -437,11 +437,68 @@ class MergeOperationsTest {
     // ------------------------------------------------------------------
 
     @Test
-    void isMergeableJsonFile_modelsItemJson_returnsFalse() {
-        // Regression: vanilla item model overrides were explicitly stopped being merged
-        // because the fixed-length translation/rotation/scale arrays were getting corrupted.
+    void isMergeableJsonFile_modelsItemJson_returnsTrueForLegacyOverrideMerge() {
         File f = new File("anywhere/assets/minecraft/models/item/shield.json");
-        assertFalse(newOps().isMergeableJsonFile(f));
+        assertTrue(newOps().isMergeableJsonFile(f));
+    }
+
+    @Test
+    void mergeLegacyItemModelOverrides_combinesOverridesWithoutCorruptingDisplayArrays() {
+        JsonObject source = json("""
+                {
+                  "parent": "minecraft:item/handheld",
+                  "display": {
+                    "gui": {
+                      "translation": [1, 2, 3]
+                    }
+                  },
+                  "overrides": [
+                    {
+                      "predicate": { "custom_model_data": 10 },
+                      "model": "source:item/ten"
+                    },
+                    {
+                      "predicate": { "custom_model_data": 20 },
+                      "model": "source:item/twenty"
+                    }
+                  ]
+                }
+                """);
+        JsonObject target = json("""
+                {
+                  "parent": "minecraft:item/handheld",
+                  "display": {
+                    "gui": {
+                      "translation": [4, 5, 6]
+                    }
+                  },
+                  "overrides": [
+                    {
+                      "predicate": { "custom_model_data": 20 },
+                      "model": "target:item/twenty"
+                    },
+                    {
+                      "predicate": { "custom_model_data": 30 },
+                      "model": "target:item/thirty"
+                    }
+                  ]
+                }
+                """);
+
+        JsonObject merged = newOps().mergeLegacyItemModelOverrides(source, target);
+
+        JsonArray translation = merged.getAsJsonObject("display")
+                .getAsJsonObject("gui")
+                .getAsJsonArray("translation");
+        assertEquals(3, translation.size(), "fixed-length display arrays must not be concatenated");
+        assertEquals(4, translation.get(0).getAsInt());
+
+        JsonArray overrides = merged.getAsJsonArray("overrides");
+        assertEquals(3, overrides.size());
+        assertTrue(overrides.toString().contains("source:item/ten"));
+        assertTrue(overrides.toString().contains("target:item/twenty"));
+        assertTrue(overrides.toString().contains("target:item/thirty"));
+        assertFalse(overrides.toString().contains("source:item/twenty"), "higher-priority target CMD wins");
     }
 
     @Test

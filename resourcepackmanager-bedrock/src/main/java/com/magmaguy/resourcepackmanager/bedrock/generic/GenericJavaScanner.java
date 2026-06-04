@@ -1,5 +1,7 @@
 package com.magmaguy.resourcepackmanager.bedrock.generic;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
@@ -49,11 +51,16 @@ public final class GenericJavaScanner {
             scanItemsDir(namespace, itemsDir, "", result);
         }
 
+        int modernCount = result.size();
+        scanLegacyCustomModelOverrides(assetsDir, result);
+
         // Per-mix scanner status — useful when debugging "why isn't my pack converting"
         // but pure noise on a clean run (the per-cycle conversion summary already says
         // how many mappings were emitted). Demoted to debug.
         BedrockLog.debug("[BedrockConverter] Generic scanner: discovered " + result.size()
-                + " items definition files across " + namespaceDirs.length + " namespace(s).");
+                + " item definitions (" + modernCount + " modern, "
+                + (result.size() - modernCount) + " legacy overrides) across "
+                + namespaceDirs.length + " namespace(s).");
         return result;
     }
 
@@ -76,5 +83,92 @@ public final class GenericJavaScanner {
                 }
             }
         }
+    }
+
+    /**
+     * ItemsAdder and older packs can still expose custom items through legacy
+     * {@code assets/minecraft/models/item/<base>.json} overrides. Those files declare
+     * both the Java base item and the custom model data threshold, so synthesize a
+     * modern range_dispatch-shaped definition and let the normal converter handle it.
+     */
+    private static void scanLegacyCustomModelOverrides(File assetsDir, List<ItemsDefinition> out) {
+        File legacyItemsDir = new File(assetsDir, "minecraft/models/item");
+        if (!legacyItemsDir.isDirectory()) return;
+
+        File[] files = legacyItemsDir.listFiles((dir, name) -> name.endsWith(".json"));
+        if (files == null) return;
+
+        for (File file : files) {
+            String baseStem = file.getName().substring(0, file.getName().length() - ".json".length());
+            if (baseStem.contains("/") || baseStem.contains("\\")) continue;
+            String baseItem = "minecraft:" + baseStem;
+
+            try (FileReader reader = new FileReader(file, StandardCharsets.UTF_8)) {
+                JsonElement parsed = JsonParser.parseReader(reader);
+                if (!parsed.isJsonObject()) continue;
+                JsonObject root = parsed.getAsJsonObject();
+                if (!root.has("overrides") || !root.get("overrides").isJsonArray()) continue;
+                scanLegacyOverridesFile(file, baseItem, root.getAsJsonArray("overrides"), out);
+            } catch (Exception e) {
+                BedrockLog.warn("[BedrockConverter] Failed to parse legacy item model overrides "
+                        + file.getPath() + ": " + e.getMessage());
+            }
+        }
+    }
+
+    private static void scanLegacyOverridesFile(File file, String baseItem, JsonArray overrides,
+                                                List<ItemsDefinition> out) {
+        for (JsonElement overrideElement : overrides) {
+            if (!overrideElement.isJsonObject()) continue;
+            JsonObject override = overrideElement.getAsJsonObject();
+            if (!override.has("model") || !override.get("model").isJsonPrimitive()) continue;
+            if (!override.has("predicate") || !override.get("predicate").isJsonObject()) continue;
+
+            JsonElement customModelData = override.getAsJsonObject("predicate").get("custom_model_data");
+            if (!isNumericPrimitive(customModelData)) continue;
+
+            String modelRef = normalizeReference(override.get("model").getAsString());
+            ItemsDefinition def = synthesizeLegacyDefinition(file, baseItem, modelRef, customModelData);
+            if (def != null) out.add(def);
+        }
+    }
+
+    private static ItemsDefinition synthesizeLegacyDefinition(File file, String baseItem,
+                                                              String modelRef, JsonElement customModelData) {
+        int colon = modelRef.indexOf(':');
+        String namespace = colon > 0 ? modelRef.substring(0, colon) : "minecraft";
+        String itemsRelPath = colon > 0 ? modelRef.substring(colon + 1) : modelRef;
+        if (itemsRelPath.isBlank()) return null;
+
+        JsonObject leaf = new JsonObject();
+        leaf.addProperty("type", "minecraft:model");
+        leaf.addProperty("model", modelRef);
+
+        JsonObject entry = new JsonObject();
+        entry.add("threshold", customModelData.deepCopy());
+        entry.add("model", leaf);
+
+        JsonArray entries = new JsonArray();
+        entries.add(entry);
+
+        JsonObject dispatch = new JsonObject();
+        dispatch.addProperty("type", "minecraft:range_dispatch");
+        dispatch.addProperty("property", "minecraft:custom_model_data");
+        dispatch.addProperty("scale", 1.0);
+        dispatch.add("entries", entries);
+
+        JsonObject root = new JsonObject();
+        root.add("model", dispatch);
+        return new ItemsDefinition(namespace, itemsRelPath, file, root, List.of(baseItem));
+    }
+
+    private static boolean isNumericPrimitive(JsonElement element) {
+        return element != null
+                && element.isJsonPrimitive()
+                && element.getAsJsonPrimitive().isNumber();
+    }
+
+    private static String normalizeReference(String reference) {
+        return reference.contains(":") ? reference : "minecraft:" + reference;
     }
 }

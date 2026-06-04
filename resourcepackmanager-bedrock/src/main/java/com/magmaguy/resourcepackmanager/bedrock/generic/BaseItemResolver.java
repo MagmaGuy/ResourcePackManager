@@ -43,6 +43,8 @@ public final class BaseItemResolver {
      * Never returns empty: falls through to {@link FilenameHeuristic#genericFallback()}.
      */
     public static List<String> resolve(ItemsDefinition def, AssetResolver resolver) {
+        if (def.hasExplicitBaseItems()) return def.explicitBaseItems();
+
         List<String> bases = resolveHeuristic(def, resolver);
 
         // FreeMinecraftModels always wears items on a leather_horse_armor carrier when
