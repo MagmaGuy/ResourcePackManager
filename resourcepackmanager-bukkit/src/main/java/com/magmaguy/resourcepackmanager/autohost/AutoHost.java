@@ -16,6 +16,7 @@ import lombok.Getter;
 import lombok.Setter;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
+import org.bukkit.event.player.PlayerResourcePackStatusEvent;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -26,8 +27,10 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Bukkit-side orchestration for the magmaguy.com auto-hosting flow.
@@ -47,6 +50,27 @@ import java.util.UUID;
 public class AutoHost {
     // Consistent UUID for identifying ResourcePackManager's pack when using multiple resource packs
     private static final UUID RESOURCE_PACK_UUID = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d");
+
+    /**
+     * Delay before the join-time send. Pushing the pack on the exact tick a
+     * player enters the PLAY phase races the client's join handshake — the
+     * client silently drops the pack and the player sees missing / black-and-
+     * purple textures until a manual {@code /rspm reload}. Deferring ~1s lands
+     * the send on a settled client, the same footing as
+     * {@link #broadcastResourcePackSync()} (used by reload and the first-upload
+     * broadcast), which has always worked.
+     */
+    private static final long JOIN_SEND_DELAY_TICKS = 20L;
+    /** Delay between self-heal resends triggered by a failed status report. */
+    private static final long RESEND_DELAY_TICKS = 40L;
+    /** Cap on automatic resends per player session before we stop and tell the operator. */
+    private static final int MAX_RESEND_ATTEMPTS = 3;
+    /**
+     * Per-player resend counter, keyed by player UUID. Reset on (re)join and
+     * cleared on success, decline, quit, or give-up. Concurrent map purely for
+     * safety; all access is on the main thread.
+     */
+    private static final Map<UUID, Integer> resendAttempts = new ConcurrentHashMap<>();
 
     // Timeout settings for HTTP requests (in seconds)
     private static final int DEFAULT_SOCKET_TIMEOUT = 60;
@@ -140,6 +164,89 @@ public class AutoHost {
         }
     }
 
+    /**
+     * Send the pack to a joining player, deferred off the join tick. Called from
+     * {@code PlayerManager#onPlayerJoin} instead of {@link #sendResourcePack}
+     * directly. See {@link #JOIN_SEND_DELAY_TICKS} for why the delay exists.
+     *
+     * <p>Cross-platform: uses only the core Bukkit scheduler, no Paper API.</p>
+     */
+    public static void scheduleJoinSend(Player player) {
+        resendAttempts.remove(player.getUniqueId()); // fresh session
+        Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
+            if (player.isOnline()) sendResourcePack(player);
+        }, JOIN_SEND_DELAY_TICKS);
+    }
+
+    /** Drop a player's resend bookkeeping when they leave. */
+    public static void forgetPlayer(UUID playerId) {
+        resendAttempts.remove(playerId);
+    }
+
+    /**
+     * Self-heal a failed pack delivery by reacting to the client's own status
+     * report. Some clients (notably heavily-modded ones) can still drop the pack
+     * even after the deferred join send. RSPM kept no delivery state before, so
+     * the only recovery was a manual {@code /rspm reload}; here we re-push our
+     * pack a bounded number of times before giving up — no operator action, no
+     * rejoin needed.
+     *
+     * <p>Cross-platform: driven by the stock Bukkit
+     * {@link PlayerResourcePackStatusEvent}. The status is matched by enum
+     * <em>name</em> rather than constant so referencing 1.20.3+-only states
+     * ({@code DISCARDED}, {@code INVALID_URL}) can't throw {@code NoSuchFieldError}
+     * on older servers, and {@code getID()} is only called when
+     * {@link ServerVersionHelper#supportsMultipleResourcePacks()} (i.e. when the
+     * method exists).</p>
+     */
+    public static void handleResourcePackStatus(PlayerResourcePackStatusEvent event) {
+        Player player = event.getPlayer();
+        UUID id = player.getUniqueId();
+
+        // On stacked-pack servers, ignore reports for other plugins' packs (we
+        // tag ours with RESOURCE_PACK_UUID). On single-pack servers there's only
+        // our pack, so every report is ours.
+        if (ServerVersionHelper.supportsMultipleResourcePacks()) {
+            UUID packId = event.getID();
+            if (packId != null && !packId.equals(RESOURCE_PACK_UUID)) return;
+        }
+
+        switch (event.getStatus().name()) {
+            case "SUCCESSFULLY_LOADED":
+            case "DECLINED":
+                // Settled: applied, or a deliberate opt-out. Nothing more to do.
+                resendAttempts.remove(id);
+                return;
+            case "FAILED_DOWNLOAD":
+            case "DISCARDED": {
+                int attempts = resendAttempts.getOrDefault(id, 0);
+                if (attempts >= MAX_RESEND_ATTEMPTS) {
+                    Logger.warn("Resource pack delivery to " + player.getName() + " failed "
+                            + attempts + "x (last status " + event.getStatus().name()
+                            + "); giving up. They can retry with /rspm reload.");
+                    resendAttempts.remove(id);
+                    return;
+                }
+                resendAttempts.put(id, attempts + 1);
+                Logger.info("Resource pack " + event.getStatus().name() + " for " + player.getName()
+                        + "; resending (attempt " + (attempts + 1) + "/" + MAX_RESEND_ATTEMPTS + ").");
+                Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
+                    if (player.isOnline()) sendResourcePack(player);
+                }, RESEND_DELAY_TICKS);
+                return;
+            }
+            case "INVALID_URL":
+                // A bad URL is a hosting/config problem, not the join-tick race —
+                // resending won't help, so don't loop on it.
+                Logger.warn("Client " + player.getName() + " reported INVALID_URL for the resource pack"
+                        + " — hosting/URL problem, not a timing one; not retrying.");
+                resendAttempts.remove(id);
+                return;
+            default:
+                // ACCEPTED / DOWNLOADED (in-progress), FAILED_RELOAD, etc.: no action.
+        }
+    }
+
     public static void initialize() {
         if (!DefaultConfig.isAutoHost()) return;
         if (Mix.getFinalResourcePack() == null) return;
@@ -225,7 +332,7 @@ public class AutoHost {
             }
             // Either the host looked non-routable, or the local HTTP server didn't
             // respond correctly to a localhost probe. Fall through to remote.
-            Logger.info("Self-host sanity checks failed; falling back to remote hosting on magmaguy.com.");
+            Logger.info("Using magmaguy.com hosting for this resource pack.");
         }
 
         if (client == null) return;
@@ -275,7 +382,7 @@ public class AutoHost {
     }
 
     /**
-     * Hybrid self-host-first sanity check. Two layers, no external probe:
+     * Hybrid self-host-first sanity check:
      *
      * <ol>
      *   <li><b>Heuristic check on resolved host.</b> If {@link #resolveExternalHost()}
@@ -318,13 +425,14 @@ public class AutoHost {
         // Layer 1: heuristic check on resolved external host.
         String host = resolveExternalHost();
         if (host == null || isNonRoutableHost(host)) {
-            Logger.info("Self-host external host '" + host + "' is not publicly routable "
-                    + "(LAN / loopback / unspecified); skipping self-host attempt.");
+            Logger.info("Self-host check: local pack link is not public"
+                    + formatOptionalDetail(host) + ". This is OK.");
             return false;
         }
 
-        // Start the self-host server (or reuse if already up).
-        if (!fallbackToSelfHost()) return false;
+        // Stand up the self-host server WITHOUT broadcasting yet — we only commit
+        // (and push the URL to players) after the reachability probes below pass.
+        if (!ensureSelfHostServer()) return false;
         if (selfHostedUrl == null) return false;
 
         // Layer 2: localhost self-probe — confirm the HTTP server is up and the
@@ -333,8 +441,7 @@ public class AutoHost {
         // client could download the pack" EXCEPT the external-firewall case.
         int port = (selfHostServer != null) ? selfHostServer.port() : -1;
         if (port <= 0 || !localhostSelfProbe(port)) {
-            Logger.info("Localhost self-probe of the self-host HTTP server failed; "
-                    + "falling back to remote hosting.");
+            Logger.info("Self-host check: local pack server did not answer correctly. This is OK.");
             tearDownSelfHost();
             return false;
         }
@@ -352,6 +459,8 @@ public class AutoHost {
             return false;
         }
 
+        // All checks passed — NOW commit and push the verified URL to players.
+        commitSelfHost();
         Logger.info("Self-host sanity checks passed; using self-hosting at " + selfHostedUrl);
         return true;
     }
@@ -399,13 +508,8 @@ public class AutoHost {
                         + "Committing to self-host.");
                 return true;
             }
-            Logger.warn("External reachability probe via magmaguy.com: " + url
-                    + " is NOT reachable from the public internet (reason: "
-                    + result.reasonOrNull() + "). Most likely cause: HTTP port "
-                    + "not forwarded at the router / firewalled. Falling back "
-                    + "to remote hosting on magmaguy.com so the pack is "
-                    + "actually downloadable by clients. To use self-host "
-                    + "instead, open the HTTP port at your firewall + router.");
+            Logger.info("Self-host check: local pack link is not public"
+                    + formatOptionalDetail(result.reasonOrNull()) + ". This is OK.");
             return false;
         } catch (java.io.IOException e) {
             // We couldn't talk to magmaguy.com to ask. Don't fail-closed —
@@ -417,6 +521,11 @@ public class AutoHost {
         }
     }
 
+    private static String formatOptionalDetail(String detail) {
+        if (detail == null || detail.isBlank()) return "";
+        return " (" + detail + ")";
+    }
+
     /**
      * Open an HTTP connection to {@code 127.0.0.1:<port>/rspm.zip}, verify 200
      * status and non-empty body. Times out aggressively (3s) so a slow probe
@@ -425,7 +534,7 @@ public class AutoHost {
      *
      * <p>Returns {@code false} on any anomaly (connection refused, non-200
      * status, empty body, timeout, IO error) — operators see the underlying
-     * cause as part of the warning log line.</p>
+     * cause as part of the info log line.</p>
      */
     private static boolean localhostSelfProbe(int port) {
         java.net.HttpURLConnection conn = null;
@@ -438,16 +547,17 @@ public class AutoHost {
             int code = conn.getResponseCode();
             int len = conn.getContentLength();
             if (code != 200) {
-                Logger.warn("Localhost self-probe: HTTP " + code + " from http://127.0.0.1:" + port + "/rspm.zip");
+                Logger.info("Self-host check detail: local pack server returned HTTP " + code + ".");
                 return false;
             }
             if (len == 0) {
-                Logger.warn("Localhost self-probe: server returned 200 but Content-Length=0; pack file may be empty.");
+                Logger.info("Self-host check detail: local pack file looked empty.");
                 return false;
             }
             return true;
         } catch (java.io.IOException | java.net.URISyntaxException e) {
-            Logger.warn("Localhost self-probe failed: " + e.getMessage());
+            Logger.info("Self-host check detail: local pack server did not answer"
+                    + formatOptionalDetail(e.getMessage()) + ".");
             return false;
         } finally {
             if (conn != null) conn.disconnect();
@@ -668,8 +778,23 @@ public class AutoHost {
     }
 
     /**
+     * Called by the mix pipeline immediately after {@code BedrockConversion.generate()}
+     * produces fresh output. Because Java hosting now starts BEFORE Bedrock conversion
+     * (so Java clients don't wait on it), {@link #initialize()} — and with it the
+     * recurring relay task's first tick — runs while the Bedrock files don't exist yet.
+     * Without this explicit push, the relay would skip and not retry for ~25 min,
+     * delaying the proxy's view of this backend's Bedrock content. No-op in standalone
+     * mode (no network key) and harmless if the relay task isn't running.
+     */
+    public static void publishBedrockOutputs() {
+        if (!NetworkMode.isActive()) return;
+        pushBedrockRelayOnce();
+    }
+
+    /**
      * One-shot push of bedrock.zip + mappings.json to the relay. Called by the
-     * recurring relay task and (TODO) on demand after a fresh BedrockConversion.
+     * recurring relay task and on demand via {@link #publishBedrockOutputs()} after
+     * a fresh BedrockConversion.
      */
     private static void pushBedrockRelayOnce() {
         MagmaguyRspClient relayClient = client;
@@ -806,37 +931,61 @@ public class AutoHost {
      * the pack file is missing, or the port is unavailable.
      */
     private static boolean fallbackToSelfHost() {
+        if (!ensureSelfHostServer()) return false;
+        commitSelfHost();
+        return true;
+    }
+
+    /**
+     * Ensure the self-host {@link PackHttpServer} is running and {@link #selfHostedUrl}
+     * is populated, WITHOUT marking {@link #done} or broadcasting to players.
+     *
+     * <p>Split out from {@link #fallbackToSelfHost()} so {@link #trySelfHostFirst()}
+     * can stand the server up purely to <em>probe</em> it (localhost + external
+     * reachability) before deciding whether to commit. The previous code broadcast
+     * the unverified self-host URL to every online player the moment the server
+     * bound, then — if the reachability probe failed — tore it down and re-announced
+     * the remote URL seconds later. Players saw a broken pack send followed by the
+     * real one. Broadcasting is now deferred to {@link #commitSelfHost()}, which the
+     * caller only invokes once the URL is proven reachable.</p>
+     *
+     * @return {@code true} if a server is serving the pack (newly started or reused),
+     * {@code false} if self-host is disabled, the pack is missing, or the port is in use.
+     */
+    private static boolean ensureSelfHostServer() {
         if (!DefaultConfig.isSelfHostEnabled() && !DefaultConfig.isSelfHostForce()) return false;
         File pack = Mix.getFinalResourcePack();
         if (pack == null) return false;
         // In network mode the server may already be running (started by
         // startBackendHttpServerIfNeeded for the Bedrock-output routes). Reuse it.
         if (selfHostServer != null) {
-            // Already running — derive and cache the self-host URL, mark done,
-            // and notify players. The URL is the pack path on the same server.
             if (selfHostedUrl == null) {
                 selfHostedUrl = selfHostServer.urlOn(resolveExternalHost());
-                Logger.info("Self-hosting pack at " + selfHostedUrl);
             }
-            done = true;
-            broadcastResourcePackSync();
             return true;
         }
         int port = resolveHttpPort();
         try {
             PackHttpServer server = startPackHttpServer(pack, port);
-            String url = server.urlOn(resolveExternalHost());
             selfHostServer = server;
-            selfHostedUrl = url;
-            Logger.info("Self-hosting pack at " + url);
-            done = true;
-            broadcastResourcePackSync();
+            selfHostedUrl = server.urlOn(resolveExternalHost());
             return true;
         } catch (IOException e) {
             Logger.warn("Self-host fallback failed (port " + port
                     + " probably in use): " + e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * Mark self-host as the active delivery path and push the (already-verified)
+     * URL to every online player. Only call after {@link #ensureSelfHostServer()}
+     * succeeded AND the URL passed its reachability checks.
+     */
+    private static void commitSelfHost() {
+        Logger.info("Self-hosting pack at " + selfHostedUrl);
+        done = true;
+        broadcastResourcePackSync();
     }
 
     /**

@@ -136,7 +136,8 @@ public class TextureStitcher {
                                                        File mergedPackRoot, File bedrockPackDir) {
         Map<String, String> textureMap = unionTextures(boneTextures);
         if (textureMap.isEmpty()) {
-            BedrockLog.warn("[BedrockConverter] No textures found for model " + modelName);
+            BedrockLog.warn("[BedrockConverter] No textures found for model " + modelName
+                    + " (model has no usable 'textures' entries — only a 'particle' slot, or none at all)");
             return null;
         }
 
@@ -149,6 +150,8 @@ public class TextureStitcher {
         Map<String, BufferedImage> loadedByRef = new LinkedHashMap<>(); // textureRef -> image
         Map<String, File> sourceFileByRef = new LinkedHashMap<>();      // textureRef -> file on disk
         List<String> placementOrderRefs = new ArrayList<>();            // ref order to draw
+        List<String> missingCustom = new ArrayList<>();                 // custom-ns refs with no file on disk
+        List<String> missingVanilla = new ArrayList<>();                // minecraft: refs (client-side, expected miss)
 
         for (String index : sortedIndices) {
             String textureRef = textureMap.get(index);
@@ -163,7 +166,10 @@ public class TextureStitcher {
                 // optional/variant slot keys that aren't present in this build of
                 // the pack. Demoted to debug; the model still emits with its
                 // present textures, and a fully-broken model surfaces as the
-                // "No valid textures loaded" warn below.
+                // "No valid textures loaded" warn below — which names these paths.
+                String entry = textureRef + " -> " + textureFile.getPath();
+                if ("minecraft".equals(ns)) missingVanilla.add(entry);
+                else missingCustom.add(entry);
                 BedrockLog.debug("[BedrockConverter] Texture not found: " + textureFile.getPath());
                 continue;
             }
@@ -189,7 +195,17 @@ public class TextureStitcher {
         }
 
         if (loadedByRef.isEmpty()) {
-            BedrockLog.warn("[BedrockConverter] No valid textures loaded for model " + modelName);
+            if (!missingCustom.isEmpty()) {
+                BedrockLog.warn("[BedrockConverter] No valid textures loaded for model " + modelName
+                        + " — none of its " + textureMap.size() + " texture ref(s) resolved to a file on disk. Missing: "
+                        + summarizeMissing(missingCustom)
+                        + (missingVanilla.isEmpty() ? "" : " (+" + missingVanilla.size() + " vanilla ref(s) not shipped)"));
+            } else {
+                // Every miss was a vanilla texture the client already has — expected for a
+                // vanilla fallback model that slipped into the scan; keep it quiet.
+                BedrockLog.debug("[BedrockConverter] No valid textures loaded for model " + modelName
+                        + " (all " + missingVanilla.size() + " ref(s) are vanilla textures not shipped in the pack)");
+            }
             return null;
         }
 
@@ -306,6 +322,13 @@ public class TextureStitcher {
         }
         if (na != nb) return na ? -1 : 1;
         return ka.compareTo(kb);
+    }
+
+    /** Caps a missing-texture list so a single diagnostic warn line stays readable. */
+    private static String summarizeMissing(List<String> missing) {
+        int cap = 5;
+        if (missing.size() <= cap) return String.join(", ", missing);
+        return String.join(", ", missing.subList(0, cap)) + " (+" + (missing.size() - cap) + " more)";
     }
 
     private static boolean isNonNegativeInt(String s) {

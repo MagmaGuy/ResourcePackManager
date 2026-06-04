@@ -25,7 +25,7 @@ import java.nio.file.Path;
 @Plugin(
         id = "resourcepackmanager",
         name = "ResourcePackManager",
-        version = "2.0.0",
+        version = "2.0.2",
         description = "Network-side companion to ResourcePackManager. Delivers the merged pack to Bedrock clients via Geyser on this proxy.",
         authors = {"MagmaGuy"},
         dependencies = {

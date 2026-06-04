@@ -250,7 +250,21 @@ public class BedrockConversion {
                     String modelHash = BedrockShortName.forModel(leaf.modelRef());
                     String iconKey = modelHash;
 
-                    if (resolved.isFlatBuiltin()) {
+                    // Route on actual geometry, not parent identity. A model needs the
+                    // 3D pipeline (stitch + geometry + attachable) ONLY if it carries an
+                    // `elements` array. Flat icons go through the flat-icon path — and
+                    // that includes more than vanilla item/generated: a flat handheld
+                    // tool (parent minecraft:item/handheld with just a layer0 texture and
+                    // no elements) is a 2D sprite too. Keying solely on isFlatBuiltin()
+                    // (== item/generated|builtin/generated) misrouted every flat handheld
+                    // into the 3D pipeline, where it died at the stitch/geometry step
+                    // (FmmGeometryConverter requires elements). isFlatBuiltin() stays as a
+                    // fast-path so a generated model with a stray elements block — which
+                    // would never convert as 3D anyway — is still treated as flat.
+                    boolean hasGeometry = resolved.mergedJson().has("elements")
+                            && resolved.mergedJson().get("elements").isJsonArray()
+                            && !resolved.mergedJson().getAsJsonArray("elements").isEmpty();
+                    if (resolved.isFlatBuiltin() || !hasGeometry) {
                         boolean firstTime = registry.registerModelOnce(leaf.modelRef());
                         if (firstTime) {
                             if (!emitFlatIcon(resolved, iconKey, mergedJavaPack, bedrockDir, iconTextureMap)) {
@@ -428,9 +442,19 @@ public class BedrockConversion {
         String texPath = colon >= 0 ? layer0.substring(colon + 1) : layer0;
         File source = new File(mergedJavaPack, "assets/" + ns + "/textures/" + texPath + ".png");
         if (!source.isFile()) {
-            // Per-item asset miss — typically a layer0 that points at a vanilla
-            // texture not bundled in the merged pack. Demoted to debug.
-            BedrockLog.debug("[BedrockConverter] Flat-icon texture not found: " + source.getPath());
+            // Vanilla refs (minecraft:*) are expected misses — the client already ships
+            // those textures, the merged pack doesn't — so keep them at debug. A miss on
+            // a CUSTOM namespace (itemsadder/elitemobs/...) means a real custom item won't
+            // render on Bedrock; surface the declared ref AND the exact path we looked for
+            // so the operator can tell apart "texture absent from the pack" vs "referenced
+            // under the wrong path."
+            if ("minecraft".equals(ns)) {
+                BedrockLog.debug("[BedrockConverter] Flat-icon texture not found (vanilla, not shipped): " + source.getPath());
+            } else {
+                BedrockLog.warn("[BedrockConverter] Missing texture for " + resolved.identifier()
+                        + ": model declares '" + layer0 + "' but no file at " + source.getPath()
+                        + "; skipping (item will not render on Bedrock)");
+            }
             return false;
         }
         String iconRel = "textures/items/" + safeId;
