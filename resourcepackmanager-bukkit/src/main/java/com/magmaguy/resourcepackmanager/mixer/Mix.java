@@ -124,6 +124,18 @@ public class Mix {
         }
         if (shuttingDown()) return;
 
+        // The merged Java zip is complete the instant the engine returns: rerouting re-zips into a
+        // SEPARATE external folder and Bedrock conversion reads the unzipped mergedDir + writes
+        // separate outputs — neither alters out.mergedZip(). So publish the Java pack and start
+        // hosting NOW, before the (much slower, ~minute-long) Bedrock conversion runs. AutoHost.initialize()
+        // schedules its work on an async task, so the Bedrock conversion below proceeds in parallel and
+        // Java clients no longer wait on it.
+        finalResourcePack = out.mergedZip();
+        finalSHA1 = out.sha1Hex();
+        finalSHA1Bytes = out.sha1Bytes();
+        Logger.info("Java resource pack ready; starting hosting (Bedrock conversion continues in parallel).");
+        AutoHost.initialize();
+
         // Reroute the merged zip (Bukkit-only because DefaultConfig is Bukkit-bound).
         applyResourcePackRerouting(out.mergedDir());
 
@@ -136,6 +148,10 @@ public class Mix {
         // "Bedrock conversion disabled" case).
         if (DefaultConfig.isBedrockConversionEnabled()) {
             BedrockConversion.generate(out.mergedDir(), outputFolder, new BukkitBedrockConverterContext());
+            // Java hosting started before this conversion, so AutoHost's recurring relay task
+            // already fired (and skipped) before these files existed. Push them to the relay now
+            // so a network-mode proxy sees this backend's Bedrock content without a ~25 min wait.
+            AutoHost.publishBedrockOutputs();
         }
         if (shuttingDown()) return;
 
@@ -147,13 +163,7 @@ public class Mix {
             recursivelyDeleteDirectory(out.mergedDir());
         }
 
-        finalResourcePack = out.mergedZip();
-        finalSHA1 = out.sha1Hex();
-        finalSHA1Bytes = out.sha1Bytes();
-
         Logger.info("Resource pack mixing complete.");
-        if (shuttingDown()) return;
-        AutoHost.initialize();
     }
 
     // Bail out of the mix pipeline as soon as the plugin disables, so Bukkit
