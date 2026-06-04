@@ -260,7 +260,8 @@ public class BedrockConversion {
                         String itemsStem = def.itemsRelPath();
                         String javaItemModel = def.itemIdentifier();
                         for (String base : baseItems) {
-                            String mappingHash = BedrockShortName.forBaseMapping(leaf.modelRef(), base);
+                            String mappingHash = BedrockShortName.forBaseMapping(
+                                    leaf.modelRef(), base, MappedItemRegistry.predicateShape(leaf.predicates()));
                             String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
                             registry.addMapping(base, new GeyserDefinitionEntry(
                                     tierBedrockId,
@@ -373,7 +374,8 @@ public class BedrockConversion {
 
         boolean anyEmitted = false;
         for (String base : baseItems) {
-            String mappingHash = BedrockShortName.forBaseMapping(leaf.modelRef(), base);
+            String mappingHash = BedrockShortName.forBaseMapping(
+                    leaf.modelRef(), base, MappedItemRegistry.predicateShape(leaf.predicates()));
             String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
             String attachableOutPath = mappingHash;
 

@@ -25,11 +25,15 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.HashSet;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
 public class ThirdPartyResourcePack {
-    public static HashSet<ThirdPartyResourcePack> thirdPartyResourcePacks = new HashSet<>();
+    public static Set<ThirdPartyResourcePack> thirdPartyResourcePacks = ConcurrentHashMap.newKeySet();
 
     @Getter
     private final String pluginName;
@@ -52,6 +56,7 @@ public class ThirdPartyResourcePack {
     @Getter
     private boolean done = false;
 
+    private static volatile boolean mixInProgress = false;
     private int ticksWithoutChange = 0;
     private boolean consideredStable = false;
     @Setter
@@ -87,17 +92,10 @@ public class ThirdPartyResourcePack {
         this.zips = zips;
         this.cluster = cluster;
 
-        // If this is a cluster, process each resource pack in the folder
-        if (cluster) {
-            processCluster();
-        } else if (!zips) {
-            zipThirdPartyPack();
-        }
-
-        if (localPath != null && !cluster) SHA1 = getSHA1(file);
+        if (localPath != null) SHA1 = getSourceFingerprint();
 
         // Check if source file matches existing mixer file - if so, no changes occurred and it's stable
-        if (!cluster && localPath != null) {
+        if (!cluster && zips && localPath != null) {
             File existingMixerFile = getTarget().toFile();
             if (existingMixerFile.exists()) {
                 String existingMixerSHA1 = getSHA1(existingMixerFile);
@@ -106,8 +104,9 @@ public class ThirdPartyResourcePack {
                 }
             }
         }
-
-        if (!cluster) process();
+        if (localPath == null && url != null) {
+            consideredStable = true;
+        }
 
         if (DefaultConfig.getPriorityOrder().contains(pluginName))
             priority = DefaultConfig.getPriorityOrder().indexOf(pluginName);
@@ -124,9 +123,11 @@ public class ThirdPartyResourcePack {
      */
     private static boolean isPluginInitialized(String pluginName) {
         String state = System.getProperty("magmacore.init." + pluginName);
-        // If no state is published, the plugin doesn't use Magmacore — treat as ready
+        // If no state is published, the plugin doesn't use Magmacore — treat as ready.
+        // Across shaded MagmaCore copies, the useful blocking state is INITIALIZING;
+        // FAILED/UNINITIALIZED should not deadlock RSPM forever.
         if (state == null) return true;
-        return "INITIALIZED".equals(state);
+        return !"INITIALIZING".equals(state);
     }
 
     public static void startResourcePackChangeWatchdog() {
@@ -170,12 +171,15 @@ public class ThirdPartyResourcePack {
                 boolean readyToSend = true;
                 boolean stableAlreadySent = true;
                 for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
-                    if (!thirdPartyResourcePack.isEnabled || thirdPartyResourcePack.file == null) continue;
-                    // Cluster packs have a directory as their source file — can't hash, skip SHA1 check
-                    if (thirdPartyResourcePack.cluster) continue;
-                    if (!Objects.equals(thirdPartyResourcePack.getSHA1(thirdPartyResourcePack.file), thirdPartyResourcePack.SHA1)) {
+                    if (!thirdPartyResourcePack.isEnabled) continue;
+                    String sourceFingerprint = thirdPartyResourcePack.getSourceFingerprint();
+                    if (sourceFingerprint == null) {
+                        readyToSend = false;
+                        continue;
+                    }
+                    if (!Objects.equals(sourceFingerprint, thirdPartyResourcePack.SHA1)) {
                         thirdPartyResourcePack.ticksWithoutChange = 0;
-                        thirdPartyResourcePack.SHA1 = thirdPartyResourcePack.getSHA1(thirdPartyResourcePack.file);
+                        thirdPartyResourcePack.SHA1 = sourceFingerprint;
                         if (thirdPartyResourcePack.consideredStable) {
                             thirdPartyResourcePack.consideredStable = false;
                             thirdPartyResourcePack.stableResourcePackSent = false;
@@ -192,11 +196,18 @@ public class ThirdPartyResourcePack {
                     }
                 }
 
-                if (!stableAlreadySent && readyToSend) {
+                if (!stableAlreadySent && readyToSend && !mixInProgress) {
+                    mixInProgress = true;
                     notifyResourcePackSending();
                     tagAsResourcePackSent();
                     Logger.info("Sending resource pack now.");
-                    Bukkit.getScheduler().runTaskAsynchronously(ResourcePackManager.plugin, Mix::mixResourcePacks);
+                    Bukkit.getScheduler().runTaskAsynchronously(ResourcePackManager.plugin, () -> {
+                        try {
+                            Mix.mixResourcePacks();
+                        } finally {
+                            mixInProgress = false;
+                        }
+                    });
                 }
             }
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 20, 20);
@@ -206,6 +217,25 @@ public class ThirdPartyResourcePack {
         for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
             thirdPartyResourcePack.stableResourcePackSent = true;
         }
+    }
+
+    public static void markResourcePackStagingFailed() {
+        for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
+            thirdPartyResourcePack.stableResourcePackSent = false;
+            thirdPartyResourcePack.consideredStable = false;
+            thirdPartyResourcePack.ticksWithoutChange = 0;
+        }
+    }
+
+    public static boolean prepareResourcePacksForMix() {
+        boolean allPrepared = true;
+        for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
+            if (!thirdPartyResourcePack.isEnabled) continue;
+            if (!thirdPartyResourcePack.stageLatestSource()) {
+                allPrepared = false;
+            }
+        }
+        return allPrepared;
     }
 
     private static void notifyResourcePackSending() {
@@ -221,6 +251,7 @@ public class ThirdPartyResourcePack {
 
     public static void shutdown() {
         thirdPartyResourcePacks.clear();
+        mixInProgress = false;
         if (resourcePackChangeWatcher != null) {
             resourcePackChangeWatcher.cancel();
             resourcePackChangeWatcher = null;
@@ -228,16 +259,21 @@ public class ThirdPartyResourcePack {
     }
 
     public static void initializeThirdPartyResourcePack(CompatiblePluginConfigFields compatiblePluginConfigFields) {
-        new ThirdPartyResourcePack(
-                compatiblePluginConfigFields.getPluginName(),
-                compatiblePluginConfigFields.getLocalPath(),
-                compatiblePluginConfigFields.getUrl(),
-                compatiblePluginConfigFields.isZips(),
-                compatiblePluginConfigFields.isCluster(),
-                compatiblePluginConfigFields.getReloadCommand());
+        boolean registered = false;
+        String local = blankToNull(compatiblePluginConfigFields.getLocalPath());
+        if (local != null && localSourceExists(local)) {
+            new ThirdPartyResourcePack(
+                    compatiblePluginConfigFields.getPluginName(),
+                    local,
+                    compatiblePluginConfigFields.getUrl(),
+                    compatiblePluginConfigFields.isZips(),
+                    compatiblePluginConfigFields.isCluster(),
+                    compatiblePluginConfigFields.getReloadCommand());
+            registered = true;
+        }
 
-        String additional = compatiblePluginConfigFields.getAdditionalLocalPath();
-        if (additional != null && !additional.isBlank()) {
+        String additional = blankToNull(compatiblePluginConfigFields.getAdditionalLocalPath());
+        if (additional != null && localSourceExists(additional)) {
             new ThirdPartyResourcePack(
                     compatiblePluginConfigFields.getPluginName(),
                     additional,
@@ -246,27 +282,69 @@ public class ThirdPartyResourcePack {
                     true,
                     compatiblePluginConfigFields.getReloadCommand(),
                     "_shared");
+            registered = true;
         }
+
+        if (registered) return;
+
+        String url = blankToNull(compatiblePluginConfigFields.getUrl());
+        if (url != null) {
+            new ThirdPartyResourcePack(
+                    compatiblePluginConfigFields.getPluginName(),
+                    null,
+                    url,
+                    compatiblePluginConfigFields.isZips(),
+                    compatiblePluginConfigFields.isCluster(),
+                    compatiblePluginConfigFields.getReloadCommand());
+            return;
+        }
+
+        if (!Bukkit.getPluginManager().isPluginEnabled(compatiblePluginConfigFields.getPluginName())) return;
+        Logger.warn("Found " + compatiblePluginConfigFields.getPluginName() + " but none of its configured resource pack paths exist: "
+                + describeConfiguredPaths(local, additional) + " . ResourcePackManager will not be able to merge the resource pack from this plugin.");
     }
 
-    private void zipThirdPartyPack() {
-        ZipFile.zip(file, getTarget().toString());
-        file = new File(getTarget().toUri());
-        mixerResourcePack = file;
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
-    private void processCluster() {
+    private static boolean localSourceExists(String localPath) {
+        return getPluginRelativeFile(localPath).exists();
+    }
+
+    private static File getPluginRelativeFile(String localPath) {
+        return new File(ResourcePackManager.plugin.getDataFolder().getParentFile(), localPath);
+    }
+
+    private static String describeConfiguredPaths(String local, String additional) {
+        if (local != null && additional != null) return getPluginRelativeFile(local).getPath() + ", " + getPluginRelativeFile(additional).getPath();
+        if (local != null) return getPluginRelativeFile(local).getPath();
+        if (additional != null) return getPluginRelativeFile(additional).getPath();
+        return "none";
+    }
+
+    private boolean zipThirdPartyPack() {
+        if (ZipFile.zip(file, getTarget().toString())) {
+            mixerResourcePack = getTarget().toFile();
+            return true;
+        }
+        Logger.warn("Failed to zip resource pack for " + pluginName + " from " + file.getPath());
+        mixerResourcePack = null;
+        return false;
+    }
+
+    private boolean processCluster() {
         if (!file.isDirectory()) {
             Logger.warn("Cluster path for " + pluginName + " is not a directory: " + file.getPath());
-            isEnabled = false;
-            return;
+            mixerResourcePack = null;
+            return false;
         }
 
         File[] clusterContents = file.listFiles();
         if (clusterContents == null || clusterContents.length == 0) {
             Logger.warn("Cluster directory for " + pluginName + " is empty: " + file.getPath());
-            isEnabled = false;
-            return;
+            mixerResourcePack = null;
+            return false;
         }
 
         File mixerDir = new File(ResourcePackManager.plugin.getDataFolder().toString() + File.separatorChar + "mixer");
@@ -309,12 +387,13 @@ public class ThirdPartyResourcePack {
             Logger.info("Created merged cluster pack: " + targetZip.getAbsolutePath());
         } else {
             Logger.warn("Failed to zip merged cluster for " + pluginName);
-            isEnabled = false;
+            mixerResourcePack = null;
         }
 
         // Clean up temp directory
         Mix.recursivelyDeleteDirectory(clusterTemp);
         Logger.info("Finished processing cluster for " + pluginName);
+        return mixerResourcePack != null;
     }
 
     private boolean processLocal(String localPath) {
@@ -329,21 +408,21 @@ public class ThirdPartyResourcePack {
         return true;
     }
 
-    public void process() {
-        if (!isEnabled) return;
+    public boolean process() {
+        if (!isEnabled) return false;
 
         //Check if a copy already exists in the mixer folder and if it is up-to-date
-        if (localPath != null && mixerCloneExists()) {
+        if (localPath != null && zips && mixerCloneExists()) {
             if (getSHA1(new File(getTarget().toUri())).equals(SHA1)) {
                 mixerResourcePack = getTarget().toFile();
-                return;
+                return true;
             } else {
                 Logger.info("Clearing outdated resource pack in " + getTarget());
                 getTarget().toFile().delete();
             }
         }
 
-        cloneResourcePackFile();
+        return cloneResourcePackFile();
     }
 
     private String getSHA1(File file) {
@@ -355,37 +434,36 @@ public class ThirdPartyResourcePack {
         }
     }
 
-    public void cloneResourcePackFile() {
-        if (localPath != null) cloneLocalRSP();
-        else cloneRemoteRSP();
+    public boolean cloneResourcePackFile() {
+        if (localPath != null) return cloneLocalRSP();
+        return cloneRemoteRSP();
     }
 
-    private void cloneLocalRSP() {
-        if (!zips) return;
+    private boolean cloneLocalRSP() {
+        if (!zips) return zipThirdPartyPack();
         File mixerFolder = new File(ResourcePackManager.plugin.getDataFolder().toString(), "mixer");
         if (!mixerFolder.exists()) mixerFolder.mkdirs();
-        attemptClone(1);
+        return attemptClone();
     }
 
-    private void attemptClone(int attempt) {
+    private boolean attemptClone() {
         try {
             Logger.info("Cloning resource pack from " + file.toPath());
             mixerResourcePack = Files.copy(Path.of(file.getAbsolutePath()), Path.of(getTarget().toAbsolutePath().toString()), StandardCopyOption.REPLACE_EXISTING).toFile();
+            return true;
         } catch (java.nio.file.FileSystemException e) {
-            if (attempt < 5) {
-                Logger.warn("Resource pack file is locked (attempt " + attempt + "/5), retrying in " + (attempt * 10) + " ticks...");
-                Bukkit.getScheduler().runTaskLaterAsynchronously(ResourcePackManager.plugin, () -> attemptClone(attempt + 1), attempt * 10L);
-            } else {
-                Logger.warn("Failed to clone resource pack from " + file.getPath() + " after 5 attempts — file is still locked by another process.");
-                e.printStackTrace();
-            }
+            Logger.warn("Resource pack file is locked for " + pluginName + "; staging will retry after the source settles.");
+            mixerResourcePack = null;
+            return false;
         } catch (Exception e) {
             Logger.warn("Failed to clone resource pack from " + file.getPath() + " to the mixer folder!");
             e.printStackTrace();
+            mixerResourcePack = null;
+            return false;
         }
     }
 
-    public void cloneRemoteRSP() {
+    public boolean cloneRemoteRSP() {
         Logger.info("Getting resource pack from remote URL! This is not ideal but not optional for some plugins. URL: " + url);
         try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
             HttpGet httpGet = new HttpGet(url);
@@ -414,6 +492,8 @@ public class ThirdPartyResourcePack {
                             }
 
                             Logger.info("Successfully downloaded the resource pack to " + zipFile.getAbsolutePath());
+                            mixerResourcePack = zipFile;
+                            return true;
                         } catch (Exception e) {
                             Logger.warn("Failed to write resource pack from remote!");
                         }
@@ -429,6 +509,8 @@ public class ThirdPartyResourcePack {
         } catch (Exception e) {
             Logger.warn("Failed to connect to url " + url + " to download resource pack for plugin " + pluginName);
         }
+        mixerResourcePack = null;
+        return false;
     }
 
     public void reload() {
@@ -441,5 +523,48 @@ public class ThirdPartyResourcePack {
 
     private Path getTarget() {
         return Path.of(ResourcePackManager.plugin.getDataFolder().toString(), "mixer", mixerFilename);
+    }
+
+    private boolean stageLatestSource() {
+        if (!isEnabled) return true;
+        if (localPath != null && !file.exists()) {
+            Logger.warn("Resource pack source for " + pluginName + " is missing: " + file.getPath());
+            return false;
+        }
+        if (cluster) return processCluster();
+        SHA1 = getSourceFingerprint();
+        return process();
+    }
+
+    private String getSourceFingerprint() {
+        if (localPath == null && url != null) {
+            return "REMOTE:" + url;
+        }
+        if (file == null || !file.exists()) return null;
+        if (!file.isDirectory()) return getSHA1(file);
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-1");
+            Path root = file.toPath();
+            try (Stream<Path> stream = Files.walk(root)) {
+                stream.filter(Files::isRegularFile)
+                        .sorted()
+                        .forEach(path -> updateDirectoryFingerprint(digest, root, path));
+            }
+            return SHA1Generator.bytesToHexString(digest.digest());
+        } catch (Exception e) {
+            Logger.warn("Failed to fingerprint resource pack directory for " + pluginName + ": " + file.getPath());
+            return null;
+        }
+    }
+
+    private static void updateDirectoryFingerprint(MessageDigest digest, Path root, Path path) {
+        try {
+            String relativePath = root.relativize(path).toString().replace(File.separatorChar, '/');
+            digest.update(relativePath.getBytes(StandardCharsets.UTF_8));
+            digest.update(Long.toString(Files.size(path)).getBytes(StandardCharsets.UTF_8));
+            digest.update(Long.toString(Files.getLastModifiedTime(path).toMillis()).getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+            // The caller will see a changed fingerprint on the next stability check.
+        }
     }
 }

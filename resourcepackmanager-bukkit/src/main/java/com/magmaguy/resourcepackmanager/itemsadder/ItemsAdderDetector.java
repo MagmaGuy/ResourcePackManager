@@ -12,6 +12,8 @@ import java.io.File;
  */
 public class ItemsAdderDetector {
 
+    private static final String COMPRESS_JSON_FILES = "resource-pack.zip.compress-json-files";
+
     private ItemsAdderDetector() {
     }
 
@@ -103,6 +105,26 @@ public class ItemsAdderDetector {
     }
 
     /**
+     * Check if ItemsAdder is configured to emit compressed/generated JSON.
+     * RSPM needs normal JSON so the mixer and Bedrock converter can parse model files.
+     * @return true if JSON compression is enabled
+     */
+    public static boolean hasCompressedJsonEnabled() {
+        if (!isItemsAdderInstalled()) return false;
+
+        File configFile = getItemsAdderConfigFile();
+        if (configFile == null || !configFile.exists()) return false;
+
+        try {
+            YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
+            return config.getBoolean(COMPRESS_JSON_FILES, false);
+        } catch (Exception e) {
+            Logger.warn("Failed to check ItemsAdder JSON compression setting: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Get the ItemsAdder config.yml file.
      * @return the config file, or null if not found
      */
@@ -130,8 +152,8 @@ public class ItemsAdderDetector {
             YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
             boolean noHostEnabled = config.getBoolean("resource-pack.hosting.no-host.enabled", false);
 
-            // If no-host is enabled but protections are still on, needs configuration
-            if (noHostEnabled && hasProtectionEnabled()) {
+            // If no-host is enabled but protections/compressed JSON are still on, needs configuration
+            if (noHostEnabled && (hasProtectionEnabled() || hasCompressedJsonEnabled())) {
                 return true;
             }
 

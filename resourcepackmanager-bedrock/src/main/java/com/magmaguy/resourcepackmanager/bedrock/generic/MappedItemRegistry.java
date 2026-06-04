@@ -74,7 +74,15 @@ public final class MappedItemRegistry {
         return writtenModels.size();
     }
 
-    private static String predicateShape(List<PredicateRecord> predicates) {
+    /**
+     * Canonical, deterministic signature of a predicate stack. Used both as the
+     * dedup key here and as the predicate component of the Geyser
+     * {@code bedrock_identifier} hash (see
+     * {@link com.magmaguy.resourcepackmanager.bedrock.util.BedrockShortName#forBaseMapping(String, String, String)}),
+     * so identifier disambiguation and duplicate detection always agree on what
+     * "the same predicate" means. Empty stack &rarr; empty string.
+     */
+    public static String predicateShape(List<PredicateRecord> predicates) {
         StringBuilder sb = new StringBuilder();
         for (PredicateRecord p : predicates) sb.append(p.toGeyserJson()).append(';');
         return sb.toString();

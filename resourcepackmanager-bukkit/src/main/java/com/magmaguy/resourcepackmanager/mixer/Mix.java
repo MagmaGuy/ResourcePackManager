@@ -28,6 +28,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -90,6 +91,12 @@ public class Mix {
     public static void mixResourcePacks() {
         Logger.info("Starting resource pack mixing...");
         if (!initializeDefaultPluginFolders()) return;
+        if (shuttingDown()) return;
+        if (!ThirdPartyResourcePack.prepareResourcePacksForMix()) {
+            Logger.warn("Resource pack staging failed; waiting for sources to settle before mixing.");
+            ThirdPartyResourcePack.markResourcePackStagingFailed();
+            return;
+        }
         if (shuttingDown()) return;
         initializeThirdPartyResourcePacks();
         if (shuttingDown()) return;
@@ -185,8 +192,9 @@ public class Mix {
         List<String> priorityOrder = DefaultConfig.getPriorityOrder();
 
         // Collect all enabled packs from both the static set and API registrations
-        List<ThirdPartyResourcePack> allPacks = new ArrayList<>(ThirdPartyResourcePack.thirdPartyResourcePacks);
-        allPacks.addAll(ResourcePackManagerAPI.thirdPartyResourcePackHashMap.values());
+        Set<ThirdPartyResourcePack> uniquePacks = new LinkedHashSet<>(ThirdPartyResourcePack.thirdPartyResourcePacks);
+        uniquePacks.addAll(ResourcePackManagerAPI.thirdPartyResourcePackHashMap.values());
+        List<ThirdPartyResourcePack> allPacks = new ArrayList<>(uniquePacks);
 
         // Build a unified map of (file -> priority) for sorting — ZIP/file inputs only.
         Map<File, Integer> filePriorities = new HashMap<>();
@@ -356,7 +364,9 @@ public class Mix {
         }
 
         JsonObject mergedJson;
-        if (CLUSTER_MERGE.isItemsFile(targetFile)) {
+        if (CLUSTER_MERGE.isLegacyItemModel(targetFile)) {
+            mergedJson = CLUSTER_MERGE.mergeLegacyItemModelOverrides(json1, json2);
+        } else if (CLUSTER_MERGE.isItemsFile(targetFile)) {
             mergedJson = CLUSTER_MERGE.mergeItemsModels(json1, json2);
         } else if (targetFile.getName().equals("sounds.json")) {
             mergedJson = CLUSTER_MERGE.mergeSoundsJson(json1, json2);

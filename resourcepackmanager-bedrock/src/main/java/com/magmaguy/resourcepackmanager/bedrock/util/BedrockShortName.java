@@ -72,7 +72,17 @@ public final class BedrockShortName {
     }
 
     /**
-     * Stable short name keyed by the (model, base-item) pair.
+     * Stable short name keyed by the (model, base-item) pair, with no predicate
+     * component. Equivalent to {@link #forBaseMapping(String, String, String)}
+     * with an empty signature. Retained so unconditional callers stay terse and
+     * so historical identifiers (no predicate) are produced byte-for-byte as before.
+     */
+    public static String forBaseMapping(String modelRef, String baseItem) {
+        return forBaseMapping(modelRef, baseItem, null);
+    }
+
+    /**
+     * Stable short name keyed by the (model, base-item, predicate-signature) triple.
      *
      * <p>Use this for the attachable file path and the Geyser
      * {@code bedrock_identifier}, both of which are per-mapping not
@@ -80,9 +90,28 @@ public final class BedrockShortName {
      * Bedrock base items will get different short names here, so each
      * attachable lives at its own file path and gets its own identifier
      * in the Geyser mappings.
+     *
+     * <h3>Why the predicate signature is part of the key</h3>
+     * A single Java model under a single base item can produce several Geyser
+     * definitions that differ only by predicate — the canonical case is a
+     * crossbow whose {@code charge_type=arrow} and {@code charge_type=rocket}
+     * branches resolve to the same custom model. Geyser keys every custom item
+     * definition by its {@code bedrock_identifier} and rejects duplicates
+     * ("conflicts with another custom item definition with the same bedrock
+     * identifier"), silently dropping all but the first. Folding the predicate
+     * signature into the hash gives each predicate variant a distinct identifier
+     * (and a distinct attachable file), so Geyser registers them all.
+     *
+     * <p>Pass {@code null} or an empty string for unconditional mappings; the
+     * hash input is then identical to the legacy (model, base) form, so existing
+     * Bedrock client caches for predicate-free items stay valid across upgrades.
      */
-    public static String forBaseMapping(String modelRef, String baseItem) {
-        return shortHash((modelRef == null ? "" : modelRef) + "|" + (baseItem == null ? "" : baseItem));
+    public static String forBaseMapping(String modelRef, String baseItem, String predicateSignature) {
+        String key = (modelRef == null ? "" : modelRef) + "|" + (baseItem == null ? "" : baseItem);
+        if (predicateSignature != null && !predicateSignature.isEmpty()) {
+            key = key + "|" + predicateSignature;
+        }
+        return shortHash(key);
     }
 
     /**

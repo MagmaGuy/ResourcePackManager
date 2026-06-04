@@ -45,6 +45,16 @@ class PackHttpServerTest {
             assertEquals(String.valueOf(expectedLength),
                     response.headers().firstValue("Content-Length").orElse(null));
             assertArrayEquals(expected, response.body());
+
+            HttpResponse<byte[]> headResponse = client.send(
+                    HttpRequest.newBuilder(URI.create(url)).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+
+            assertEquals(200, headResponse.statusCode());
+            assertEquals("application/zip", headResponse.headers().firstValue("Content-Type").orElse(null));
+            assertEquals(String.valueOf(expectedLength),
+                    headResponse.headers().firstValue("Content-Length").orElse(null));
+            assertEquals(0, headResponse.body().length);
         }
     }
 }

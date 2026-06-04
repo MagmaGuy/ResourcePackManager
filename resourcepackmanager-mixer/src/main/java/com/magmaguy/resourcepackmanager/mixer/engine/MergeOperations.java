@@ -60,15 +60,13 @@ public final class MergeOperations {
             return true;
         }
 
-        // Vanilla item model files (models/item/*.json) are NOT mergeable in 1.21.4+.
-        // They contain fixed-length numeric arrays in `display.<context>.translation/rotation/scale`
-        // and atomic `textures` references, which our recursive merge corrupts (translation
-        // [10,6,-4] + [0,0,0] -> [10,6,-4,0,0,0] for shield, and textures get wedged for
-        // crossbow leading to the missing-texture purple/black). The original justification
-        // for merging these was to combine `overrides` arrays for custom_model_data — but
-        // `overrides` was removed in 24w45a / 1.21.4+, replaced by assets/<ns>/items/*.json
-        // dispatch. So the merge benefit is gone, the corruption risk remains; higher-priority
-        // pack wins atomically, like blockstates.
+        // Legacy vanilla item model override files get a special non-recursive merge:
+        // only the `overrides` array is combined, while display/texture arrays remain
+        // higher-priority-wins. ItemsAdder and older packs can still emit these even
+        // on newer servers.
+        if (isLegacyItemModel(file)) {
+            return true;
+        }
 
         // Atlas files should be merged (sources array)
         if (path.contains("/atlases/")) {
@@ -588,6 +586,49 @@ public final class MergeOperations {
 
     public boolean isLegacyItemModel(File file) {
         return file.getPath().replace("\\", "/").contains("/minecraft/models/item/");
+    }
+
+    public JsonObject mergeLegacyItemModelOverrides(JsonObject source, JsonObject target) {
+        if (!source.has("overrides") || !source.get("overrides").isJsonArray()) {
+            return target;
+        }
+
+        JsonObject merged = target.deepCopy();
+        JsonArray mergedOverrides = new JsonArray();
+        Set<String> existingKeys = new HashSet<>();
+
+        if (target.has("overrides") && target.get("overrides").isJsonArray()) {
+            for (JsonElement element : target.getAsJsonArray("overrides")) {
+                mergedOverrides.add(element);
+                existingKeys.add(legacyOverrideKey(element));
+            }
+        }
+
+        for (JsonElement element : source.getAsJsonArray("overrides")) {
+            String key = legacyOverrideKey(element);
+            if (existingKeys.add(key)) {
+                mergedOverrides.add(element);
+            }
+        }
+
+        if (mergedOverrides.size() > 0) {
+            merged.add("overrides", mergedOverrides);
+        }
+        return merged;
+    }
+
+    private String legacyOverrideKey(JsonElement override) {
+        try {
+            JsonObject object = override.getAsJsonObject();
+            JsonObject predicate = object.getAsJsonObject("predicate");
+            JsonElement customModelData = predicate.get("custom_model_data");
+            if (customModelData != null) {
+                return "custom_model_data:" + customModelData;
+            }
+        } catch (Exception ignored) {
+            // Fall through to full JSON signature.
+        }
+        return override.toString();
     }
 
     public boolean isItemsFile(File file) {
