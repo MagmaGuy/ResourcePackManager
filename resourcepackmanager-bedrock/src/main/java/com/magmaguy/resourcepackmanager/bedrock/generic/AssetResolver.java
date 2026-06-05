@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
@@ -43,9 +44,20 @@ public final class AssetResolver {
     private final Map<String, Optional<JsonObject>> rawModelCache = new HashMap<>();
     private final Map<String, Optional<ResolvedModel>> resolvedModelCache = new HashMap<>();
     private final Map<String, Optional<JsonObject>> equipmentCache = new HashMap<>();
+    // Lazily built on first model resolution (lazy so a pack with no convertible
+    // models never pays the pack-walk cost). Maps atlas sprite names back to real
+    // texture resources — see AtlasSpriteIndex.
+    private AtlasSpriteIndex atlasSpriteIndex;
 
     public AssetResolver(File mergedJavaPack) {
         this.mergedJavaPack = mergedJavaPack;
+    }
+
+    private AtlasSpriteIndex atlasSprites() {
+        if (atlasSpriteIndex == null) {
+            atlasSpriteIndex = AtlasSpriteIndex.build(mergedJavaPack);
+        }
+        return atlasSpriteIndex;
     }
 
     public Optional<JsonObject> getRawModel(String modelRef) {
@@ -143,8 +155,39 @@ public final class AssetResolver {
             currentRef = parent;
         }
 
+        // Rewrite atlas-sprite texture refs (e.g. ItemsAdder's "ia:627") back to their
+        // real texture resource BEFORE any consumer reads the textures block. Done once
+        // here so the stitcher, flat-icon emitter, icon renderer, and geometry converter
+        // all see resolvable refs.
+        rewriteAtlasSpriteTextures(merged);
+
         boolean flatBuiltin = rootParent != null && FLAT_BUILTIN_ROOTS.contains(rootParent);
         return Optional.of(new ResolvedModel(modelRef, rootParent, merged, flatBuiltin, handheld));
+    }
+
+    /**
+     * Rewrites any atlas-sprite texture refs in the merged model back to the real
+     * texture resource they alias (e.g. {@code "ia:627" -> "inkless:vanillasets/cake_sword"}).
+     * No-op for packs that declare no atlas sprite remaps. See {@link AtlasSpriteIndex}.
+     */
+    private void rewriteAtlasSpriteTextures(JsonObject merged) {
+        if (merged == null || !merged.has("textures") || !merged.get("textures").isJsonObject()) return;
+        AtlasSpriteIndex sprites = atlasSprites();
+        if (sprites.isEmpty()) return;
+        JsonObject textures = merged.getAsJsonObject("textures");
+        // Collect first, then apply: avoids mutating the JsonObject mid-iteration.
+        Map<String, String> updates = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonElement> entry : textures.entrySet()) {
+            if (!entry.getValue().isJsonPrimitive()) continue;
+            String value = entry.getValue().getAsString();
+            String resolved = sprites.resolve(value);
+            if (resolved != null && !resolved.equals(value)) {
+                updates.put(entry.getKey(), resolved);
+            }
+        }
+        for (Map.Entry<String, String> update : updates.entrySet()) {
+            textures.addProperty(update.getKey(), update.getValue());
+        }
     }
 
     /**
