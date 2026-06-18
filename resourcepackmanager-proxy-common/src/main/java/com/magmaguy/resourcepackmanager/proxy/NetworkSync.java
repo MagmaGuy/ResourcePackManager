@@ -27,6 +27,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Consumer;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Proxy-side orchestrator. For each backend in the proxy's server list, pulls
@@ -77,6 +78,13 @@ public final class NetworkSync {
     /** Per-backend HTTP timeout. Tight enough that a dead backend doesn't stall a poll. */
     private static final Duration PER_BACKEND_TIMEOUT = Duration.ofSeconds(5);
 
+    /**
+     * When magmaguy.com's relay list is unreachable, don't block every 5s poll on
+     * another 30s HTTP timeout. Direct backend polling still runs every cycle; only
+     * the fallback relay list call is backed off.
+     */
+    private static final Duration RELAY_LIST_FAILURE_BACKOFF = Duration.ofMinutes(2);
+
     /** RFC 1123 / HTTP-date formatter for {@code If-Modified-Since}. */
     private static final DateTimeFormatter HTTP_DATE =
             DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss 'GMT'", Locale.ENGLISH)
@@ -106,6 +114,7 @@ public final class NetworkSync {
     private final String networkKey;
     /** Lazily constructed client for the relay-fallback path. Null until first use. */
     private volatile MagmaguyRspClient relayClient;
+    private volatile Instant nextRelayListAttemptAt = Instant.EPOCH;
 
     private final File inboxRoot;
     private final File mergedDir;
@@ -114,6 +123,8 @@ public final class NetworkSync {
 
     private volatile ProxySchedulerAdapter.Cancellable pollTask;
     private volatile MergedPack current;
+    private final AtomicBoolean pollInProgress = new AtomicBoolean(false);
+    private volatile boolean overlapWarningFired = false;
 
     /** Set of file SHA-1s under inbox/ at the end of the previous poll cycle. */
     private Set<String> lastInboxHashes = new TreeSet<>();
@@ -287,6 +298,14 @@ public final class NetworkSync {
      * </ol>
      */
     void pollOnce() {
+        if (!pollInProgress.compareAndSet(false, true)) {
+            if (!overlapWarningFired) {
+                overlapWarningFired = true;
+                logger.warn("NetworkSync: previous poll is still running; skipping overlapping poll. "
+                        + "If this repeats, a backend fetch or relay fallback is timing out.");
+            }
+            return;
+        }
         try {
             List<BackendListProvider.Backend> backends = safeListBackends();
             if (backends.isEmpty()) {
@@ -385,6 +404,9 @@ public final class NetworkSync {
             }
         } catch (Exception e) {
             logger.warn("Network sync poll failed", e);
+        } finally {
+            pollInProgress.set(false);
+            overlapWarningFired = false;
         }
     }
 
@@ -584,6 +606,15 @@ public final class NetworkSync {
      */
     private void fetchFromRelay() {
         if (networkKey == null || networkKey.isBlank()) return;
+        Instant now = Instant.now();
+        if (now.isBefore(nextRelayListAttemptAt)) {
+            lastFetchOutcomes.put("relay-magmaguy.com:list",
+                    new FetchOutcome(FetchOutcome.Kind.OTHER_ERROR, 0,
+                            "backing off after previous relay list failure until "
+                                    + nextRelayListAttemptAt,
+                            now));
+            return;
+        }
         MagmaguyRspClient rc = relayClient;
         if (rc == null) {
             // 30s socket timeout for list/download — relay fetches are small
@@ -600,8 +631,23 @@ public final class NetworkSync {
         List<MagmaguyRspClient.BedrockRelayEntry> entries;
         try {
             entries = rc.listBedrockRelay(networkKey);
+            nextRelayListAttemptAt = Instant.EPOCH;
+            lastFetchOutcomes.put("relay-magmaguy.com:list",
+                    new FetchOutcome(FetchOutcome.Kind.OK_200, 200,
+                            "relay list returned " + entries.size() + " entr"
+                                    + (entries.size() == 1 ? "y" : "ies"),
+                            now));
         } catch (IOException e) {
-            logger.warn("Bedrock relay list failed: " + e.getMessage());
+            nextRelayListAttemptAt = now.plus(RELAY_LIST_FAILURE_BACKOFF);
+            lastFetchOutcomes.put("relay-magmaguy.com:list",
+                    new FetchOutcome(FetchOutcome.Kind.CONNECT_FAILED, 0,
+                            e.getClass().getSimpleName()
+                                    + (e.getMessage() != null ? ": " + e.getMessage() : ""),
+                            now));
+            logger.warn("Bedrock relay list failed after at least one direct backend fetch failed: "
+                    + e.getMessage() + ". Direct/cached backend content may still be usable; run /rspm status on the proxy "
+                    + "to see which backend HTTP URL triggered relay fallback. Retrying relay list after "
+                    + RELAY_LIST_FAILURE_BACKOFF.toSeconds() + "s.");
             return;
         }
 

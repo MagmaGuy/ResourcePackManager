@@ -11,11 +11,12 @@ import java.io.FileReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Scans a merged Java resource pack directory for 1.21.4+ items definition files
- * across every namespace except {@code minecraft} (vanilla — handled by Bedrock).
+ * across every namespace, including {@code minecraft}. Modern vanilla item overrides
+ * such as {@code assets/minecraft/items/carrot_on_a_stick.json} are where many packs
+ * define their custom-model-data branches.
  * All plugin namespaces are processed uniformly; there is no FMM-specific carve-out.
  *
  * <p>This is the entry point of the generic Java→Bedrock pipeline. Subsequent phases
@@ -27,13 +28,11 @@ import java.util.Set;
  */
 public final class GenericJavaScanner {
 
-    private static final Set<String> SKIP_NAMESPACES = Set.of("minecraft");
-
     private GenericJavaScanner() {}
 
     /**
      * Walks the merged pack's {@code assets/} tree and returns every parseable items
-     * definition file (1.21.4+ format) outside the skipped namespaces.
+     * definition file (1.21.4+ format).
      */
     public static List<ItemsDefinition> scan(File mergedJavaPack) {
         List<ItemsDefinition> result = new ArrayList<>();
@@ -45,7 +44,6 @@ public final class GenericJavaScanner {
 
         for (File nsDir : namespaceDirs) {
             String namespace = nsDir.getName();
-            if (SKIP_NAMESPACES.contains(namespace)) continue;
             File itemsDir = new File(nsDir, "items");
             if (!itemsDir.isDirectory()) continue;
             scanItemsDir(namespace, itemsDir, "", result);
