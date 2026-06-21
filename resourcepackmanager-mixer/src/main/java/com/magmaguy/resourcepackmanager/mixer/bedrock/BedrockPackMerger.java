@@ -22,13 +22,18 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.FileVisitResult;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -227,8 +232,11 @@ public final class BedrockPackMerger {
             mergeItemTextures(unzippedDirs, stagingDir);
 
             // 5. Generate a fresh manifest.json pinned to stableMergedPackUuid.
+            // Version is derived from staged content so no-op proxy remixes keep
+            // Bedrock's (uuid, version) cache key stable across restarts.
             int[] mev = minEngineVersion != null ? minEngineVersion : new int[]{1, 21, 0};
-            writeMergedManifest(stagingDir, stableMergedPackUuid, mev);
+            String cacheBustToken = contentDigest(stagingDir, mev);
+            writeMergedManifest(stagingDir, stableMergedPackUuid, mev, cacheBustToken);
 
             // 6. Zip staging dir into outputZip.
             return zipStagingDir(stagingDir, outputZip);
@@ -332,16 +340,16 @@ public final class BedrockPackMerger {
     }
 
     /**
-     * Generate a fresh merged manifest pinned to {@code stableMergedPackUuid}. Mirrors
-     * the per-build version-triplet derivation used by
-     * {@code com.magmaguy.resourcepackmanager.bedrock.model.BedrockManifest} so each
-     * merge bumps the Bedrock client cache key.
+     * Generate a fresh merged manifest pinned to {@code stableMergedPackUuid}. The
+     * version triplet comes from staged content so Bedrock only sees a new pack
+     * version when the merged bytes actually change.
      */
-    private void writeMergedManifest(File outputDir, UUID stableMergedPackUuid, int[] minEngineVersion) {
+    private void writeMergedManifest(File outputDir, UUID stableMergedPackUuid,
+                                     int[] minEngineVersion, String cacheBustToken) {
         UUID moduleUuid = UUID.nameUUIDFromBytes(
                 (stableMergedPackUuid.toString() + ":resources").getBytes(StandardCharsets.UTF_8));
 
-        int[] versionTriplet = deriveVersionTriplet(String.valueOf(System.currentTimeMillis()));
+        int[] versionTriplet = deriveVersionTriplet(cacheBustToken);
 
         Map<String, Object> manifest = new LinkedHashMap<>();
         manifest.put("format_version", 2);
@@ -383,7 +391,8 @@ public final class BedrockPackMerger {
 
     /**
      * Same derivation as {@code BedrockManifest.deriveVersionTriplet} so the merged pack
-     * bumps its cache key on every merge in the same way each backend's local pack does.
+     * bumps its cache key when merged content changes in the same way each backend's
+     * local pack does.
      */
     private static int[] deriveVersionTriplet(String cacheBustToken) {
         long seed;
@@ -393,7 +402,16 @@ public final class BedrockPackMerger {
             try {
                 seed = Long.parseLong(cacheBustToken);
             } catch (NumberFormatException nfe) {
-                seed = cacheBustToken.hashCode() & 0xffffffffL;
+                String hex = cacheBustToken.replaceAll("[^0-9A-Fa-f]", "");
+                if (hex.length() >= 15) {
+                    try {
+                        seed = Long.parseUnsignedLong(hex.substring(0, 15), 16);
+                    } catch (NumberFormatException ignored) {
+                        seed = cacheBustToken.hashCode() & 0xffffffffL;
+                    }
+                } else {
+                    seed = cacheBustToken.hashCode() & 0xffffffffL;
+                }
             }
         }
         long abs = seed < 0 ? -seed : seed;
@@ -402,6 +420,37 @@ public final class BedrockPackMerger {
         int major = (int) ((abs / 1_000_000) % 1000);
         if (major == 0) major = 1;
         return new int[]{major, minor, patch};
+    }
+
+    private String contentDigest(File stagingDir, int[] minEngineVersion) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            Path root = stagingDir.toPath();
+            try (Stream<Path> stream = Files.walk(root)) {
+                List<Path> files = stream
+                        .filter(Files::isRegularFile)
+                        .sorted(Comparator.comparing(path -> root.relativize(path).toString().replace('\\', '/')))
+                        .toList();
+                for (Path file : files) {
+                    String relative = root.relativize(file).toString().replace('\\', '/');
+                    digest.update(relative.getBytes(StandardCharsets.UTF_8));
+                    digest.update((byte) 0);
+                    digest.update(Files.readAllBytes(file));
+                    digest.update((byte) 0);
+                }
+            }
+            digest.update("min_engine_version".getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) 0);
+            for (int component : minEngineVersion) {
+                digest.update(Integer.toString(component).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (IOException | NoSuchAlgorithmException e) {
+            logger.warn("[BedrockPackMerger] Failed to derive content digest; falling back to timestamp cache bust: "
+                    + e.getMessage());
+            return String.valueOf(System.currentTimeMillis());
+        }
     }
 
     /**
@@ -455,27 +504,20 @@ public final class BedrockPackMerger {
         File tmpFile = new File(parent, outputZip.getName() + ".tmp");
         Path sourcePath = stagingDir.toPath();
 
-        try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(tmpFile)))) {
-            Files.walkFileTree(sourcePath, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    String entryName = sourcePath.relativize(file).toString().replace('\\', '/');
-                    zos.putNextEntry(new ZipEntry(entryName));
-                    Files.copy(file, zos);
-                    zos.closeEntry();
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                    if (!dir.equals(sourcePath)) {
-                        String entryName = sourcePath.relativize(dir).toString().replace('\\', '/') + "/";
-                        zos.putNextEntry(new ZipEntry(entryName));
-                        zos.closeEntry();
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-            });
+        try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(tmpFile)));
+             Stream<Path> stream = Files.walk(sourcePath)) {
+            List<Path> files = stream
+                    .filter(Files::isRegularFile)
+                    .sorted(Comparator.comparing(path -> sourcePath.relativize(path).toString().replace('\\', '/')))
+                    .toList();
+            for (Path file : files) {
+                String entryName = sourcePath.relativize(file).toString().replace('\\', '/');
+                ZipEntry entry = new ZipEntry(entryName);
+                entry.setTime(0L);
+                zos.putNextEntry(entry);
+                Files.copy(file, zos);
+                zos.closeEntry();
+            }
         } catch (IOException e) {
             logger.warn("[BedrockPackMerger] Failed to zip merged Bedrock pack: " + e.getMessage());
             try {
@@ -486,6 +528,10 @@ public final class BedrockPackMerger {
         }
 
         try {
+            if (outputZip.isFile() && Files.mismatch(tmpFile.toPath(), outputZip.toPath()) == -1L) {
+                Files.deleteIfExists(tmpFile.toPath());
+                return outputZip;
+            }
             Files.move(tmpFile.toPath(), outputZip.toPath(),
                     StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException atomicMoveFailed) {

@@ -21,14 +21,11 @@ public class BedrockManifest {
      *
      * @param outputDir      the directory to write manifest.json into
      * @param pluginVersion  the version string of the plugin (used for deterministic UUID seeding and metadata)
-     * @param cacheBustToken any per-build-unique string (currently the build's
-     *                       {@code System.currentTimeMillis()} — NOT a hash of pack
-     *                       contents). Used to derive the {@code header.version} /
-     *                       {@code modules[0].version} triplet so each build emits a
-     *                       different version, forcing Bedrock to invalidate its
-     *                       (uuid, version)-keyed pack cache. If callers ever want
-     *                       reproducible builds (identical pack contents → identical
-     *                       manifest), pass a content-derived digest here instead.
+     * @param cacheBustToken content-derived string used to derive the
+     *                       {@code header.version} / {@code modules[0].version}
+     *                       triplet. Identical generated contents keep the same
+     *                       version; changed contents bump Bedrock's
+     *                       (uuid, version)-keyed pack cache.
      */
     public static void write(File outputDir, String pluginVersion, String cacheBustToken) {
         if (outputDir == null) return;
@@ -41,12 +38,9 @@ public class BedrockManifest {
         UUID headerUuid = UUID.nameUUIDFromBytes(("rspm_bedrock_header:" + safeVersion).getBytes(StandardCharsets.UTF_8));
         UUID moduleUuid = UUID.nameUUIDFromBytes(("rspm_bedrock_module:" + safeVersion).getBytes(StandardCharsets.UTF_8));
 
-        // Bump the version triplet per build from the cache-bust token so Bedrock's cache
-        // invalidates each run. Bedrock matches packs by (uuid, version) — keeping
-        // version pinned at [1,0,0] means clients keep serving the cached old bytes
-        // forever. The token today is a timestamp, so this fires on every build even
-        // when contents are unchanged; that's intentional for a dev/server workflow
-        // where pack contents nearly always differ between builds.
+        // Bump the version triplet from the content token. Bedrock matches packs by
+        // (uuid, version), so pinning this forever would let clients keep serving
+        // cached old bytes. Deriving it from content keeps no-op startup remixes stable.
         int[] versionTriplet = deriveVersionTriplet(cacheBustToken);
 
         Map<String, Object> manifest = new LinkedHashMap<>();
@@ -86,8 +80,7 @@ public class BedrockManifest {
 
     /**
      * Derive a 3-element {@code [major, minor, patch]} version triplet from the
-     * cache-bust token so each build emits a different version (forcing Bedrock client
-     * cache invalidation), while still fitting within Bedrock's semver-style version
+     * cache-bust token while still fitting within Bedrock's semver-style version
      * field. Each component is bounded to 0..999 to stay readable in tooling.
      */
     private static int[] deriveVersionTriplet(String cacheBustToken) {
@@ -95,11 +88,7 @@ public class BedrockManifest {
         if (cacheBustToken == null || cacheBustToken.isEmpty()) {
             seed = System.currentTimeMillis();
         } else {
-            try {
-                seed = Long.parseLong(cacheBustToken);
-            } catch (NumberFormatException nfe) {
-                seed = cacheBustToken.hashCode() & 0xffffffffL;
-            }
+            seed = seedFromToken(cacheBustToken);
         }
         long abs = seed < 0 ? -seed : seed;
         int patch = (int) (abs % 1000);
@@ -109,5 +98,21 @@ public class BedrockManifest {
         // contexts and we want at least one non-zero component so the pack looks valid.
         if (major == 0) major = 1;
         return new int[]{major, minor, patch};
+    }
+
+    private static long seedFromToken(String cacheBustToken) {
+        try {
+            return Long.parseLong(cacheBustToken);
+        } catch (NumberFormatException ignored) {
+            String hex = cacheBustToken.replaceAll("[^0-9A-Fa-f]", "");
+            if (hex.length() >= 15) {
+                try {
+                    return Long.parseUnsignedLong(hex.substring(0, 15), 16);
+                } catch (NumberFormatException ignoredAgain) {
+                    // Fall through to stable String.hashCode seed.
+                }
+            }
+            return cacheBustToken.hashCode() & 0xffffffffL;
+        }
     }
 }

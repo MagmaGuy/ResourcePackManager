@@ -9,13 +9,9 @@
         <version>2.1.0</version>
     </parent>
 
-    <artifactId>resourcepackmanager-mixer</artifactId>
+    <artifactId>resourcepackmanager-bridge-common</artifactId>
 
     <dependencies>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-        </dependency>
         <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
@@ -23,6 +19,7 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

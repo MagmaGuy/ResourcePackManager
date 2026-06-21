@@ -1,0 +1,7 @@
+name: ResourcePackManagerGeyserBridge
+id: resourcepackmanagergeyserbridge
+main: com.magmaguy.resourcepackmanager.geyserbridge.RspmGeyserBridgeExtension
+api: 2.9.0
+version: ${project.version}
+authors:
+  - MagmaGuy

@@ -34,10 +34,10 @@ import java.util.*;
  *       in hand and does not want to round-trip through disk.</li>
  * </ul>
  *
- * <p>Both paths share the texture-collection / atlas-building / per-bone-icon
- * code via {@link #stitchFromBoneTextures(String, Map, File, File)}. The
- * FMM and generic paths differ only in how they construct the input
- * {@code boneName -&gt; textures-map} mapping.
+ * <p>Both paths share the texture-collection / atlas-building code. The FMM
+ * path also emits per-bone item icons for callers that consume them; the
+ * generic path renders its own compact inventory icon and skips those source
+ * texture copies.
  */
 public class TextureStitcher {
 
@@ -78,7 +78,7 @@ public class TextureStitcher {
         // already unique per FMM model (e.g. "01_em_wolf") so this never collides.
         String atlasPathStem = "textures/entity/" + modelName + "/atlas";
         return stitchFromBoneTextures(modelName, boneTextures, atlasPathStem,
-                mergedPackRoot, bedrockPackDir);
+                mergedPackRoot, bedrockPackDir, true);
     }
 
     /**
@@ -89,9 +89,11 @@ public class TextureStitcher {
      * with slashes replaced by underscores>} to avoid collisions across plugins.
      *
      * <p>This was added in Phase 6 of the generic Java&rarr;Bedrock pipeline so
-     * the generic 3D path can reuse all of {@link TextureStitcher}'s atlas
-     * building, per-bone icon emission, and sprite-map UV computation without
-     * having to write the resolved/merged JSON back to disk.
+     * the generic 3D path can reuse {@link TextureStitcher}'s atlas building and
+     * sprite-map UV computation without having to write the resolved/merged JSON
+     * back to disk. The generic path renders a small perspective item icon
+     * separately, so this entry point intentionally does not copy full source
+     * textures into {@code textures/items/<modelName>__<boneName>.png}.
      *
      * <p>The output atlas path is {@code textures/entity/<modelName>/<boneName>/atlas.png}
      * &mdash; per-(model x bone) scoping is required because in this pipeline
@@ -121,19 +123,20 @@ public class TextureStitcher {
         // wrong dimensions on disk vs the per-model geo's texture_width/_height.
         String atlasPathStem = "textures/entity/" + modelName + "/" + boneName + "/atlas";
         return stitchFromBoneTextures(modelName, boneTextures, atlasPathStem,
-                mergedPackRoot, bedrockPackDir);
+                mergedPackRoot, bedrockPackDir, false);
     }
 
     /**
      * Shared implementation: given a pre-collected
      * {@code boneName -> textures-slot-map} mapping (one entry per bone for the
      * FMM path, exactly one entry for the generic single-model path), build the
-     * atlas, write per-bone icons, and return the stitch result.
+     * atlas, optionally write per-bone icons, and return the stitch result.
      */
     private static StitchResult stitchFromBoneTextures(String modelName,
                                                        Map<String, BoneTextures> boneTextures,
                                                        String atlasPathStem,
-                                                       File mergedPackRoot, File bedrockPackDir) {
+                                                       File mergedPackRoot, File bedrockPackDir,
+                                                       boolean writeBoneIcons) {
         Map<String, String> textureMap = unionTextures(boneTextures);
         if (textureMap.isEmpty()) {
             BedrockLog.warn("[BedrockConverter] No textures found for model " + modelName
@@ -268,34 +271,36 @@ public class TextureStitcher {
             return null;
         }
 
-        // 7. Produce per-bone icon files. For each bone, find its primary texture
-        //    (first texture key in iteration order = first slot the bone declares).
-        //    Mirrors Rainbow's flat-builtin "icon = the texture itself" pattern
-        //    (ModelTextures.java:188-190, 219-221) without needing a 3D renderer.
         Map<String, String> bonePrimaryIconPath = new LinkedHashMap<>();
-        for (Map.Entry<String, BoneTextures> e : boneTextures.entrySet()) {
-            String boneName = e.getKey();
-            String primaryRef = pickPrimaryTextureRef(e.getValue());
-            if (primaryRef == null) continue;
-            File source = sourceFileByRef.get(primaryRef);
-            if (source == null) continue; // missing texture earlier; fall back to atlas
+        if (writeBoneIcons) {
+            // 7. Produce per-bone icon files. For each bone, find its primary texture
+            //    (first texture key in iteration order = first slot the bone declares).
+            //    Mirrors Rainbow's flat-builtin "icon = the texture itself" pattern
+            //    (ModelTextures.java:188-190, 219-221) without needing a 3D renderer.
+            for (Map.Entry<String, BoneTextures> e : boneTextures.entrySet()) {
+                String boneName = e.getKey();
+                String primaryRef = pickPrimaryTextureRef(e.getValue());
+                if (primaryRef == null) continue;
+                File source = sourceFileByRef.get(primaryRef);
+                if (source == null) continue; // missing texture earlier; fall back to atlas
 
-            // Copy primary source PNG to textures/items/<modelName>__<boneName>.png
-            // Keep path under textures/items/ (matches Rainbow's idiomatic items path).
-            // Java flipbook textures (e.g. EliteMobs' bronzesword.png: 64x768 with a
-            // sibling .mcmeta declaring animation) must be cropped to the top frame
-            // before emission: Bedrock's flipbook_textures.json does NOT support item
-            // icons (only blocks/terrain per docs.microsoft / wiki.bedrock.dev), so a
-            // verbatim 64x768 copy renders as a tall squished icon in the inventory.
-            String iconRel = "textures/items/" + modelName + "__" + boneName;
-            File iconFile = new File(bedrockPackDir, iconRel + ".png");
-            try {
-                Files.createDirectories(iconFile.getParentFile().toPath());
-                writeIconCroppedIfFlipbook(source, iconFile);
-                bonePrimaryIconPath.put(boneName, iconRel);
-            } catch (IOException ioe) {
-                BedrockLog.warn("[BedrockConverter] Failed to write per-bone icon for "
-                        + modelName + "/" + boneName + ": " + ioe.getMessage());
+                // Copy primary source PNG to textures/items/<modelName>__<boneName>.png
+                // Keep path under textures/items/ (matches Rainbow's idiomatic items path).
+                // Java flipbook textures (e.g. EliteMobs' bronzesword.png: 64x768 with a
+                // sibling .mcmeta declaring animation) must be cropped to the top frame
+                // before emission: Bedrock's flipbook_textures.json does NOT support item
+                // icons (only blocks/terrain per docs.microsoft / wiki.bedrock.dev), so a
+                // verbatim 64x768 copy renders as a tall squished icon in the inventory.
+                String iconRel = "textures/items/" + modelName + "__" + boneName;
+                File iconFile = new File(bedrockPackDir, iconRel + ".png");
+                try {
+                    Files.createDirectories(iconFile.getParentFile().toPath());
+                    writeIconCroppedIfFlipbook(source, iconFile);
+                    bonePrimaryIconPath.put(boneName, iconRel);
+                } catch (IOException ioe) {
+                    BedrockLog.warn("[BedrockConverter] Failed to write per-bone icon for "
+                            + modelName + "/" + boneName + ": " + ioe.getMessage());
+                }
             }
         }
 
