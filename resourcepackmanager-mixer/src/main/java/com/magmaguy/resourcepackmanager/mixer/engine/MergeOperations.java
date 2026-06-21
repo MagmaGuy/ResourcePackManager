@@ -561,27 +561,99 @@ public final class MergeOperations {
             if (entry.has("min_format") && entry.has("max_format")) continue;
             if (!entry.has("formats")) continue;
 
-            int min, max;
-            JsonElement formats = entry.get("formats");
-            if (formats.isJsonArray()) {
-                JsonArray arr = formats.getAsJsonArray();
-                if (arr.size() < 2) continue;
-                min = arr.get(0).getAsInt();
-                max = arr.get(1).getAsInt();
-            } else if (formats.isJsonObject()) {
-                JsonObject obj = formats.getAsJsonObject();
-                if (!obj.has("min_inclusive") || !obj.has("max_inclusive")) continue;
-                min = obj.get("min_inclusive").getAsInt();
-                max = obj.get("max_inclusive").getAsInt();
-            } else if (formats.isJsonPrimitive()) {
-                min = max = formats.getAsInt();
-            } else {
-                continue;
-            }
+            int[] range = parseOverlayFormatsRange(entry.get("formats"));
+            if (range == null) continue;
 
-            if (!entry.has("min_format")) entry.addProperty("min_format", min);
-            if (!entry.has("max_format")) entry.addProperty("max_format", max);
+            if (!entry.has("min_format")) entry.addProperty("min_format", range[0]);
+            if (!entry.has("max_format")) entry.addProperty("max_format", range[1]);
         }
+    }
+
+    /**
+     * Parse an overlay entry's {@code formats} field in any of its documented shapes
+     * (single int, 2-int array, or {@code {min_inclusive, max_inclusive}} object) into
+     * a [min, max] pair. Returns null when the field is missing, malformed, or otherwise
+     * not a valid {@code formats} declaration. Shared by {@link #normalizeOverlayEntries}
+     * (backfill) and {@link #warnOnInvalidOverlayMetadata} (validation) so both agree on
+     * exactly what counts as a valid {@code formats} field.
+     */
+    private int[] parseOverlayFormatsRange(JsonElement formats) {
+        if (formats == null) return null;
+        if (formats.isJsonArray()) {
+            JsonArray arr = formats.getAsJsonArray();
+            if (arr.size() < 2) return null;
+            return new int[]{arr.get(0).getAsInt(), arr.get(1).getAsInt()};
+        }
+        if (formats.isJsonObject()) {
+            JsonObject obj = formats.getAsJsonObject();
+            if (!obj.has("min_inclusive") || !obj.has("max_inclusive")) return null;
+            return new int[]{obj.get("min_inclusive").getAsInt(), obj.get("max_inclusive").getAsInt()};
+        }
+        if (formats.isJsonPrimitive() && formats.getAsJsonPrimitive().isNumber()) {
+            int v = formats.getAsInt();
+            return new int[]{v, v};
+        }
+        return null;
+    }
+
+    /**
+     * Validate the merged {@code pack.mcmeta} overlay entries and warn loudly about any that
+     * MC 1.21.9+ clients will reject. WARN ONLY — this never rewrites user content.
+     *
+     * <p>On pack format 65+ (Minecraft 1.21.9+), an overlay entry whose declared range dips
+     * below the old/new boundary ({@link #LAST_PRE_MINOR_CLIENT_PACK_FORMAT}) must carry a valid
+     * {@code formats} field alongside {@code min_format}/{@code max_format}. If it is missing or
+     * malformed, the client rejects the entire pack with "Overlay '...' missing required field
+     * formats". RSPM merges user packs and emits the final server-hosted pack, so an invalid
+     * overlay from a source pack would otherwise ship silently and be rejected client-side with
+     * no hint. The maintainer's decision is to NOT rewrite user content here, but to surface a
+     * clear, actionable warning naming the offending overlay so admins can fix the source pack.</p>
+     */
+    public void warnOnInvalidOverlayMetadata(File resourcePackRoot) {
+        File packMcmeta = new File(resourcePackRoot, "pack.mcmeta");
+        if (!packMcmeta.exists()) return;
+
+        JsonObject mcmeta = readJsonFile(packMcmeta);
+        if (mcmeta == null || !mcmeta.has("overlays")) return;
+
+        JsonObject overlays = mcmeta.getAsJsonObject("overlays");
+        if (!overlays.has("entries")) return;
+
+        for (JsonElement element : overlays.getAsJsonArray("entries")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject entry = element.getAsJsonObject();
+
+            // Only entries whose declared range dips below the old/new boundary need a `formats`
+            // field for 1.21.9+ clients. Use min_format when present (that's the lower bound the
+            // client checks); fall back to formats' own lower bound so an entry with only a
+            // `formats` field is still evaluated.
+            int min = overlayDeclaredMinFormat(entry);
+            if (min > LAST_PRE_MINOR_CLIENT_PACK_FORMAT) continue;
+
+            if (entry.has("formats") && parseOverlayFormatsRange(entry.get("formats")) != null) continue;
+
+            String name = entry.has("directory") ? entry.get("directory").getAsString() : "<unnamed>";
+            logger.warn("Overlay '" + name + "' in the merged pack is missing a valid 'formats' field; "
+                    + "MC 1.21.9+ clients will reject this pack. Fix the source pack's pack.mcmeta overlay entry.");
+        }
+    }
+
+    /**
+     * Determine the lower bound the client uses when deciding whether an overlay entry needs a
+     * {@code formats} field. Prefers an explicit {@code min_format}, then the lower bound of a
+     * valid {@code formats} declaration. Returns Integer.MAX_VALUE when no lower bound can be
+     * determined so the caller treats the entry as "does not dip below the boundary" and skips it.
+     */
+    private int overlayDeclaredMinFormat(JsonObject entry) {
+        if (entry.has("min_format") && entry.get("min_format").isJsonPrimitive()
+                && entry.getAsJsonPrimitive("min_format").isNumber()) {
+            return entry.get("min_format").getAsInt();
+        }
+        if (entry.has("formats")) {
+            int[] range = parseOverlayFormatsRange(entry.get("formats"));
+            if (range != null) return range[0];
+        }
+        return Integer.MAX_VALUE;
     }
 
     public boolean isLegacyItemModel(File file) {

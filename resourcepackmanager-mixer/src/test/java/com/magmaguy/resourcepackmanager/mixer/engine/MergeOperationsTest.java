@@ -501,6 +501,72 @@ class MergeOperationsTest {
         assertFalse(overrides.toString().contains("source:item/twenty"), "higher-priority target CMD wins");
     }
 
+    // ------------------------------------------------------------------
+    // warnOnInvalidOverlayMetadata
+    // ------------------------------------------------------------------
+
+    private static MergeOperations newOps(java.util.List<String> warnings) {
+        return new MergeOperations(new MixerLogger() {
+            @Override public void info(String m) {}
+            @Override public void warn(String m) { warnings.add(m); }
+            @Override public void collision(String m) {}
+        });
+    }
+
+    @Test
+    void warnOnInvalidOverlayMetadata_lowRangeMissingFormats_warnsNamingOverlay(@TempDir Path tempDir) throws IOException {
+        // Overlay dips below the 64/65 boundary (min_format=34) but has no `formats` field →
+        // MC 1.21.9+ clients reject the pack. WARN expected, file must stay untouched.
+        Path mcmeta = tempDir.resolve("pack.mcmeta");
+        String original = "{"
+                + "\"pack\":{\"pack_format\":34},"
+                + "\"overlays\":{\"entries\":["
+                + "  {\"directory\":\"legacy_overlay\",\"min_format\":34,\"max_format\":84}"
+                + "]}}";
+        Files.writeString(mcmeta, original);
+
+        java.util.List<String> warnings = new java.util.ArrayList<>();
+        newOps(warnings).warnOnInvalidOverlayMetadata(tempDir.toFile());
+
+        assertEquals(1, warnings.size(), "Exactly one overlay should be flagged");
+        assertTrue(warnings.get(0).contains("legacy_overlay"), "Warning must name the offending overlay");
+        assertTrue(warnings.get(0).contains("formats"), "Warning must mention the missing formats field");
+        // WARN ONLY: the file must not have been modified.
+        assertEquals(original, Files.readString(mcmeta), "warnOnInvalidOverlayMetadata must not rewrite the file");
+    }
+
+    @Test
+    void warnOnInvalidOverlayMetadata_validFormats_doesNotWarn(@TempDir Path tempDir) throws IOException {
+        // Overlay dips below the boundary but carries a valid `formats` field → no warning.
+        Path mcmeta = tempDir.resolve("pack.mcmeta");
+        Files.writeString(mcmeta, "{"
+                + "\"pack\":{\"pack_format\":34},"
+                + "\"overlays\":{\"entries\":["
+                + "  {\"directory\":\"legacy_overlay\",\"min_format\":34,\"max_format\":84,\"formats\":[34,84]}"
+                + "]}}");
+
+        java.util.List<String> warnings = new java.util.ArrayList<>();
+        newOps(warnings).warnOnInvalidOverlayMetadata(tempDir.toFile());
+
+        assertTrue(warnings.isEmpty(), "Valid formats field should not trigger a warning: " + warnings);
+    }
+
+    @Test
+    void warnOnInvalidOverlayMetadata_rangeAboveBoundary_doesNotWarn(@TempDir Path tempDir) throws IOException {
+        // Overlay range is entirely 65+ (does not dip below the boundary) → `formats` not required.
+        Path mcmeta = tempDir.resolve("pack.mcmeta");
+        Files.writeString(mcmeta, "{"
+                + "\"pack\":{\"pack_format\":65},"
+                + "\"overlays\":{\"entries\":["
+                + "  {\"directory\":\"new_overlay\",\"min_format\":65,\"max_format\":84}"
+                + "]}}");
+
+        java.util.List<String> warnings = new java.util.ArrayList<>();
+        newOps(warnings).warnOnInvalidOverlayMetadata(tempDir.toFile());
+
+        assertTrue(warnings.isEmpty(), "Range entirely above the boundary needs no formats field: " + warnings);
+    }
+
     @Test
     void isMergeableJsonFile_assetsItemsJson_returnsTrue() {
         File f = new File("anywhere/assets/minecraft/items/iron_sword.json");

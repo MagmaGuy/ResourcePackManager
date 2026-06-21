@@ -117,6 +117,13 @@ public final class MixEngine {
             merge.mergeBaseAtlasSourcesIntoOverlays(mergedDir);
             merge.sanitizeMergedModels(mergedDir);
 
+            // Final validation pass over the merged pack.mcmeta. WARN ONLY — we do not rewrite
+            // user content. Any overlay entry whose range dips below the old/new pack-format
+            // boundary but lacks a valid `formats` field will be rejected by MC 1.21.9+ clients;
+            // warn loudly (naming the entry) so admins get an actionable message instead of a
+            // silent client-side rejection.
+            merge.warnOnInvalidOverlayMetadata(mergedDir);
+
             // 4. Zip.
             File mergedZip = new File(outputDir, input.outputName() + ".zip");
             if (!ZipUtil.zip(mergedDir, mergedZip.getAbsolutePath())) {
