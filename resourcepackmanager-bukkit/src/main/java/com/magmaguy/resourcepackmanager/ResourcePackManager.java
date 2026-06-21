@@ -8,11 +8,13 @@ import com.magmaguy.magmacore.initialization.PluginInitializationState;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginBootstrap;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginHooks;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginSpec;
+import com.magmaguy.magmacore.nightbreak.NightbreakSetupControls;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
 import com.magmaguy.resourcepackmanager.bedrock.BukkitBedrockConverterContext;
 import com.magmaguy.resourcepackmanager.bedrock.GeyserPackProvider;
+import com.magmaguy.resourcepackmanager.bedrock.bridge.GeyserBridgeInstaller;
 import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
 import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
 import com.magmaguy.resourcepackmanager.commands.StatusCommand;
@@ -93,6 +95,7 @@ public class ResourcePackManager extends JavaPlugin {
             Logger.info("Disabling ResourcePackManager during initialization");
             ThirdPartyResourcePack.shutdown();
             AutoHost.shutdown();
+            GeyserBridgeInstaller.unregister();
             GeyserPackProvider.unregister();
             HandlerList.unregisterAll(this);
             MagmaCore.shutdown(this);
@@ -101,6 +104,7 @@ public class ResourcePackManager extends JavaPlugin {
         Logger.info("Disabling ResourcePackManager");
         ThirdPartyResourcePack.shutdown();
         AutoHost.shutdown();
+        GeyserBridgeInstaller.unregister();
         GeyserPackProvider.unregister();
         HandlerList.unregisterAll(this);
         MagmaCore.shutdown(this);
@@ -151,6 +155,9 @@ public class ResourcePackManager extends JavaPlugin {
         }
         Bukkit.getPluginManager().registerEvents(new ItemsAdderWarningListener(), this);
 
+        initializationContext.step("Geyser Bridge");
+        GeyserBridgeInstaller.register();
+
         initializationContext.step("Geyser Pack Provider");
         GeyserPackProvider.register();
 
@@ -162,7 +169,7 @@ public class ResourcePackManager extends JavaPlugin {
         NightbreakPluginBootstrap.registerStandardCommands(this,
                 commandManager,
                 NIGHTBREAK_PLUGIN_SPEC,
-                player -> Logger.sendMessage(player, "&eResourcePackManager has no setup menu. Edit config files in plugins/ResourcePackManager/ and use &6/resourcepackmanager reload&e."),
+                player -> NightbreakSetupControls.openPluginSetupShell(this, player, NIGHTBREAK_PLUGIN_SPEC),
                 sender -> ReloadCommand.reloadPlugin(sender));
         commandManager.registerCommand(new ReloadCommand());
         commandManager.registerCommand(new DataComplianceRequestCommand());
@@ -173,6 +180,6 @@ public class ResourcePackManager extends JavaPlugin {
         new Metrics(this, 22867);
 
         initializationContext.step("Version Check");
-        MagmaCore.checkVersionUpdate("118574", "https://www.spigotmc.org/resources/resource-pack-manager.118574/");
+        MagmaCore.checkVersionUpdate("118574", "https://nightbreak.io/plugin/resourcepackmanager/");
     }
 }

@@ -2,7 +2,9 @@ package com.magmaguy.resourcepackmanager.bedrock.util;
 
 import java.io.*;
 import java.nio.file.*;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Comparator;
+import java.util.List;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -36,27 +38,21 @@ public class BedrockZip {
         File tmpFile = new File(outputDir, zipName + ".zip.tmp");
         Path sourcePath = sourceDir.toPath();
 
-        try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(tmpFile)))) {
-            Files.walkFileTree(sourcePath, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    String entryName = sourcePath.relativize(file).toString().replace('\\', '/');
-                    zos.putNextEntry(new ZipEntry(entryName));
-                    Files.copy(file, zos);
-                    zos.closeEntry();
-                    return FileVisitResult.CONTINUE;
-                }
+        try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(tmpFile)));
+             Stream<Path> stream = Files.walk(sourcePath)) {
+            List<Path> files = stream
+                    .filter(Files::isRegularFile)
+                    .sorted(Comparator.comparing(path -> sourcePath.relativize(path).toString().replace('\\', '/')))
+                    .toList();
 
-                @Override
-                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                    if (!dir.equals(sourcePath)) {
-                        String entryName = sourcePath.relativize(dir).toString().replace('\\', '/') + "/";
-                        zos.putNextEntry(new ZipEntry(entryName));
-                        zos.closeEntry();
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-            });
+            for (Path file : files) {
+                String entryName = sourcePath.relativize(file).toString().replace('\\', '/');
+                ZipEntry entry = new ZipEntry(entryName);
+                entry.setTime(0L);
+                zos.putNextEntry(entry);
+                Files.copy(file, zos);
+                zos.closeEntry();
+            }
         } catch (IOException e) {
             com.magmaguy.resourcepackmanager.bedrock.BedrockLog.warn("Failed to zip Bedrock pack: " + e.getMessage());
             try { Files.deleteIfExists(tmpFile.toPath()); } catch (IOException ignored) {}
@@ -64,6 +60,10 @@ public class BedrockZip {
         }
 
         try {
+            if (zipFile.isFile() && Files.mismatch(tmpFile.toPath(), zipFile.toPath()) == -1L) {
+                Files.deleteIfExists(tmpFile.toPath());
+                return zipFile;
+            }
             Files.move(tmpFile.toPath(), zipFile.toPath(),
                     StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {

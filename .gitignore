@@ -5,6 +5,7 @@ target/
 
 ### IntelliJ IDEA ###
 .idea/
+.run/
 *.iws
 *.iml
 *.ipr
@@ -50,3 +51,7 @@ $TMPDIR/
 iconrender_test/
 # Local design docs and plan notes - not tracked
 docs/
+
+# Local IDE/tooling and generated debris
+.gradle/
+out/

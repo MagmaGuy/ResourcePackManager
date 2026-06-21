@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.magmaguy</groupId>
         <artifactId>ResourcePackManager-parent</artifactId>
-        <version>2.0.2</version>
+        <version>2.1.0</version>
     </parent>
 
     <artifactId>ResourcePackManager</artifactId>
@@ -49,6 +49,17 @@
             <groupId>com.magmaguy</groupId>
             <artifactId>resourcepackmanager-bedrock</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.magmaguy</groupId>
+            <artifactId>resourcepackmanager-bridge-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.magmaguy</groupId>
+            <artifactId>resourcepackmanager-geyser-bridge</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>com.magmaguy</groupId>
@@ -104,6 +115,24 @@
                                 </artifactItem>
                             </artifactItems>
                             <outputDirectory>${project.build.outputDirectory}/proxy-extension</outputDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>copy-geyser-bridge-jar</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>com.magmaguy</groupId>
+                                    <artifactId>resourcepackmanager-geyser-bridge</artifactId>
+                                    <version>${project.version}</version>
+                                    <destFileName>ResourcePackManager-GeyserBridge.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>${project.build.outputDirectory}/geyser-extension</outputDirectory>
                         </configuration>
                     </execution>
                 </executions>

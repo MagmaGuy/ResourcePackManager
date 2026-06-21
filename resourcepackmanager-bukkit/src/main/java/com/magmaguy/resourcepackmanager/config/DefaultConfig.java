@@ -2,6 +2,7 @@ package com.magmaguy.resourcepackmanager.config;
 
 import com.magmaguy.magmacore.config.ConfigurationEngine;
 import com.magmaguy.magmacore.config.ConfigurationFile;
+import com.magmaguy.magmacore.nightbreak.NightbreakPluginUpdater;
 import lombok.Getter;
 
 import java.util.List;
@@ -38,6 +39,8 @@ public class DefaultConfig extends ConfigurationFile {
     private static boolean selfHostForce = false;
     @Getter
     private static boolean preferSelfHost = true;
+    @Getter
+    private static boolean autoDownloadPluginUpdates;
 
 
     public DefaultConfig() {
@@ -46,6 +49,8 @@ public class DefaultConfig extends ConfigurationFile {
 
     @Override
     public void initializeValues() {
+        autoDownloadPluginUpdates = NightbreakPluginUpdater.setAutoDownloadConfigDefault(fileConfiguration);
+
         priorityOrder = ConfigurationEngine.setList(
                 List.of(
                         "Sets the list, from highest priority (top) to lowest priority (bottom), in which the resource" +

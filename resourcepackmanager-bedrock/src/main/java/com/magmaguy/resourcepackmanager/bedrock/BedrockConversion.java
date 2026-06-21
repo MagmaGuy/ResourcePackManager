@@ -21,10 +21,16 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 /**
  * Main orchestrator for producing a Bedrock resource pack and Geyser custom mappings
@@ -121,6 +127,7 @@ public class BedrockConversion {
             Map<String, String> iconTextureMap = new LinkedHashMap<>();
             MappedItemRegistry registry = new MappedItemRegistry();
             runGenericPipeline(mergedJavaPack, bedrockDir, iconTextureMap, registry);
+            int entityBundleFiles = BedrockEntityBundleImporter.importBundles(mergedJavaPack, bedrockDir);
 
             // No convertible content (no custom items / models in the merged Java pack).
             // Per user policy: do NOT fall back to a manifest-only minimal pack. Either
@@ -128,7 +135,7 @@ public class BedrockConversion {
             // with a prompt when the backend has nothing to ship. Also nuke any stale
             // output from the previous run so the backend's /bedrock.zip route 404s
             // cleanly instead of serving last cycle's content forever.
-            if (registry.totalMappings() == 0) {
+            if (registry.totalMappings() == 0 && entityBundleFiles == 0) {
                 // No convertible content this cycle. Clear out previous-run output
                 // so the backend's /bedrock.zip route 404s cleanly instead of
                 // serving last cycle's content forever. Silent — operator doesn't
@@ -154,20 +161,26 @@ public class BedrockConversion {
             }
 
             // 4. Generate item_texture.json (required by Geyser for icon resolution).
-            generateItemTexture(iconTextureMap, bedrockDir);
+            if (!iconTextureMap.isEmpty()) {
+                generateItemTexture(iconTextureMap, bedrockDir);
+            }
 
-            // 5. Generate manifest. The cache-bust token is just the build timestamp —
-            // enough to bump the manifest version triplet per build so Bedrock invalidates
-            // its (uuid, version)-keyed pack cache. Not a hash of pack contents, so
-            // rebuilding identical contents still produces a new version (i.e. no
-            // reproducible-build property).
-            String cacheBustToken = String.valueOf(System.currentTimeMillis());
+            // 5. Generate manifest. Use a digest of the staged pack content before
+            // manifest.json is written, so identical resource-pack contents produce the
+            // same Bedrock pack version and startup remixes do not churn Geyser's live
+            // pack file. Real content changes still bump Bedrock's (uuid, version)
+            // cache key.
+            String cacheBustToken = contentDigest(bedrockDir);
             String pluginVersion = ctx.pluginVersion();
             BedrockManifest.write(bedrockDir, pluginVersion, cacheBustToken);
 
             // 6. Generate merged Geyser mappings.
             File mappingsFile = new File(outputDir, GEYSER_MAPPINGS_NAME);
-            GenericGeyserMappingBuilder.merge(registry, mappingsFile);
+            if (registry.totalMappings() > 0) {
+                GenericGeyserMappingBuilder.merge(registry, mappingsFile);
+            } else {
+                Files.deleteIfExists(mappingsFile.toPath());
+            }
 
             // 7. Zip
             File bedrockZip = BedrockZip.zip(bedrockDir, outputDir, BEDROCK_PACK_NAME);
@@ -182,10 +195,13 @@ public class BedrockConversion {
             //    - Proxy:   copies into plugins/Geyser-Velocity|Geyser-BungeeCord/custom_mappings/
             //    Either way it lands on disk for NEXT boot, since Geyser's custom-item
             //    registry is boot-frozen.
-            ctx.deployMappingsIfNeeded(mappingsFile);
+            if (registry.totalMappings() > 0) {
+                ctx.deployMappingsIfNeeded(mappingsFile);
+            }
 
             BedrockLog.info("Bedrock conversion complete: " + registry.totalMappings() + " mappings ("
-                    + registry.uniqueModelsWritten() + " unique models).");
+                    + registry.uniqueModelsWritten() + " unique models, "
+                    + entityBundleFiles + " custom entity bundle files).");
 
         } catch (Exception e) {
             BedrockLog.warn("Bedrock conversion failed: " + e.getMessage());
@@ -331,10 +347,8 @@ public class BedrockConversion {
         SharedModelAssets shared;
         if (registry.registerModelOnce(leaf.modelRef())) {
             // Pass the short stem as both modelName and boneName to the stitcher.
-            // Internally the stitcher concatenates them with "__" / "/" for the
-            // per-bone icon and atlas file paths; passing the same short hash on
-            // both sides yields <hash>__<hash>.png (≈25 chars) — short enough
-            // to stay well under Bedrock's 80-char file-path warning threshold.
+            // The generic stitcher path uses those stems only for the entity atlas;
+            // inventory icons are rendered separately below as compact 64x64 PNGs.
             // The original Java model ref is still preserved in modelAssetsCache
             // for cross-base-item asset reuse, and BedrockLog messages here include
             // leaf.modelRef() so the hash never becomes opaque during debugging.
@@ -504,6 +518,31 @@ public class BedrockConversion {
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             BedrockLog.warn("Failed to copy pack icon: " + e.getMessage());
+        }
+    }
+
+    private static String contentDigest(File bedrockDir) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            Path root = bedrockDir.toPath();
+            try (Stream<Path> stream = Files.walk(root)) {
+                List<Path> files = stream
+                        .filter(Files::isRegularFile)
+                        .sorted(Comparator.comparing(path -> root.relativize(path).toString().replace('\\', '/')))
+                        .toList();
+                for (Path file : files) {
+                    String relative = root.relativize(file).toString().replace('\\', '/');
+                    digest.update(relative.getBytes(StandardCharsets.UTF_8));
+                    digest.update((byte) 0);
+                    digest.update(Files.readAllBytes(file));
+                    digest.update((byte) 0);
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (IOException | NoSuchAlgorithmException e) {
+            BedrockLog.warn("Failed to derive Bedrock pack content digest; falling back to timestamp cache bust: "
+                    + e.getMessage());
+            return String.valueOf(System.currentTimeMillis());
         }
     }
 
