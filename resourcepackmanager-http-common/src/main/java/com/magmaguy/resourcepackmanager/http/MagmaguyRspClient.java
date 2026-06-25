@@ -583,6 +583,54 @@ public final class MagmaguyRspClient implements AutoCloseable {
                                     long sizeBytes, String lastUploadedAt) {}
 
     /**
+     * Direct backend HTTP endpoint announced by a Bukkit backend. The proxy uses
+     * this as a zero-config hint before falling back to {@code mcPort + offset}.
+     */
+    public record BedrockEndpoint(String backendId, String publicHost, String sourceIp,
+                                  int mcPort, int httpPort, String lastAnnouncedAt) {}
+
+    /**
+     * Announce the backend's actual RSPM HTTP port. This avoids making the proxy
+     * guess from {@code mcPort + offset} when the backend is bound to an explicit
+     * port by config or hosting-panel constraints.
+     */
+    public Optional<BedrockEndpoint> announceBedrockEndpoint(
+            String networkKey,
+            String backendId,
+            String publicHostOrNull,
+            int mcPort,
+            int httpPort) throws IOException {
+        HttpPost req = new HttpPost(BASE_URL + "bedrock/endpoint/announce");
+        MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+        builder.addTextBody("networkKey", networkKey, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+        builder.addTextBody("backendId", backendId, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+        builder.addTextBody("mcPort", Integer.toString(mcPort), ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+        builder.addTextBody("httpPort", Integer.toString(httpPort), ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+        if (publicHostOrNull != null && !publicHostOrNull.isBlank()) {
+            builder.addTextBody("publicHost", publicHostOrNull, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+        }
+        req.setEntity(builder.build());
+
+        inFlight = httpClient;
+        try (CloseableHttpResponse response = httpClient.execute(req)) {
+            String body = readEntity(response.getEntity());
+            int code = response.getCode();
+            if (code < 200 || code >= 300) {
+                logErrorResponse(body, code, "bedrock endpoint announce");
+                return Optional.empty();
+            }
+            JsonObject json = new Gson().fromJson(body, JsonObject.class);
+            if (json == null || !json.has("success") || !json.get("success").getAsBoolean()
+                    || !json.has("entry")) {
+                return Optional.empty();
+            }
+            return Optional.of(toEndpoint(json.getAsJsonObject("entry")));
+        } finally {
+            inFlight = null;
+        }
+    }
+
+    /**
      * Upload a Bedrock pack ({@code kind="zip"}) or Geyser mappings file
      * ({@code kind="mappings"}) to the relay under this network. The relay
      * stores by {@code (sha256(networkKey)[:32], backendId, kind)} — re-uploading
@@ -651,6 +699,41 @@ public final class MagmaguyRspClient implements AutoCloseable {
             List<BedrockRelayEntry> out = new ArrayList<>(arr.size());
             for (JsonElement e : arr) {
                 if (e.isJsonObject()) out.add(toEntry(e.getAsJsonObject()));
+            }
+            return out;
+        } finally {
+            inFlight = null;
+        }
+    }
+
+    /**
+     * List fresh direct-backend endpoint announcements for this network. The
+     * hoster filters out stale announcements using the same short TTL as relay
+     * files.
+     */
+    public List<BedrockEndpoint> listBedrockEndpoints(String networkKey) throws IOException {
+        HttpPost req = new HttpPost(BASE_URL + "bedrock/endpoint/list");
+        MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+        builder.addTextBody("networkKey", networkKey, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+        req.setEntity(builder.build());
+
+        inFlight = httpClient;
+        try (CloseableHttpResponse response = httpClient.execute(req)) {
+            String body = readEntity(response.getEntity());
+            int code = response.getCode();
+            if (code < 200 || code >= 300) {
+                logErrorResponse(body, code, "bedrock endpoint list");
+                return Collections.emptyList();
+            }
+            JsonObject json = new Gson().fromJson(body, JsonObject.class);
+            if (json == null || !json.has("success") || !json.get("success").getAsBoolean()
+                    || !json.has("endpoints")) {
+                return Collections.emptyList();
+            }
+            JsonArray arr = json.getAsJsonArray("endpoints");
+            List<BedrockEndpoint> out = new ArrayList<>(arr.size());
+            for (JsonElement e : arr) {
+                if (e.isJsonObject()) out.add(toEndpoint(e.getAsJsonObject()));
             }
             return out;
         } finally {
@@ -731,5 +814,17 @@ public final class MagmaguyRspClient implements AutoCloseable {
         long size = e.has("sizeBytes") ? e.get("sizeBytes").getAsLong() : 0L;
         String at = e.has("lastUploadedAt") ? e.get("lastUploadedAt").getAsString() : "";
         return new BedrockRelayEntry(backendId, kind, sha1, size, at);
+    }
+
+    private static BedrockEndpoint toEndpoint(JsonObject e) {
+        String backendId = e.has("backendId") ? e.get("backendId").getAsString() : "";
+        String publicHost = (e.has("publicHost") && !e.get("publicHost").isJsonNull())
+                ? e.get("publicHost").getAsString() : null;
+        String sourceIp = (e.has("sourceIp") && !e.get("sourceIp").isJsonNull())
+                ? e.get("sourceIp").getAsString() : null;
+        int mcPort = e.has("mcPort") ? e.get("mcPort").getAsInt() : -1;
+        int httpPort = e.has("httpPort") ? e.get("httpPort").getAsInt() : -1;
+        String at = e.has("lastAnnouncedAt") ? e.get("lastAnnouncedAt").getAsString() : "";
+        return new BedrockEndpoint(backendId, publicHost, sourceIp, mcPort, httpPort, at);
     }
 }

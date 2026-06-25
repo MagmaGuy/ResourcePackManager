@@ -2,6 +2,7 @@ package com.magmaguy.resourcepackmanager.bungee;
 
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.proxy.GeyserBinder;
+import com.magmaguy.resourcepackmanager.proxy.GeyserBridgeExtensionInstaller;
 import com.magmaguy.resourcepackmanager.proxy.GeyserMappingsDeployer;
 import com.magmaguy.resourcepackmanager.proxy.MergedPack;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
@@ -75,6 +76,7 @@ public final class RspmBungeePlugin extends Plugin {
         // each merge; we also pre-deploy the previous run's mappings below.
         File proxyPluginsDir = getDataFolder().getParentFile();
         File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(proxyPluginsDir);
+        GeyserBridgeExtensionInstaller.install(geyserPluginDir, logger);
 
         // Boot-time pre-deploy of the previous run's Geyser mappings — Geyser's
         // custom-item registry is boot-frozen, so anything we generate AFTER its

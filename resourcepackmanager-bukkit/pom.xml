@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.magmaguy</groupId>
         <artifactId>ResourcePackManager-parent</artifactId>
-        <version>2.1.0</version>
+        <version>2.2.1</version>
     </parent>
 
     <artifactId>ResourcePackManager</artifactId>
@@ -70,13 +70,11 @@
             <groupId>com.magmaguy</groupId>
             <artifactId>resourcepackmanager-velocity</artifactId>
             <version>${project.version}</version>
-            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>com.magmaguy</groupId>
             <artifactId>resourcepackmanager-bungee</artifactId>
             <version>${project.version}</version>
-            <scope>provided</scope>
         </dependency>
     </dependencies>
 
@@ -93,30 +91,6 @@
                 <artifactId>maven-dependency-plugin</artifactId>
                 <version>3.6.0</version>
                 <executions>
-                    <execution>
-                        <id>copy-proxy-jars</id>
-                        <phase>prepare-package</phase>
-                        <goals>
-                            <goal>copy</goal>
-                        </goals>
-                        <configuration>
-                            <artifactItems>
-                                <artifactItem>
-                                    <groupId>com.magmaguy</groupId>
-                                    <artifactId>resourcepackmanager-velocity</artifactId>
-                                    <version>${project.version}</version>
-                                    <destFileName>ResourcePackManager-Velocity.jar</destFileName>
-                                </artifactItem>
-                                <artifactItem>
-                                    <groupId>com.magmaguy</groupId>
-                                    <artifactId>resourcepackmanager-bungee</artifactId>
-                                    <version>${project.version}</version>
-                                    <destFileName>ResourcePackManager-BungeeCord.jar</destFileName>
-                                </artifactItem>
-                            </artifactItems>
-                            <outputDirectory>${project.build.outputDirectory}/proxy-extension</outputDirectory>
-                        </configuration>
-                    </execution>
                     <execution>
                         <id>copy-geyser-bridge-jar</id>
                         <phase>prepare-package</phase>

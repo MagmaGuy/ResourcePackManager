@@ -1,6 +1,6 @@
 name: ResourcePackManager
 main: com.magmaguy.resourcepackmanager.ResourcePackManager
-version: 2.1.0
+version: 2.2.1
 api-version: '1.21.4'
 author: MagmaGuy
 softdepend:
@@ -20,6 +20,7 @@ softdepend:
   - vane-core
   - RealisticSurvival
   - Geyser-Spigot
+  - floodgate
 
 commands:
   resourcepackmanager:

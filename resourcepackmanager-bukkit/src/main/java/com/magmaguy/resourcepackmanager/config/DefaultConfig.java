@@ -132,7 +132,7 @@ public class DefaultConfig extends ConfigurationFile {
         selfHostPort = ConfigurationEngine.setInt(
                 List.of(
                         "Port for the self-host HTTP server.",
-                        "-1 (default) = auto-derive: HTTP port = Minecraft server port + networkHttpOffset.",
+                        "-1 (default) = auto-derive: HTTP port = Minecraft server port + networkHttpOffset-v2.",
                         "  This makes single-host networks (multiple backends on localhost) auto-stagger:",
                         "  each backend already has a unique MC port, so each gets a unique HTTP port,",
                         "  with zero admin configuration.",
@@ -155,14 +155,14 @@ public class DefaultConfig extends ConfigurationFile {
         // to clean it up.
         networkHttpOffset = ConfigurationEngine.setInt(
                 List.of(
-                        "Offset added to the Minecraft server port to derive the HTTP port when selfHostPort = -1.",
+                        "Fallback offset added to the Minecraft server port to derive the HTTP port when selfHostPort = -1.",
                         "Default 1 => MC 25565 -> HTTP 25566, MC 25584 -> HTTP 25585, etc.",
                         "Why 1: most shared / managed Minecraft hosting (Pterodactyl-based panels, etc.)",
                         "  allocates a narrow port range per container (often only 4–10 ports). Larger",
                         "  offsets land outside the range and the host firewall silently blocks the HTTP",
                         "  port. Offset 1 fits even tight allocations. Self-hosted admins with full port",
-                        "  control can bump this to any value, but they MUST also bump the proxy's",
-                        "  network-http-offset-v2 to match.",
+                        "  control can bump this to any value; proxies receive the exact bound HTTP port",
+                        "  through RSPM's automatic backend endpoint announcement.",
                         "Note: if your host enables rcon by default on MC port + 1, choose 2 or 3 instead",
                         "  to avoid a collision. Check server.properties `rcon.port=`."),
                 fileConfiguration, "networkHttpOffset-v2", 1);

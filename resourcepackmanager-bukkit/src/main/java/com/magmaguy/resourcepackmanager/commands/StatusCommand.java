@@ -151,8 +151,8 @@ public class StatusCommand extends AdvancedCommand {
         if (NetworkMode.isActive() && bedrockReady) {
             Logger.sendMessage(sender, "&7  &oNetwork mode: pack is fetched by the proxy. If Bedrock");
             Logger.sendMessage(sender, "&7  &oclients still see vanilla items, verify the proxy has");
-            Logger.sendMessage(sender, "&7  &oResourcePackManager-Velocity.jar (or -BungeeCord.jar)");
-            Logger.sendMessage(sender, "&7  &oloaded — check the proxy log for 'ResourcePackManager' lines.");
+            Logger.sendMessage(sender, "&7  &oResourcePackManager.jar loaded");
+            Logger.sendMessage(sender, "&7  &oand check the proxy log for 'ResourcePackManager' lines.");
         }
         Logger.sendMessage(sender, "");
 
@@ -217,18 +217,11 @@ public class StatusCommand extends AdvancedCommand {
                 + (selfPort < 0 ? "auto (MC port + " + DefaultConfig.getNetworkHttpOffset() + ")" : String.valueOf(selfPort)));
         Logger.sendMessage(sender, "");
 
-        // ---------- Proxy extension jars ----------
-        // Always shown — they're always extracted now (regardless of detected mode),
-        // and operators frequently want to know "where do I grab those jars?" without
-        // scrolling the boot log to find the path.
-        File proxyExtDir = new File(ResourcePackManager.plugin.getDataFolder(), "proxy-extension");
-        File velocityJar = new File(proxyExtDir, "ResourcePackManager-Velocity.jar");
-        File bungeeJar = new File(proxyExtDir, "ResourcePackManager-BungeeCord.jar");
-        Logger.sendMessage(sender, "&8&m----- &6Proxy extension jars &8&m-----");
-        Logger.sendMessage(sender, "&7Directory: &f" + proxyExtDir.getAbsolutePath());
-        Logger.sendMessage(sender, "&7  Velocity jar: " + bool(velocityJar.isFile()));
-        Logger.sendMessage(sender, "&7  Bungee jar:   " + bool(bungeeJar.isFile()));
-        Logger.sendMessage(sender, "&7Copy one to your proxy's plugins/ folder if running a network.");
+        // ---------- Proxy deployment ----------
+        Logger.sendMessage(sender, "&8&m----- &6Proxy deployment &8&m-----");
+        Logger.sendMessage(sender, "&7Network proxy jar: &fResourcePackManager.jar");
+        Logger.sendMessage(sender, "&7Use the same jar on Bukkit/Paper, Velocity, and BungeeCord/Waterfall.");
+        Logger.sendMessage(sender, "&7If running a network, copy ResourcePackManager.jar to the proxy's plugins/ folder.");
         Logger.sendMessage(sender, "");
 
         // ---------- Integrations ----------

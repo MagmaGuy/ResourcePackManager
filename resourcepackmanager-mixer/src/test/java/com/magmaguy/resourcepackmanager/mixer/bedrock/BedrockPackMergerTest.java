@@ -14,6 +14,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -24,6 +25,7 @@ import java.util.zip.ZipOutputStream;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BedrockPackMergerTest {
 
@@ -58,6 +60,31 @@ class BedrockPackMergerTest {
         assertNotNull(merger.merge(List.of(secondInput), second, NETWORK_UUID));
 
         assertFalse(Arrays.equals(readManifestVersion(first), readManifestVersion(second)));
+    }
+
+    @Test
+    void mergeCompactsLongBackendPathsAndRewritesJsonReferences(@TempDir Path tempDir) throws Exception {
+        String longStem = "fmm_craftenmine_basic_item_pack_velocity_enhancer_mk2_crossbow_draw_start";
+        File input = createBedrockPackWithLongPaths(tempDir.resolve("input.zip"), longStem);
+        File merged = tempDir.resolve("merged.zip").toFile();
+
+        BedrockPackMerger merger = new BedrockPackMerger(noopLogger());
+
+        assertNotNull(merger.merge(List.of(input), merged, NETWORK_UUID));
+
+        List<String> entries = zipEntries(merged);
+        assertTrue(entries.stream().noneMatch(entry -> entry.length() >= 80), entries.toString());
+        assertTrue(entries.stream().noneMatch(entry -> entry.contains(longStem)), entries.toString());
+
+        try (ZipFile zipFile = new ZipFile(merged)) {
+            ZipEntry itemTexture = zipFile.getEntry("textures/item_texture.json");
+            assertNotNull(itemTexture);
+            try (var stream = zipFile.getInputStream(itemTexture)) {
+                String json = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+                assertFalse(json.contains(longStem));
+                assertTrue(json.contains("textures/items/"));
+            }
+        }
     }
 
     private static File createBedrockPack(Path zipPath, String textureContent) throws IOException {
@@ -97,6 +124,47 @@ class BedrockPackMergerTest {
         return zipPath.toFile();
     }
 
+    private static File createBedrockPackWithLongPaths(Path zipPath, String longStem) throws IOException {
+        String longTexture = "textures/items/" + longStem + ".png";
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipPath.toFile()))) {
+            writeEntry(zos, "manifest.json", """
+                    {
+                      "format_version": 2,
+                      "header": {
+                        "name": "Backend Pack",
+                        "description": "test",
+                        "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                        "version": [1, 0, 0],
+                        "min_engine_version": [1, 21, 0]
+                      },
+                      "modules": [
+                        {
+                          "type": "resources",
+                          "uuid": "ffffffff-1111-2222-3333-444444444444",
+                          "version": [1, 0, 0]
+                        }
+                      ]
+                    }
+                    """);
+            writeEntry(zos, "textures/item_texture.json", """
+                    {
+                      "resource_pack_name": "Backend Pack",
+                      "texture_name": "atlas.items",
+                      "texture_data": {
+                        "test_item": {
+                          "textures": "%s"
+                        }
+                      }
+                    }
+                    """.formatted(longTexture.substring(0, longTexture.length() - ".png".length())));
+            writeEntry(zos, longTexture, "png");
+            writeEntry(zos, "models/entity/freeminecraftmodels/" + longStem + ".geo.json", "{}");
+            writeEntry(zos, "render_controllers/" + longStem + ".render_controllers.json", "{}");
+            writeEntry(zos, "animation_controllers/" + longStem + ".animation_controllers.json", "{}");
+        }
+        return zipPath.toFile();
+    }
+
     private static void writeEntry(ZipOutputStream zos, String name, String content) throws IOException {
         ZipEntry entry = new ZipEntry(name);
         entry.setTime(0L);
@@ -120,6 +188,16 @@ class BedrockPackMergerTest {
                 };
             }
         }
+    }
+
+    private static List<String> zipEntries(File zip) throws IOException {
+        List<String> entries = new ArrayList<>();
+        try (ZipFile zipFile = new ZipFile(zip)) {
+            zipFile.stream()
+                    .filter(entry -> !entry.isDirectory())
+                    .forEach(entry -> entries.add(entry.getName()));
+        }
+        return entries;
     }
 
     private static MixerLogger noopLogger() {

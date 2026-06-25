@@ -14,8 +14,7 @@ final class RspmBungeeConfig {
     private final boolean forceResourcePack;
     private final int networkHttpOffset;
 
-    private RspmBungeeConfig(boolean forceResourcePack,
-                             int networkHttpOffset) {
+    private RspmBungeeConfig(boolean forceResourcePack, int networkHttpOffset) {
         this.forceResourcePack = forceResourcePack;
         this.networkHttpOffset = networkHttpOffset;
     }
@@ -67,11 +66,9 @@ final class RspmBungeeConfig {
         // Bedrock players to connect), so the resulting network-key matches
         // every backend's automatically. Operators who set a `network-key:` line
         // manually in this YAML were a common source of misconfiguration —
-        // typos in the pasted key silently broke the link between proxy and
-        // backend. The resolution code still honors the key if present
-        // (advanced override), but the default config no longer suggests it.
+        // typos in the pasted key silently broke the link between proxy and backend.
         String yaml = """
-                # ResourcePackManager-BungeeCord config.
+                # ResourcePackManager proxy config.
                 # The network-key is auto-derived from plugins/floodgate/key.pem on this
                 # proxy — make sure Floodgate is installed (it must be, for Bedrock
                 # players to reach the proxy) and that the same key.pem is shared with
@@ -80,14 +77,16 @@ final class RspmBungeeConfig {
                 # Force clients to accept the pack (kick on decline). Default: false.
                 force-resource-pack: false
 
-                # Offset added to each backend's Minecraft port to derive the HTTP port
-                # this proxy will hit for /bedrock.zip and /mappings.json. Default 1.
+                # Fallback offset added to each backend's Minecraft port to derive the
+                # HTTP port this proxy will hit for /bedrock.zip and /mappings.json
+                # before that backend has announced its exact ResourcePackManager HTTP
+                # port. Default 1.
                 # Why so small: shared / managed Minecraft hosting (Pterodactyl panels,
                 # etc.) allocates a narrow port range per container — offset 100 lands
                 # outside the range and the host firewall silently drops the request.
-                # Offset 1 fits even tight allocations. Must match each backend's
-                # `networkHttpOffset-v2`. Bump this only if you fully control the host's
-                # firewall AND want a larger gap between MC port and HTTP port.
+                # Offset 1 fits even tight allocations. In normal operation the backend
+                # announces the port it actually bound, so this is only a startup/failure
+                # fallback.
                 #
                 # Note: if a backend has rcon enabled on MC port + 1, choose 2 or 3 to
                 # avoid a port collision.
