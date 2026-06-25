@@ -3,6 +3,7 @@ package com.magmaguy.resourcepackmanager.velocity;
 import com.google.inject.Inject;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.proxy.GeyserBinder;
+import com.magmaguy.resourcepackmanager.proxy.GeyserBridgeExtensionInstaller;
 import com.magmaguy.resourcepackmanager.proxy.GeyserMappingsDeployer;
 import com.magmaguy.resourcepackmanager.proxy.MergedPack;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
@@ -25,7 +26,7 @@ import java.nio.file.Path;
 @Plugin(
         id = "resourcepackmanager",
         name = "ResourcePackManager",
-        version = "2.0.2",
+        version = "2.1.0",
         description = "Network-side companion to ResourcePackManager. Delivers the merged pack to Bedrock clients via Geyser on this proxy.",
         authors = {"MagmaGuy"},
         dependencies = {
@@ -104,6 +105,7 @@ public final class RspmVelocityPlugin {
         // merge; we also pre-deploy the previous run's mappings below.
         File proxyPluginsDir = dataDir.getParent().toFile();
         File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(proxyPluginsDir);
+        GeyserBridgeExtensionInstaller.install(geyserPluginDir, logger);
 
         // Boot-time pre-deploy of previous run's Geyser mappings. Geyser's custom-item
         // registry is boot-frozen; if we wait until after the first merge it's already

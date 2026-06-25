@@ -19,6 +19,7 @@ import org.geysermc.geyser.api.event.lifecycle.GeyserPostInitializeEvent;
 import org.geysermc.geyser.api.extension.Extension;
 import org.geysermc.geyser.api.util.Identifier;
 import org.geysermc.geyser.entity.EntityDefinition;
+import org.geysermc.geyser.entity.spawn.EntitySpawnContext;
 import org.geysermc.geyser.entity.properties.GeyserEntityProperties;
 import org.geysermc.geyser.entity.properties.type.BooleanProperty;
 import org.geysermc.geyser.entity.properties.type.FloatProperty;
@@ -64,7 +65,10 @@ public class RspmGeyserBridgeExtension implements Extension {
 
     private static final String REGISTER_CHANNEL = "minecraft:register";
     private static final String CUSTOM_ENTITY_CHANNEL = BridgeChannels.CUSTOM_ENTITY;
-    private static final Path BEDROCK_PACK_PATH = Path.of("plugins", "ResourcePackManager", "output", "ResourcePackManager_Bedrock.zip");
+    private static final List<Path> BEDROCK_PACK_PATHS = List.of(
+            Path.of("plugins", "ResourcePackManager", "work", "merged", "Bedrock.zip"),
+            Path.of("plugins", "ResourcePackManager", "output", "ResourcePackManager_Bedrock.zip")
+    );
     private static final Pattern BEDROCK_QUERY_PROPERTY =
             Pattern.compile("query\\.property\\(['\\\"]([^'\\\"]+)['\\\"]\\)");
     private static final ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(2);
@@ -81,6 +85,7 @@ public class RspmGeyserBridgeExtension implements Extension {
     private static volatile boolean warnedRuntimePropertyUpdateFailure;
     private static volatile String preloadedPackSignature;
     private static volatile boolean propertyDefinitionEventActive;
+    private static volatile boolean loggedLateEntityReplacement;
 
     public RspmGeyserBridgeExtension() {
         instance = this;
@@ -155,13 +160,13 @@ public class RspmGeyserBridgeExtension implements Extension {
     }
 
     private int preloadDefinitionsFromBedrockPack() {
-        Path packPath = Path.of(System.getProperty("user.dir")).resolve(BEDROCK_PACK_PATH);
+        Path packPath = findBedrockPackPath();
+        if (packPath == null) {
+            return 0;
+        }
         try {
-            if (!Files.isRegularFile(packPath)) {
-                return 0;
-            }
-
-            String signature = Files.size(packPath) + ":" + Files.getLastModifiedTime(packPath).toMillis();
+            String signature = packPath.toAbsolutePath() + ":" + Files.size(packPath)
+                    + ":" + Files.getLastModifiedTime(packPath).toMillis();
             if (signature.equals(preloadedPackSignature)) {
                 return DEFINITIONS.size();
             }
@@ -207,6 +212,17 @@ public class RspmGeyserBridgeExtension implements Extension {
             }
             return 0;
         }
+    }
+
+    private Path findBedrockPackPath() {
+        Path root = Path.of(System.getProperty("user.dir"));
+        for (Path relativePath : BEDROCK_PACK_PATHS) {
+            Path candidate = root.resolve(relativePath);
+            if (Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private List<BridgePropertyDefinition> readPropertyDefinitions(ZipFile zipFile, ZipEntry entityEntry) throws Exception {
@@ -423,8 +439,57 @@ public class RspmGeyserBridgeExtension implements Extension {
             return;
         }
 
-        registerEntityToGeyser(DEFINITIONS.get(identifier), false);
+        EntityDefinition<?> customDefinition = registerEntityToGeyser(DEFINITIONS.get(identifier), false);
         CUSTOM_ENTITIES.computeIfAbsent(session, ignored -> new ConcurrentHashMap<>()).put(entityId, identifier);
+        replaceAlreadySpawnedEntity(session, entityId, identifier, customDefinition);
+    }
+
+    private void replaceAlreadySpawnedEntity(GeyserSession session, int entityId, String identifier,
+                                             EntityDefinition<?> customDefinition) {
+        if (customDefinition == null) {
+            return;
+        }
+
+        Entity existing = session.getEntityCache().getEntityByJavaId(entityId);
+        if (existing == null || !existing.isValid()) {
+            return;
+        }
+        EntityDefinition<?> existingDefinition = existing.getDefinition();
+        if (existingDefinition != null && identifier.equals(existingDefinition.identifier())) {
+            return;
+        }
+
+        Entity replacement = createEntity(customDefinition, new EntitySpawnContext(
+                session,
+                customDefinition,
+                existing.getEntityId(),
+                existing.uuid(),
+                existing.getPosition(),
+                existing.getMotion(),
+                existing.getYaw(),
+                existing.getPitch(),
+                existing.getHeadYaw(),
+                null));
+        replacement.setPosition(existing.getPosition());
+        replacement.setMotion(existing.getMotion());
+        replacement.setYaw(existing.getYaw());
+        replacement.setPitch(existing.getPitch());
+        replacement.setHeadYaw(existing.getHeadYaw());
+        replacement.setOnGround(existing.isOnGround());
+
+        session.getEntityCache().removeEntity(existing);
+        session.getEntityCache().spawnEntity(replacement);
+
+        if (!loggedLateEntityReplacement) {
+            loggedLateEntityReplacement = true;
+            logger().info("RSPM custom Bedrock entity bridge replaced an already-spawned carrier entity "
+                    + entityId + " with " + identifier + ".");
+        }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private Entity createEntity(EntityDefinition<?> definition, EntitySpawnContext context) {
+        return ((EntityDefinition) definition).factory().create(context);
     }
 
     private void applyEntityData(GeyserSession session, BridgeMessage message) {

@@ -4,7 +4,6 @@ import com.magmaguy.resourcepackmanager.http.PackHttpServer;
 
 import java.io.File;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -70,9 +69,11 @@ public final class ProxyStatusRenderer {
             line.accept("&7Count: &f" + backends.size());
             for (BackendListProvider.Backend b : backends) {
                 String key = sanitizeBackendName(b.name());
-                int httpPort = b.mcPort() + snapshot.networkHttpOffset();
+                NetworkSync.ResolvedBackendEndpoint endpoint = NetworkSync.resolveBackendHttpEndpoint(
+                        b, snapshot.networkHttpOffset(), snapshot.announcedEndpoints());
                 line.accept("&7  • &f" + b.name() + " &8(MC " + b.host() + ":" + b.mcPort()
-                        + " → HTTP " + b.host() + ":" + httpPort + ")");
+                        + " → HTTP " + endpoint.host() + ":" + endpoint.port()
+                        + ", " + endpoint.source() + ")");
                 NetworkSync.FetchOutcome zipOutcome = snapshot.fetchOutcomes()
                         .get(key + ":" + PackHttpServer.BEDROCK_PACK_PATH);
                 NetworkSync.FetchOutcome mapOutcome = snapshot.fetchOutcomes()
@@ -120,8 +121,16 @@ public final class ProxyStatusRenderer {
 
         // ---------- NetworkSync runtime state ----------
         line.accept("&8&m----- &dNetworkSync &8&m-----");
-        line.accept("&7HTTP port offset: &f" + snapshot.networkHttpOffset()
-                + " &8(applied as: HTTP port = backend MC port + offset)");
+        line.accept("&7Endpoint announcements: &f" + snapshot.announcedEndpoints().size()
+                + " &8(preferred source for backend HTTP ports)");
+        for (com.magmaguy.resourcepackmanager.http.MagmaguyRspClient.BedrockEndpoint endpoint
+                : snapshot.announcedEndpoints()) {
+            line.accept("&7  • &f" + endpoint.backendId()
+                    + " &8(MC " + endpoint.mcPort()
+                    + " → HTTP " + endpoint.httpPort() + ")");
+        }
+        line.accept("&7HTTP port offset fallback: &f" + snapshot.networkHttpOffset()
+                + " &8(used only before a backend announcement is available)");
         if (snapshot.consecutiveEmptyPolls() > 0) {
             line.accept("&7Consecutive empty polls: &c" + snapshot.consecutiveEmptyPolls()
                     + (snapshot.unreachableWarningFired()
@@ -188,6 +197,7 @@ public final class ProxyStatusRenderer {
                 line.accept("&c• Proxy has backends but no merged pack. Check fetch outcomes above");
                 line.accept("&c  — most likely the backend HTTP port is unreachable from this proxy.");
                 line.accept("&c  • CONNECT_FAILED → check velocity.toml addresses + firewall.");
+                line.accept("&c    Backend HTTP ports are announced automatically; the offset is fallback.");
                 line.accept("&c  • NOT_FOUND_404  → run `/rspm status` on the backend; its Bedrock");
                 line.accept("&c    diagnostic block will tell you why it's not producing a pack.");
             }

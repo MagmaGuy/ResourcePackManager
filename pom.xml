@@ -5,7 +5,7 @@
 
     <groupId>com.magmaguy</groupId>
     <artifactId>ResourcePackManager-parent</artifactId>
-    <version>2.1.0</version>
+    <version>2.2.1</version>
     <packaging>pom</packaging>
 
     <modules>
@@ -25,7 +25,7 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <lombok.version>1.18.42</lombok.version>
-        <spigot.version>1.20.6-R0.1-SNAPSHOT</spigot.version>
+        <spigot.version>26.2-R0.1-SNAPSHOT</spigot.version>
         <magmacore.version>2.2.0-SNAPSHOT</magmacore.version>
         <gson.version>2.11.0</gson.version>
         <httpclient5.version>5.3.1</httpclient5.version>

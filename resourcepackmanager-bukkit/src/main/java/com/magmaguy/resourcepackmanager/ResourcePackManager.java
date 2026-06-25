@@ -23,7 +23,6 @@ import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderCommand;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderDismissedConfig;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderWarningListener;
-import com.magmaguy.resourcepackmanager.network.ProxyExtensionExtractor;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfig;
@@ -160,9 +159,6 @@ public class ResourcePackManager extends JavaPlugin {
 
         initializationContext.step("Geyser Pack Provider");
         GeyserPackProvider.register();
-
-        initializationContext.step("Proxy Extension Extractor");
-        ProxyExtensionExtractor.extractIfNetworkMode(this);
 
         initializationContext.step("Commands");
         CommandManager commandManager = new CommandManager(this, "resourcepackmanager");

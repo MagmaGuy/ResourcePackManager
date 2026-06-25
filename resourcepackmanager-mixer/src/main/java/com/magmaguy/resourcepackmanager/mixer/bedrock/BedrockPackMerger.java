@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.mixer.engine.internal.ZipUtil;
 
@@ -32,6 +33,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -63,6 +65,10 @@ public final class BedrockPackMerger {
     private static final String MANIFEST_NAME = "manifest.json";
     private static final String ITEM_TEXTURE_REL = "textures/item_texture.json";
     private static final String BEDROCK_PACK_NAME = "ResourcePackManager_Bedrock";
+    private static final int GEYSER_PATH_WARNING_LENGTH = 80;
+    private static final String ENTITY_TEXTURE_PREFIX = "textures/entity/";
+    private static final String ITEM_TEXTURE_PREFIX = "textures/items/";
+    private static final String ENTITY_MODEL_PREFIX = "models/entity/";
 
     /**
      * Top-level directories in a Bedrock pack that carry actual convertible content.
@@ -231,14 +237,17 @@ public final class BedrockPackMerger {
             // 4. JSON-merge every textures/item_texture.json: union the texture_data map.
             mergeItemTextures(unzippedDirs, stagingDir);
 
-            // 5. Generate a fresh manifest.json pinned to stableMergedPackUuid.
+            // 5. Compact any long backend-supplied paths before the manifest digest.
+            compactLongPackPaths(stagingDir);
+
+            // 6. Generate a fresh manifest.json pinned to stableMergedPackUuid.
             // Version is derived from staged content so no-op proxy remixes keep
             // Bedrock's (uuid, version) cache key stable across restarts.
             int[] mev = minEngineVersion != null ? minEngineVersion : new int[]{1, 21, 0};
             String cacheBustToken = contentDigest(stagingDir, mev);
             writeMergedManifest(stagingDir, stableMergedPackUuid, mev, cacheBustToken);
 
-            // 6. Zip staging dir into outputZip.
+            // 7. Zip staging dir into outputZip.
             return zipStagingDir(stagingDir, outputZip);
         } catch (Exception e) {
             logger.warn("[BedrockPackMerger] Merge failed: " + e.getMessage());
@@ -249,6 +258,258 @@ public final class BedrockPackMerger {
                 recursivelyDelete(scratchRoot);
             } catch (Exception ignored) {
             }
+        }
+    }
+
+    private void compactLongPackPaths(File stagingDir) {
+        Path root = stagingDir.toPath();
+        List<Path> files;
+        try (Stream<Path> stream = Files.walk(root)) {
+            files = stream
+                    .filter(Files::isRegularFile)
+                    .sorted(Comparator.comparing(path -> root.relativize(path).toString().replace('\\', '/')))
+                    .toList();
+        } catch (IOException e) {
+            logger.warn("[BedrockPackMerger] Failed to scan merged pack for long paths: " + e.getMessage());
+            return;
+        }
+
+        Map<String, String> pathRewrites = buildLongPathRewrites(root, files);
+        if (pathRewrites.isEmpty()) {
+            return;
+        }
+
+        for (Map.Entry<String, String> rewrite : pathRewrites.entrySet()) {
+            Path source = root.resolve(rewrite.getKey()).normalize();
+            Path destination = root.resolve(rewrite.getValue()).normalize();
+            if (!source.startsWith(root) || !destination.startsWith(root)) {
+                logger.warn("[BedrockPackMerger] Skipping unsafe path compaction rewrite: "
+                        + rewrite.getKey() + " -> " + rewrite.getValue());
+                continue;
+            }
+            try {
+                Files.createDirectories(destination.getParent());
+                Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                logger.warn("[BedrockPackMerger] Failed to compact Bedrock path '"
+                        + rewrite.getKey() + "' -> '" + rewrite.getValue() + "': " + e.getMessage());
+            }
+        }
+
+        Map<String, String> referenceRewrites = buildReferenceRewrites(pathRewrites);
+        rewriteJsonReferences(stagingDir, referenceRewrites);
+        logger.info("[BedrockPackMerger] Shortened " + pathRewrites.size()
+                + " merged Bedrock pack path(s) to avoid Geyser's "
+                + GEYSER_PATH_WARNING_LENGTH + "-character pack path warning.");
+    }
+
+    private Map<String, String> buildLongPathRewrites(Path root, List<Path> files) {
+        Map<String, String> rewrites = new LinkedHashMap<>();
+        Set<String> usedOutputPaths = new java.util.HashSet<>();
+        for (Path file : files) {
+            usedOutputPaths.add(root.relativize(file).toString().replace('\\', '/'));
+        }
+
+        for (Path file : files) {
+            String relative = root.relativize(file).toString().replace('\\', '/');
+            if (relative.length() < GEYSER_PATH_WARNING_LENGTH) {
+                continue;
+            }
+            String destinationPrefix = compactDestinationPrefix(relative);
+            if (destinationPrefix == null) {
+                continue;
+            }
+
+            String suffix = compactFileSuffix(relative);
+            String destination;
+            int attempt = 0;
+            do {
+                String hashInput = attempt == 0 ? relative : relative + "|" + attempt;
+                destination = destinationPrefix + shortHash(hashInput) + suffix;
+                attempt++;
+            } while (usedOutputPaths.contains(destination));
+
+            rewrites.put(relative, destination);
+            usedOutputPaths.add(destination);
+        }
+        return rewrites;
+    }
+
+    private Map<String, String> buildReferenceRewrites(Map<String, String> pathRewrites) {
+        Map<String, String> rewrites = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : pathRewrites.entrySet()) {
+            rewrites.put(entry.getKey(), entry.getValue());
+            rewrites.put(stripExtension(entry.getKey()), stripExtension(entry.getValue()));
+            rewrites.put(stripCompactSuffix(entry.getKey()), stripCompactSuffix(entry.getValue()));
+        }
+        return rewrites;
+    }
+
+    private void rewriteJsonReferences(File stagingDir, Map<String, String> referenceRewrites) {
+        if (referenceRewrites.isEmpty()) {
+            return;
+        }
+        Path root = stagingDir.toPath();
+        List<Path> jsonFiles;
+        try (Stream<Path> stream = Files.walk(root)) {
+            jsonFiles = stream
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".json"))
+                    .sorted(Comparator.comparing(path -> root.relativize(path).toString().replace('\\', '/')))
+                    .toList();
+        } catch (IOException e) {
+            logger.warn("[BedrockPackMerger] Failed to scan JSON files for long-path rewrites: " + e.getMessage());
+            return;
+        }
+
+        for (Path jsonFile : jsonFiles) {
+            try {
+                JsonElement rootElement;
+                try (FileReader reader = new FileReader(jsonFile.toFile(), StandardCharsets.UTF_8)) {
+                    rootElement = JsonParser.parseReader(reader);
+                }
+                try (FileWriter writer = new FileWriter(jsonFile.toFile(), StandardCharsets.UTF_8)) {
+                    GSON.toJson(rewriteJsonStrings(rootElement, referenceRewrites), writer);
+                }
+            } catch (Exception parseException) {
+                try {
+                    String rewritten = rewriteText(Files.readString(jsonFile, StandardCharsets.UTF_8), referenceRewrites);
+                    Files.writeString(jsonFile, rewritten, StandardCharsets.UTF_8);
+                    logger.warn("[BedrockPackMerger] Rewrote JSON references with text fallback for "
+                            + root.relativize(jsonFile).toString().replace('\\', '/') + ": "
+                            + parseException.getMessage());
+                } catch (IOException ioException) {
+                    logger.warn("[BedrockPackMerger] Failed to rewrite JSON references in "
+                            + jsonFile + ": " + ioException.getMessage());
+                }
+            }
+        }
+    }
+
+    private JsonElement rewriteJsonStrings(JsonElement element, Map<String, String> referenceRewrites) {
+        if (element == null || element.isJsonNull()) {
+            return element;
+        }
+        if (element.isJsonPrimitive()) {
+            JsonPrimitive primitive = element.getAsJsonPrimitive();
+            if (!primitive.isString()) {
+                return element;
+            }
+            String replacement = referenceRewrites.get(primitive.getAsString());
+            return replacement == null ? element : new JsonPrimitive(replacement);
+        }
+        if (element.isJsonArray()) {
+            JsonArray rewritten = new JsonArray();
+            for (JsonElement child : element.getAsJsonArray()) {
+                rewritten.add(rewriteJsonStrings(child, referenceRewrites));
+            }
+            return rewritten;
+        }
+        if (element.isJsonObject()) {
+            JsonObject rewritten = new JsonObject();
+            for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
+                String key = referenceRewrites.getOrDefault(entry.getKey(), entry.getKey());
+                rewritten.add(key, rewriteJsonStrings(entry.getValue(), referenceRewrites));
+            }
+            return rewritten;
+        }
+        return element;
+    }
+
+    private String rewriteText(String text, Map<String, String> referenceRewrites) {
+        String rewritten = text;
+        for (Map.Entry<String, String> entry : referenceRewrites.entrySet()) {
+            rewritten = rewritten.replace(entry.getKey(), entry.getValue());
+        }
+        return rewritten;
+    }
+
+    private static String compactDestinationPrefix(String relative) {
+        String lower = relative.toLowerCase(java.util.Locale.ROOT);
+        if (lower.startsWith(ENTITY_TEXTURE_PREFIX)) {
+            return ENTITY_TEXTURE_PREFIX;
+        }
+        if (lower.startsWith(ITEM_TEXTURE_PREFIX)) {
+            return ITEM_TEXTURE_PREFIX;
+        }
+        if (lower.startsWith(ENTITY_MODEL_PREFIX)) {
+            return ENTITY_MODEL_PREFIX;
+        }
+        int slash = lower.indexOf('/');
+        String top = slash >= 0 ? lower.substring(0, slash) : lower;
+        return switch (top) {
+            case "attachables" -> "attachables/";
+            case "entity" -> "entity/";
+            case "animations" -> "animations/";
+            case "animation_controllers" -> "animation_controllers/";
+            case "render_controllers" -> "render_controllers/";
+            case "materials" -> "materials/";
+            case "particles" -> "particles/";
+            case "sounds" -> "sounds/";
+            case "ui" -> "ui/";
+            default -> null;
+        };
+    }
+
+    private static String compactFileSuffix(String relative) {
+        String lower = relative.toLowerCase(java.util.Locale.ROOT);
+        for (String suffix : List.of(
+                ".animation_controllers.json",
+                ".render_controllers.json",
+                ".animation.json",
+                ".entity.json",
+                ".particle.json",
+                ".geo.json")) {
+            if (lower.endsWith(suffix)) {
+                return suffix;
+            }
+        }
+        return extensionOf(relative);
+    }
+
+    private static String extensionOf(String path) {
+        int slash = path.lastIndexOf('/');
+        int dot = path.lastIndexOf('.');
+        return dot > slash ? path.substring(dot) : "";
+    }
+
+    private static String stripExtension(String path) {
+        int slash = path.lastIndexOf('/');
+        int dot = path.lastIndexOf('.');
+        return dot > slash ? path.substring(0, dot) : path;
+    }
+
+    private static String stripCompactSuffix(String path) {
+        String lower = path.toLowerCase(java.util.Locale.ROOT);
+        for (String suffix : List.of(
+                ".animation_controllers.json",
+                ".render_controllers.json",
+                ".animation.json",
+                ".entity.json",
+                ".particle.json",
+                ".geo.json")) {
+            if (lower.endsWith(suffix)) {
+                return path.substring(0, path.length() - suffix.length());
+            }
+        }
+        return stripExtension(path);
+    }
+
+    private static String shortHash(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(8);
+            int firstNibble = (digest[0] >> 4) & 0xf;
+            sb.append((char) ('a' + firstNibble));
+            int secondNibble = digest[0] & 0xf;
+            sb.append(Integer.toHexString(secondNibble));
+            for (int i = 1; i < 4; i++) {
+                sb.append(String.format("%02x", digest[i] & 0xff));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available; this should never happen on a standard JRE.", e);
         }
     }
 

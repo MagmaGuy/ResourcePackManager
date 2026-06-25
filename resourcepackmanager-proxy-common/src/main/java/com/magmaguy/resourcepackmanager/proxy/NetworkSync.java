@@ -85,6 +85,9 @@ public final class NetworkSync {
      */
     private static final Duration RELAY_LIST_FAILURE_BACKOFF = Duration.ofMinutes(2);
 
+    /** Lightweight endpoint-registry lookup backoff. Keeps hoster blips from stalling every poll. */
+    private static final Duration ENDPOINT_LIST_FAILURE_BACKOFF = Duration.ofSeconds(30);
+
     /** RFC 1123 / HTTP-date formatter for {@code If-Modified-Since}. */
     private static final DateTimeFormatter HTTP_DATE =
             DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss 'GMT'", Locale.ENGLISH)
@@ -115,6 +118,8 @@ public final class NetworkSync {
     /** Lazily constructed client for the relay-fallback path. Null until first use. */
     private volatile MagmaguyRspClient relayClient;
     private volatile Instant nextRelayListAttemptAt = Instant.EPOCH;
+    private volatile Instant nextEndpointListAttemptAt = Instant.EPOCH;
+    private volatile List<MagmaguyRspClient.BedrockEndpoint> announcedEndpoints = List.of();
 
     private final File inboxRoot;
     private final File mergedDir;
@@ -261,7 +266,7 @@ public final class NetworkSync {
     public void start(long initialDelayMillis, long intervalMillis) {
         if (pollTask != null) return;
         logger.info("NetworkSync starting (poll interval " + intervalMillis + " ms, network-http-offset "
-                + networkHttpOffset + " — per-backend HTTP port = mcPort + offset)");
+                + networkHttpOffset + " - endpoint announcements preferred, fallback HTTP port = mcPort + offset)");
         pollTask = scheduler.scheduleRepeating(this::pollOnce, initialDelayMillis, intervalMillis);
     }
 
@@ -319,10 +324,12 @@ public final class NetworkSync {
                 return;
             }
 
-            // Step 1: fetch per backend using the configured offset. If the offset
-            // doesn't work for some backends (typical of shared/managed hosting
-            // where the host doesn't expose adjacent ports), the unreachable-warning
-            // machinery will fire after a few empty cycles to surface the problem.
+            refreshAnnouncedEndpoints();
+
+            // Step 1: fetch per backend. Prefer the backend's own endpoint
+            // announcement (it knows the HTTP port it actually bound), then
+            // fall back to the legacy mcPort + offset guess. If the chosen port
+            // doesn't work, the unreachable-warning machinery surfaces the exact URL.
             // We deliberately do NOT crawl ports as a fallback — that's port-scan
             // behavior from the host's perspective and triggers anti-abuse heuristics.
             // The remote-relay path (via the magmaguy.com hoster) is the categorical
@@ -442,18 +449,21 @@ public final class NetworkSync {
                 String key = sanitizeBackendName(b.name());
                 FetchOutcome zipOutcome = lastFetchOutcomes.get(key + ":" + PackHttpServer.BEDROCK_PACK_PATH);
                 FetchOutcome mapOutcome = lastFetchOutcomes.get(key + ":" + PackHttpServer.GEYSER_MAPPINGS_PATH);
+                ResolvedBackendEndpoint endpoint = resolveBackendHttpEndpoint(
+                        b, networkHttpOffset, announcedEndpoints);
                 logger.warn("⚠   • " + b.name() + " @ " + b.host() + ":" + b.mcPort()
-                        + "  → HTTP @ " + b.host() + ":" + (b.mcPort() + networkHttpOffset));
+                        + "  → HTTP @ " + endpoint.host() + ":" + endpoint.port()
+                        + " (" + endpoint.source() + ")");
                 logger.warn("⚠       /bedrock.zip:   " + describe(zipOutcome));
                 logger.warn("⚠       /mappings.json: " + describe(mapOutcome));
             }
             logger.warn("⚠ Most common fixes:");
             logger.warn("⚠   • CONNECT_FAILED on every backend → the proxy cannot reach the");
-            logger.warn("⚠     HTTP port. Check that velocity.toml has the backend address");
-            logger.warn("⚠     the proxy can actually reach (not e.g. a Docker-internal name");
-            logger.warn("⚠     that doesn't resolve from the proxy's network), and that");
-            logger.warn("⚠     mcPort + " + networkHttpOffset + " (the network-http-offset) is");
-            logger.warn("⚠     open between this proxy and the backend host.");
+            logger.warn("⚠     announced/fallback HTTP port. Check that the proxy can reach");
+            logger.warn("⚠     the backend address from its own network namespace and that a");
+            logger.warn("⚠     firewall is not blocking the shown HTTP URL.");
+            logger.warn("⚠     Backends announce their exact RSPM HTTP port automatically;");
+            logger.warn("⚠     mcPort + " + networkHttpOffset + " is only the no-announcement fallback.");
             logger.warn("⚠   • NOT_FOUND_404 on every backend → backend(s) up but not producing");
             logger.warn("⚠     a Bedrock pack. Run `/rspm status` on each backend; the");
             logger.warn("⚠     'Bedrock Pack' diagnostic block will tell you why.");
@@ -491,7 +501,8 @@ public final class NetworkSync {
                 current,
                 mergedBedrockZip.isFile() ? mergedBedrockZip : null,
                 mergedMappings.isFile() ? mergedMappings : null,
-                networkHttpOffset);
+                networkHttpOffset,
+                List.copyOf(announcedEndpoints));
     }
 
     /**
@@ -507,7 +518,8 @@ public final class NetworkSync {
             MergedPack currentMergedPack,
             File mergedBedrockZip,
             File mergedMappings,
-            int networkHttpOffset) {}
+            int networkHttpOffset,
+            List<MagmaguyRspClient.BedrockEndpoint> announcedEndpoints) {}
 
     /**
      * Run the file-union merge across every backend's inbox and publish the result.
@@ -516,13 +528,15 @@ public final class NetworkSync {
     private void triggerMerge(List<BackendListProvider.Backend> backends) {
         List<File> zips = new ArrayList<>();
         List<File> mappings = new ArrayList<>();
+        Set<String> directZipHashes = new TreeSet<>();
+        Set<String> directMappingsHashes = new TreeSet<>();
         for (BackendListProvider.Backend b : backends) {
             String sanitized = sanitizeBackendName(b.name());
             File backendInbox = new File(inboxRoot, sanitized);
             File zip = new File(backendInbox, INBOX_BEDROCK_ZIP_NAME);
             File map = new File(backendInbox, INBOX_MAPPINGS_NAME);
-            if (zip.isFile()) zips.add(zip);
-            if (map.isFile()) mappings.add(map);
+            addDirectMergeInput(zip, zips, directZipHashes);
+            addDirectMergeInput(map, mappings, directMappingsHashes);
         }
         // Pull in anything fetched via the relay-fallback path. These live
         // under inbox/relay-<id>/ — sibling dirs to the velocity.toml-keyed
@@ -535,8 +549,8 @@ public final class NetworkSync {
             for (File rd : relayDirs) {
                 File zip = new File(rd, INBOX_BEDROCK_ZIP_NAME);
                 File map = new File(rd, INBOX_MAPPINGS_NAME);
-                if (zip.isFile()) zips.add(zip);
-                if (map.isFile()) mappings.add(map);
+                addRelayMergeInputIfDistinct(zip, zips, directZipHashes);
+                addRelayMergeInputIfDistinct(map, mappings, directMappingsHashes);
             }
         }
 
@@ -582,6 +596,28 @@ public final class NetworkSync {
                 + " (sha1=" + sha1Hex + ").");
     }
 
+    private static void addDirectMergeInput(File file, List<File> files, Set<String> hashes) {
+        if (file == null || !file.isFile()) {
+            return;
+        }
+        files.add(file);
+        String sha1 = sha1HexOfFile(file);
+        if (sha1 != null) {
+            hashes.add(sha1);
+        }
+    }
+
+    private static void addRelayMergeInputIfDistinct(File file, List<File> files, Set<String> directHashes) {
+        if (file == null || !file.isFile()) {
+            return;
+        }
+        String sha1 = sha1HexOfFile(file);
+        if (sha1 != null && directHashes.contains(sha1)) {
+            return;
+        }
+        files.add(file);
+    }
+
     // ------------------------------------------------------------------
     // Bedrock relay fallback
     // ------------------------------------------------------------------
@@ -591,6 +627,40 @@ public final class NetworkSync {
         return o.kind() == FetchOutcome.Kind.CONNECT_FAILED
                 || o.kind() == FetchOutcome.Kind.OTHER_ERROR
                 || o.kind() == FetchOutcome.Kind.UNEXPECTED_STATUS;
+    }
+
+    private void refreshAnnouncedEndpoints() {
+        if (networkKey == null || networkKey.isBlank()) return;
+        Instant now = Instant.now();
+        if (now.isBefore(nextEndpointListAttemptAt)) return;
+        try {
+            List<MagmaguyRspClient.BedrockEndpoint> endpoints =
+                    relayClient().listBedrockEndpoints(networkKey);
+            announcedEndpoints = List.copyOf(endpoints);
+            nextEndpointListAttemptAt = Instant.EPOCH;
+            lastFetchOutcomes.put("endpoint-registry:list",
+                    new FetchOutcome(FetchOutcome.Kind.OK_200, 200,
+                            "endpoint registry returned " + endpoints.size()
+                                    + " endpoint" + (endpoints.size() == 1 ? "" : "s"),
+                            now));
+        } catch (IOException e) {
+            nextEndpointListAttemptAt = now.plus(ENDPOINT_LIST_FAILURE_BACKOFF);
+            lastFetchOutcomes.put("endpoint-registry:list",
+                    new FetchOutcome(FetchOutcome.Kind.CONNECT_FAILED, 0,
+                            e.getClass().getSimpleName()
+                                    + (e.getMessage() != null ? ": " + e.getMessage() : ""),
+                            now));
+        }
+    }
+
+    private MagmaguyRspClient relayClient() {
+        MagmaguyRspClient rc = relayClient;
+        if (rc == null) {
+            rc = new MagmaguyRspClient(java.util.logging.Logger.getLogger("RSPM-NetworkSync"),
+                    30, 60);
+            relayClient = rc;
+        }
+        return rc;
     }
 
     /**
@@ -615,15 +685,7 @@ public final class NetworkSync {
                             now));
             return;
         }
-        MagmaguyRspClient rc = relayClient;
-        if (rc == null) {
-            // 30s socket timeout for list/download — relay fetches are small
-            // (a few MB at most for Bedrock zips) and the magmaguy.com endpoint
-            // is on a known reliable host.
-            rc = new MagmaguyRspClient(java.util.logging.Logger.getLogger("RSPM-NetworkSync"),
-                    30, 60);
-            relayClient = rc;
-        }
+        MagmaguyRspClient rc = relayClient();
         String networkKeyHash = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver
                 .shortHashForRelay(networkKey);
         if (networkKeyHash == null) return;
@@ -702,14 +764,15 @@ public final class NetworkSync {
     // ------------------------------------------------------------------
 
     /**
-     * GET {@code http://<backend>:<backendHttpPort><path>}; if the response is
+     * GET {@code http://<backend>:<resolvedHttpPort><path>}; if the response is
      * 200, write the body to {@code dest} atomically. If 304 (no change since
      * {@code dest.lastModified()}), do nothing. Any other status or transport
      * error is logged and swallowed — the next poll will try again.
      */
     private void fetchIfChanged(BackendListProvider.Backend b, String path, File dest) {
-        int httpPort = b.mcPort() + networkHttpOffset;
-        String url = "http://" + b.host() + ":" + httpPort + path;
+        ResolvedBackendEndpoint endpoint = resolveBackendHttpEndpoint(
+                b, networkHttpOffset, announcedEndpoints);
+        String url = "http://" + endpoint.host() + ":" + endpoint.port() + path;
         String outcomeKey = sanitizeBackendName(b.name()) + ":" + path;
         java.time.Instant now = java.time.Instant.now();
         try {
@@ -819,6 +882,72 @@ public final class NetworkSync {
         return sb.toString();
     }
 
+    record ResolvedBackendEndpoint(String host, int port, String source) {}
+
+    static ResolvedBackendEndpoint resolveBackendHttpEndpoint(
+            BackendListProvider.Backend backend,
+            int networkHttpOffset,
+            List<MagmaguyRspClient.BedrockEndpoint> endpoints) {
+        if (endpoints != null && !endpoints.isEmpty()) {
+            List<MagmaguyRspClient.BedrockEndpoint> mcPortMatches = new ArrayList<>();
+            for (MagmaguyRspClient.BedrockEndpoint endpoint : endpoints) {
+                if (endpoint == null || endpoint.httpPort() < 1 || endpoint.httpPort() > 65535) continue;
+                if (endpoint.mcPort() == backend.mcPort()) {
+                    mcPortMatches.add(endpoint);
+                }
+            }
+
+            List<MagmaguyRspClient.BedrockEndpoint> hostMatches = new ArrayList<>();
+            String backendHost = normalizeHost(backend.host());
+            for (MagmaguyRspClient.BedrockEndpoint endpoint : mcPortMatches) {
+                if (hostMatches(backendHost, endpoint.publicHost())
+                        || hostMatches(backendHost, endpoint.sourceIp())) {
+                    hostMatches.add(endpoint);
+                }
+            }
+
+            if (hostMatches.size() == 1) {
+                MagmaguyRspClient.BedrockEndpoint endpoint = hostMatches.get(0);
+                return announcedEndpoint(backend, endpoint, "announced by backend " + endpoint.backendId());
+            }
+            if (mcPortMatches.size() == 1) {
+                MagmaguyRspClient.BedrockEndpoint endpoint = mcPortMatches.get(0);
+                return announcedEndpoint(backend, endpoint, "announced by backend "
+                        + endpoint.backendId() + " (unique MC port match)");
+            }
+        }
+        return new ResolvedBackendEndpoint(
+                backend.host(),
+                backend.mcPort() + networkHttpOffset,
+                "mcPort + network-http-offset-v2 " + networkHttpOffset);
+    }
+
+    private static ResolvedBackendEndpoint announcedEndpoint(
+            BackendListProvider.Backend backend,
+            MagmaguyRspClient.BedrockEndpoint endpoint,
+            String source) {
+        return new ResolvedBackendEndpoint(backend.host(), endpoint.httpPort(), source);
+    }
+
+    private static boolean hostMatches(String normalizedBackendHost, String candidate) {
+        String normalizedCandidate = normalizeHost(candidate);
+        return !normalizedBackendHost.isBlank()
+                && !normalizedCandidate.isBlank()
+                && normalizedBackendHost.equals(normalizedCandidate);
+    }
+
+    private static String normalizeHost(String raw) {
+        if (raw == null) return "";
+        String host = raw.trim().toLowerCase(Locale.ROOT);
+        if (host.startsWith("[") && host.endsWith("]") && host.length() > 2) {
+            host = host.substring(1, host.length() - 1);
+        }
+        if (host.startsWith("::ffff:")) {
+            host = host.substring("::ffff:".length());
+        }
+        return host;
+    }
+
     /**
      * SHA-1 every regular file under {@link #inboxRoot} (recursive) and return
      * the (relative-path | hex-hash) strings in a sorted set. Sorting makes the
@@ -856,6 +985,11 @@ public final class NetworkSync {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static String sha1HexOfFile(File f) {
+        byte[] sha1 = sha1OfFile(f);
+        return sha1 == null ? null : hex(sha1);
     }
 
     private static String hex(byte[] bytes) {

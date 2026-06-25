@@ -1,10 +1,10 @@
 # ResourcePackManager
 
-ResourcePackManager (RSPM) is a Bukkit/Paper plugin that merges the resource packs
-of every plugin on your server into a single pack, hosts it, and pushes it to
-players automatically. It also converts the merged pack to Bedrock format and
-serves it to Bedrock players through GeyserMC, with optional proxy modules
-(Velocity / BungeeCord) for delivering Bedrock packs across a network.
+ResourcePackManager (RSPM) is a universal Bukkit/Paper, Velocity, and
+BungeeCord/Waterfall plugin. On backend servers it merges the resource packs of
+every plugin into a single pack, hosts it, and pushes it to players
+automatically. On proxies it runs the network-side pack delivery bridge for
+Bedrock players through GeyserMC.
 
 By default the merged pack is hosted on a local HTTP server embedded in the
 plugin; if that is not reachable it falls back to uploading the pack to
@@ -36,13 +36,13 @@ This is a multi-module Maven project (parent artifact `ResourcePackManager-paren
 
 | Module | Purpose |
 | --- | --- |
-| `resourcepackmanager-bukkit` | The main Bukkit/Paper plugin: merging, hosting, commands, Geyser integration. Shades MagmaCore. |
+| `resourcepackmanager-bukkit` | The universal deployable jar: Bukkit/Paper backend entrypoint plus shaded shared code and proxy adapters. Shades MagmaCore. |
 | `resourcepackmanager-bedrock` | Java → Bedrock resource pack conversion pipeline. |
 | `resourcepackmanager-mixer` | Pack merging / conflict-resolution logic. |
 | `resourcepackmanager-http-common` | Shared HTTP server/client code used for self-hosting and proxy fetches. |
 | `resourcepackmanager-proxy-common` | Shared proxy logic (network sync, status rendering) used by both proxy platforms. |
-| `resourcepackmanager-velocity` | Velocity proxy plugin for network mode. |
-| `resourcepackmanager-bungee` | BungeeCord proxy plugin for network mode. |
+| `resourcepackmanager-velocity` | Internal Velocity adapter included in the universal jar. |
+| `resourcepackmanager-bungee` | Internal BungeeCord/Waterfall adapter included in the universal jar. |
 
 ## Requirements
 
@@ -65,10 +65,9 @@ RealisticSurvival, and others listed in `plugin.yml`).
    (game) server and start it once to generate `plugins/ResourcePackManager/config.yml`.
 2. For Bedrock delivery, install Geyser on the backend (and Floodgate if you run
    a proxy network).
-3. **Network mode only** — also install the matching proxy jar on the proxy:
-   - Velocity: `resourcepackmanager-velocity-*.jar`
-   - BungeeCord: `resourcepackmanager-bungee-*.jar`
-   The proxy generates its own `config.yml` on first start.
+3. **Network mode only** — also put the same `ResourcePackManager.jar` in the
+   proxy's `plugins/` folder. It detects Velocity vs BungeeCord/Waterfall from
+   the platform loader. The proxy generates its own `config.yml` on first start.
 
 A single (non-networked) backend server needs only the Bukkit jar.
 
@@ -90,7 +89,7 @@ Backend config lives at `plugins/ResourcePackManager/config.yml`. Selected keys
 | `bedrockConverterDebug` | `false` | Verbose per-item conversion logging. |
 | `selfHostEnabled` | `true` | Start a local HTTP server to serve the pack instead of uploading. |
 | `selfHostPort` | `-1` | HTTP port; `-1` = Minecraft port + `networkHttpOffset-v2`. |
-| `networkHttpOffset-v2` | `1` | Offset added to the MC port to derive the HTTP port (fits narrow hosting port ranges). |
+| `networkHttpOffset-v2` | `1` | Fallback offset used when `selfHostPort` is auto-derived; the backend announces its actual HTTP port to proxies automatically. |
 | `selfHostExternalHost` | `""` | Public host/IP clients use to reach the self-host server; empty = auto-detect. |
 | `selfHostForce` | `false` | Force self-hosting, bypassing all other delivery paths (testing). |
 | `preferSelfHost` | `true` | Try self-host first and fall back to remote upload only if reachability checks fail. |
@@ -100,7 +99,7 @@ Proxy config (`config.yml` in the proxy plugin's data folder):
 | Key | Default | Description |
 | --- | --- | --- |
 | `force-resource-pack` | `false` | Force clients to accept the pack (kick on decline). |
-| `network-http-offset-v2` | `1` | Offset to each backend's MC port to derive the HTTP port the proxy fetches from. Must match each backend's `networkHttpOffset-v2`. |
+| `network-http-offset-v2` | `1` | Fallback offset used only before a backend endpoint announcement is available. In normal operation the backend announces the exact HTTP port it bound. |
 
 The proxy `network-key` is auto-derived from `plugins/floodgate/key.pem`; there is
 no manual key to paste.
@@ -131,8 +130,10 @@ This builds every module. The main backend jar is produced at:
 resourcepackmanager-bukkit/target/ResourcePackManager.jar
 ```
 
-The proxy jars are at `resourcepackmanager-velocity/target/resourcepackmanager-velocity-*.jar`
-and `resourcepackmanager-bungee/target/resourcepackmanager-bungee-*.jar`.
+This is the only deployable ResourcePackManager jar. The proxy adapter modules
+still build internal target jars for Maven/testbed wiring, but public
+distribution uses `ResourcePackManager.jar` for Bukkit/Paper, Velocity, and
+BungeeCord/Waterfall.
 
 ## Links
 

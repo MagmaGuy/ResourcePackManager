@@ -115,10 +115,25 @@ public class AutoHost {
      */
     private static final long RELAY_UPLOAD_PERIOD_TICKS = 25L * 60L * 20L;
 
+    private static String ensureBackendId() {
+        if (backendId == null) {
+            backendId = BackendIdentity.loadOrCreate(
+                    ResourcePackManager.plugin.getDataFolder().toPath().resolve("backend-id.txt"));
+            Logger.info("RSPM backend-id for Bedrock relay: " + backendId);
+        }
+        return backendId;
+    }
+
     private AutoHost() {
     }
 
     public static void sendResourcePack(Player player) {
+        if (isFloodgatePlayer(player)) {
+            Logger.info("Skipping Java resource pack send for Bedrock/Floodgate player " + player.getName()
+                    + "; proxy Geyser handles Bedrock pack delivery.");
+            return;
+        }
+
         String url;
         byte[] hash;
         UUID packUuid = RESOURCE_PACK_UUID;
@@ -202,6 +217,10 @@ public class AutoHost {
     public static void handleResourcePackStatus(PlayerResourcePackStatusEvent event) {
         Player player = event.getPlayer();
         UUID id = player.getUniqueId();
+        if (isFloodgatePlayer(player)) {
+            resendAttempts.remove(id);
+            return;
+        }
 
         // On stacked-pack servers, ignore reports for other plugins' packs (we
         // tag ours with RESOURCE_PACK_UUID). On single-pack servers there's only
@@ -244,6 +263,26 @@ public class AutoHost {
                 return;
             default:
                 // ACCEPTED / DOWNLOADED (in-progress), FAILED_RELOAD, etc.: no action.
+        }
+    }
+
+    private static boolean isFloodgatePlayer(Player player) {
+        if (Bukkit.getPluginManager().getPlugin("floodgate") == null
+                && Bukkit.getPluginManager().getPlugin("Floodgate") == null) {
+            return false;
+        }
+        try {
+            Class<?> floodgateApiClass = Class.forName("org.geysermc.floodgate.api.FloodgateApi");
+            Object floodgateApi = floodgateApiClass.getMethod("getInstance").invoke(null);
+            Object result = floodgateApiClass.getMethod("isFloodgatePlayer", UUID.class)
+                    .invoke(floodgateApi, player.getUniqueId());
+            return Boolean.TRUE.equals(result);
+        } catch (ClassNotFoundException | NoSuchMethodException ignored) {
+            return false;
+        } catch (Throwable throwable) {
+            Logger.warn("Failed to check Floodgate player status for " + player.getName()
+                    + ": " + throwable.getMessage());
+            return false;
         }
     }
 
@@ -762,11 +801,7 @@ public class AutoHost {
      */
     private static void startBedrockRelayUploadTask() {
         if (relayUploadTask != null) return;
-        if (backendId == null) {
-            backendId = BackendIdentity.loadOrCreate(
-                    ResourcePackManager.plugin.getDataFolder().toPath().resolve("backend-id.txt"));
-            Logger.info("RSPM backend-id for Bedrock relay: " + backendId);
-        }
+        ensureBackendId();
         relayUploadTask = new BukkitRunnable() {
             @Override
             public void run() {
@@ -807,6 +842,11 @@ public class AutoHost {
             // — nothing to upload. The proxy will hit the same condition and
             // skip the relay entirely.
             return;
+        }
+
+        PackHttpServer server = selfHostServer;
+        if (server != null) {
+            announceBackendEndpoint(relayClient, networkKey, server.port());
         }
 
         File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
@@ -1014,6 +1054,7 @@ public class AutoHost {
             Logger.info("Started backend HTTP server on port " + server.port()
                     + " (serving /rspm.zip, " + PackHttpServer.BEDROCK_PACK_PATH
                     + ", " + PackHttpServer.GEYSER_MAPPINGS_PATH + ")");
+            announceBackendEndpoint(client, NetworkMode.getNetworkKey(), server.port());
         } catch (IOException e) {
             // Loud multi-line ERROR: this backend is now invisible to the proxy.
             // Bedrock players will not get its content in the merged pack.
@@ -1023,8 +1064,9 @@ public class AutoHost {
             Logger.warn("[ERROR] If another process is using port " + port + ", set selfHostPort to a different value");
             Logger.warn("[ERROR] in plugins/ResourcePackManager/config.yml, OR change networkHttpOffset-v2 to push");
             Logger.warn("[ERROR] the auto-derived port away from the collision.");
-            // The relay-upload path (when implemented) will let this backend deliver its");
-            // Bedrock pack via the magmaguy.com hoster — see project plan for the bridge endpoint.
+            // The relay-upload path can still deliver Bedrock output through magmaguy.com
+            // if direct backend HTTP is impossible, but the local server should bind cleanly
+            // for the fastest same-host/same-network path.
         }
     }
 
@@ -1035,7 +1077,8 @@ public class AutoHost {
      *   <li>{@code selfHostPort == -1} (default sentinel): auto-derive as
      *       {@code Bukkit.getServer().getPort() + networkHttpOffset}. This guarantees
      *       a unique HTTP port per backend on a single-host deployment without any
-     *       admin configuration, because each backend already has a unique MC port.</li>
+     *       admin configuration, because each backend already has a unique MC port.
+     *       The actual bound port is announced to proxies after startup.</li>
      * </ul>
      */
     private static int resolveHttpPort() {
@@ -1067,6 +1110,26 @@ public class AutoHost {
      */
     private static PackHttpServer startPackHttpServer(File pack, int port) throws IOException {
         return PackHttpServer.start(pack, port, "/rspm.zip");
+    }
+
+    private static void announceBackendEndpoint(MagmaguyRspClient relayClient, String networkKey, int httpPort) {
+        if (relayClient == null) return;
+        if (networkKey == null || networkKey.isBlank()) return;
+        if (httpPort <= 0) return;
+        String id = ensureBackendId();
+        if (id == null || id.isBlank()) return;
+        String configuredHost = DefaultConfig.getSelfHostExternalHost();
+        if (configuredHost != null && configuredHost.isBlank()) configuredHost = null;
+        try {
+            relayClient.announceBedrockEndpoint(
+                    networkKey,
+                    id,
+                    configuredHost,
+                    Bukkit.getServer().getPort(),
+                    httpPort);
+        } catch (IOException e) {
+            Logger.warn("Bedrock endpoint announcement failed: " + e.getMessage());
+        }
     }
 
     /**
