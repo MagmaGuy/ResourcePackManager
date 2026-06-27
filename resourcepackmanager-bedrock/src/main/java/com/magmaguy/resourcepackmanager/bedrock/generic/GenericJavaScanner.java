@@ -51,14 +51,34 @@ public final class GenericJavaScanner {
 
         int modernCount = result.size();
         scanLegacyCustomModelOverrides(assetsDir, result);
+        int legacyCount = result.size() - modernCount;
 
         // Per-mix scanner status — useful when debugging "why isn't my pack converting"
         // but pure noise on a clean run (the per-cycle conversion summary already says
         // how many mappings were emitted). Demoted to debug.
         BedrockLog.debug("[BedrockConverter] Generic scanner: discovered " + result.size()
                 + " item definitions (" + modernCount + " modern, "
-                + (result.size() - modernCount) + " legacy overrides) across "
+                + legacyCount + " legacy overrides) across "
                 + namespaceDirs.length + " namespace(s).");
+
+        // Surface legacy / unsupported pack formats on the console (not just debug). These are
+        // the #1 cause of "my models are invisible on Bedrock" support tickets: RSPM can only
+        // convert the 1.21.4+ custom item system, and old (e.g. ItemsAdder) packs predating that
+        // either use legacy custom_model_data overrides or a layout RSPM can't read at all.
+        if (legacyCount > 0) {
+            BedrockLog.warn("[BedrockConverter] Detected " + legacyCount + " custom item(s) in the LEGACY "
+                    + "pre-1.21.4 'custom_model_data' override format (assets/minecraft/models/item/*.json). "
+                    + "RSPM will attempt to convert these, but legacy/ItemsAdder-style packs frequently do NOT "
+                    + "render on Bedrock (Geyser/Floodgate). If Bedrock models are invisible, re-export the pack "
+                    + "in the 1.21.4+ item-definition format (assets/<namespace>/items/*.json).");
+        }
+        if (result.isEmpty() && looksLikeCustomPack(assetsDir, namespaceDirs)) {
+            BedrockLog.warn("[BedrockConverter] This resource pack contains custom models/textures but NO "
+                    + "convertible item definitions were found. It is almost certainly in a legacy/unsupported "
+                    + "format (e.g. an old ItemsAdder pack predating Minecraft 1.21.4). RSPM can only convert the "
+                    + "1.21.4+ custom item system, so these models will be INVISIBLE on Bedrock (Geyser/Floodgate). "
+                    + "Update/re-export the pack to the 1.21.4+ item format.");
+        }
         return result;
     }
 
@@ -158,6 +178,36 @@ public final class GenericJavaScanner {
         JsonObject root = new JsonObject();
         root.add("model", dispatch);
         return new ItemsDefinition(namespace, itemsRelPath, file, root, List.of(baseItem));
+    }
+
+    /**
+     * Heuristic: does this pack look like it was meant to define custom items, even though the
+     * scanner extracted zero convertible definitions? Used to distinguish "legacy/unsupported pack"
+     * (worth a loud warning) from "pack with no custom items at all" (silent). Evidence is any
+     * non-vanilla namespace carrying models/textures, or leftover minecraft/models/item overrides
+     * that didn't yield a custom_model_data definition (e.g. damage/pulling-only legacy weapons).
+     */
+    private static boolean looksLikeCustomPack(File assetsDir, File[] namespaceDirs) {
+        for (File nsDir : namespaceDirs) {
+            String ns = nsDir.getName();
+            if (ns.equals("minecraft") || ns.equals("realms")) continue;
+            if (hasAnyFile(new File(nsDir, "models")) || hasAnyFile(new File(nsDir, "textures"))) return true;
+        }
+        File legacyItemsDir = new File(assetsDir, "minecraft/models/item");
+        File[] legacy = legacyItemsDir.listFiles((dir, name) -> name.endsWith(".json"));
+        return legacy != null && legacy.length > 0;
+    }
+
+    /** True if the directory exists and contains at least one regular file (recursively). */
+    private static boolean hasAnyFile(File dir) {
+        if (!dir.isDirectory()) return false;
+        File[] entries = dir.listFiles();
+        if (entries == null) return false;
+        for (File entry : entries) {
+            if (entry.isFile()) return true;
+            if (entry.isDirectory() && hasAnyFile(entry)) return true;
+        }
+        return false;
     }
 
     private static boolean isNumericPrimitive(JsonElement element) {

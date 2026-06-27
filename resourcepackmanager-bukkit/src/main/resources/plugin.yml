@@ -1,6 +1,6 @@
 name: ResourcePackManager
 main: com.magmaguy.resourcepackmanager.ResourcePackManager
-version: 2.2.1
+version: 2.2.2
 api-version: '1.21.4'
 author: MagmaGuy
 softdepend:
