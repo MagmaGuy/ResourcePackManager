@@ -6,15 +6,34 @@
     <parent>
         <groupId>com.magmaguy</groupId>
         <artifactId>ResourcePackManager-parent</artifactId>
-        <version>2.2.1</version>
+        <version>2.2.2</version>
     </parent>
 
     <artifactId>ResourcePackManager</artifactId>
 
     <dependencies>
         <dependency>
+            <groupId>io.papermc.paper</groupId>
+            <artifactId>paper-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.spigotmc</groupId>
             <artifactId>spigot-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.mockbukkit.mockbukkit</groupId>
+            <artifactId>mockbukkit-v1.21</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -88,6 +107,19 @@
 
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <slf4j.provider>org.slf4j.nop.NOPServiceProvider</slf4j.provider>
+                    </systemPropertyVariables>
+                    <classpathDependencyExcludes>
+                        <classpathDependencyExclude>org.spigotmc:spigot-api</classpathDependencyExclude>
+                    </classpathDependencyExcludes>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
                 <version>3.6.0</version>
                 <executions>
@@ -131,6 +163,16 @@
                                 <relocation>
                                     <pattern>org.bstats</pattern>
                                     <shadedPattern>com.magmaguy.resourcepackmanager.bstats</shadedPattern>
+                                </relocation>
+                                <!-- Relocate the shaded MagmaCore so its static singleton (and
+                                     config-folder resolution via MagmaCore.getInstance().getRequestingPlugin())
+                                     is isolated per plugin. Without this, every plugin that ships MagmaCore
+                                     unrelocated shares one instance/requestingPlugin, so their configs
+                                     (e.g. setupDone) collide in a single data folder and never persist
+                                     per-plugin. -->
+                                <relocation>
+                                    <pattern>com.magmaguy.magmacore</pattern>
+                                    <shadedPattern>com.magmaguy.resourcepackmanager.magmacore</shadedPattern>
                                 </relocation>
                             </relocations>
                         </configuration>
