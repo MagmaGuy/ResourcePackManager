@@ -44,7 +44,8 @@ public class DefaultConfig extends ConfigurationFile {
                         "ValhallaMMO",
                         "MMOInventory",
                         "vane-core",
-                        "RealisticSurvival"));
+                        "RealisticSurvival",
+                        "Nexo"));
 
         autoHost = ConfigurationEngine.setBoolean(
                 List.of("Automatically host the resource pack on MagmaGuy's servers",
