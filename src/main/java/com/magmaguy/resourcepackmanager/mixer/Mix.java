@@ -256,6 +256,24 @@ public class Mix {
 //            generateBedrockResourcePack();
     }
 
+    public static boolean loadExistingFinalResourcePack() {
+        if (finalResourcePack != null) return true;
+        File possiblePack = new File(getOutputFolder().getAbsolutePath() + File.separatorChar + resourcePackName + ".zip");
+        if (!possiblePack.exists()) return false;
+        try {
+            finalResourcePack = possiblePack;
+            finalSHA1 = SHA1Generator.sha1CodeString(finalResourcePack);
+            finalSHA1Bytes = SHA1Generator.sha1CodeByteArray(finalResourcePack);
+            return true;
+        } catch (Exception e) {
+            Logger.warn("Failed to load existing merged resource pack from disk.");
+            finalResourcePack = null;
+            finalSHA1 = null;
+            finalSHA1Bytes = null;
+            return false;
+        }
+    }
+
     private static File getOutputFolder() {
         return new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "output");
     }

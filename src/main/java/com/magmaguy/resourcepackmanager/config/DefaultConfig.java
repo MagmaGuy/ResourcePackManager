@@ -15,6 +15,8 @@ public class DefaultConfig extends ConfigurationFile {
     @Getter
     private static boolean forceResourcePack;
     @Getter
+    private static boolean autoMixOnStartup;
+    @Getter
     private static String resourcePackPrompt;
     @Getter
     private static String resourcePackRerouting;
@@ -54,6 +56,11 @@ public class DefaultConfig extends ConfigurationFile {
         forceResourcePack = ConfigurationEngine.setBoolean(
                 List.of("Sets whether the resource pack use will be forced to clients"),
                 fileConfiguration, "forceResourcePack", false);
+        autoMixOnStartup = ConfigurationEngine.setBoolean(
+                List.of(
+                        "Enable automatic resource pack mixing when the server starts.",
+                        "If disabled, ResourcePackManager will wait for a resource pack change or manual reload before mixing."),
+                fileConfiguration, "autoMixOnStartup", true);
         resourcePackPrompt = ConfigurationEngine.setString(
                 List.of("Sets whether the resource pack use will be forced to clients"),
                 fileConfiguration, "resourcePackPrompt", "Use recommended resource pack?");

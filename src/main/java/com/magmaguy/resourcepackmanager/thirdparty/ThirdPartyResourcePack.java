@@ -113,6 +113,7 @@ public class ThirdPartyResourcePack {
     }
 
     private static BukkitTask resourcePackChangeWatcher = null;
+    private static boolean initialStartup = true;
 
     /**
      * Checks whether a monitored plugin has finished its Magmacore initialization.
@@ -189,13 +190,30 @@ public class ThirdPartyResourcePack {
                 }
 
                 if (!stableAlreadySent && readyToSend) {
+                    if (!DefaultConfig.isAutoMixOnStartup() && initialStartup) {
+                        Logger.info("Automatic resource pack mixing on startup is disabled. Waiting for resource pack changes or manual reload before mixing.");
+                        tagAsResourcePackSent();
+                        initialStartup = false;
+                        return;
+                    }
+
                     notifyResourcePackSending();
                     tagAsResourcePackSent();
+                    initialStartup = false;
                     Logger.info("Sending resource pack now.");
                     Bukkit.getScheduler().runTaskAsynchronously(ResourcePackManager.plugin, Mix::mixResourcePacks);
                 }
             }
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 20, 20);
+
+        if (!DefaultConfig.isAutoMixOnStartup()) {
+            if (Mix.loadExistingFinalResourcePack()) {
+                Logger.info("autoMixOnStartup is disabled, reusing the last merged resource pack from disk.");
+                AutoHost.initialize();
+            } else {
+                Logger.info("autoMixOnStartup is disabled and no existing merged resource pack was found. Waiting for changes.");
+            }
+        }
     }
 
     public static void tagAsResourcePackSent(){
