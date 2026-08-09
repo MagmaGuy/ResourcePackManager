@@ -6,16 +6,11 @@ package com.magmaguy.resourcepackmanager.proxy;
  * {@code net.md_5.bungee.api.scheduler.TaskScheduler} so that {@link NetworkSync}
  * can run on either proxy without taking a hard dependency on either API.
  *
- * <p>Both flavors of scheduled async task should run sequentially (one invocation
- * at a time, on a worker thread). {@link NetworkSync#pollOnce()} relies on this
- * non-overlap guarantee so it doesn't need internal synchronization. If a poll
- * happens to outrun the configured interval, behavior is platform-dependent —
- * acceptable for this use case.</p>
+ * <p>No non-overlap guarantee is required from the platform scheduler:
+ * {@link NetworkSync} self-guards overlapping polls via its own CAS and warns
+ * when a poll overruns the configured interval.</p>
  */
 public interface ProxySchedulerAdapter {
-
-    /** Run task once, async (off the main thread). */
-    void runAsync(Runnable task);
 
     /**
      * Schedule a repeating async task. Returns a {@link Cancellable} so

@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.magmaguy</groupId>
         <artifactId>ResourcePackManager-parent</artifactId>
-        <version>2.2.2</version>
+        <version>2.3.1</version>
     </parent>
 
     <artifactId>resourcepackmanager-bedrock</artifactId>
@@ -28,10 +28,6 @@
     -->
     <dependencies>
         <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-        </dependency>
-        <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
         </dependency>
@@ -39,11 +35,6 @@
             <groupId>com.magmaguy</groupId>
             <artifactId>resourcepackmanager-mixer</artifactId>
             <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
         </dependency>
     </dependencies>
 

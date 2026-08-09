@@ -14,9 +14,10 @@ import java.util.List;
  *
  * <p>Bungee's {@link ServerInfo#getSocketAddress()} can technically be a Unix
  * domain socket on modern versions, but in practice for normal multi-backend
- * deployments it's always an {@code InetSocketAddress}. We unwrap defensively
- * via {@code toString} fallback so a non-Inet socket doesn't blow up the whole
- * poll cycle.</p>
+ * deployments it's always an {@code InetSocketAddress}. Non-Inet addresses have
+ * no routable hostname for an HTTP request, so those backends are skipped
+ * rather than guessed at — a non-Inet socket doesn't blow up the whole poll
+ * cycle.</p>
  */
 final class BungeeBackendListProvider implements BackendListProvider {
 

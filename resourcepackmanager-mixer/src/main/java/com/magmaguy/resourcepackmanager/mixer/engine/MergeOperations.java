@@ -5,9 +5,12 @@ import com.google.gson.stream.JsonReader;
 
 import java.io.File;
 import java.io.FileReader;
+import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -25,7 +28,79 @@ public final class MergeOperations {
         this.logger = logger;
     }
 
-    public JsonObject readJsonFile(File file) {
+    /**
+     * How {@link #mergeColliding(File, File)} resolved a single file collision. Callers that log
+     * collisions map each outcome to their own message; callers that do not can ignore the result.
+     */
+    public enum CollisionOutcome {
+        MERGED_PACK_MCMETA,
+        KEPT_NON_JSON,
+        KEPT_NON_MERGEABLE_JSON,
+        BOTH_UNREADABLE,
+        KEPT_SOURCE_UNREADABLE,
+        REPLACED_UNREADABLE_TARGET,
+        MERGED
+    }
+
+    /**
+     * Resolves a collision between {@code sourceFile} (lower priority) and {@code targetFile}
+     * (higher priority) in place, mutating {@code targetFile} when a merge or replacement applies.
+     *
+     * @return the outcome describing how the collision was resolved
+     */
+    public CollisionOutcome mergeColliding(File sourceFile, File targetFile) throws IOException {
+        if (targetFile.getName().equals("pack.mcmeta")) {
+            this.mergePackMcmeta(sourceFile, targetFile);
+            return CollisionOutcome.MERGED_PACK_MCMETA;
+        }
+
+        if (!targetFile.getName().endsWith(".json")) {
+            return CollisionOutcome.KEPT_NON_JSON;
+        }
+
+        if (!this.isMergeableJsonFile(targetFile)) {
+            return CollisionOutcome.KEPT_NON_MERGEABLE_JSON;
+        }
+
+        JsonObject json1 = this.readJsonFile(sourceFile);
+        JsonObject json2 = this.readJsonFile(targetFile);
+
+        if (json1 == null && json2 == null) {
+            return CollisionOutcome.BOTH_UNREADABLE;
+        }
+        if (json1 == null) return CollisionOutcome.KEPT_SOURCE_UNREADABLE;
+        if (json2 == null) {
+            Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            return CollisionOutcome.REPLACED_UNREADABLE_TARGET;
+        }
+
+        boolean legacyItemModel = this.isLegacyItemModel(targetFile);
+        JsonObject mergedJson;
+        if (legacyItemModel) {
+            mergedJson = this.mergeLegacyItemModelOverrides(json1, json2);
+        } else if (this.isItemsFile(targetFile)) {
+            mergedJson = this.mergeItemsModels(json1, json2);
+        } else if (targetFile.getName().equals("sounds.json")) {
+            mergedJson = this.mergeSoundsJson(json1, json2);
+        } else {
+            mergedJson = this.mergeJsonObjects(json1, json2);
+        }
+
+        // Legacy item models (pre-1.21.4) sort overrides by custom_model_data so
+        // numeric ordering survives a deep merge — without this the higher CMD
+        // entries can leapfrog lower ones and the wrong model resolves at runtime.
+        if (legacyItemModel && mergedJson.has("overrides")) {
+            this.sortModelOverrides(mergedJson);
+        }
+
+        try (Writer writer = new BufferedWriter(new FileWriter(targetFile), 1 << 16)) {
+            new Gson().toJson(mergedJson, writer);
+        }
+
+        return CollisionOutcome.MERGED;
+    }
+
+    private JsonObject readJsonFile(File file) {
         try (FileReader reader = new FileReader(file)) {
             return JsonParser.parseReader(reader).getAsJsonObject();
         } catch (Exception e) {
@@ -46,7 +121,7 @@ public final class MergeOperations {
      * Files like sounds.json, lang files, atlases, fonts, and vanilla item model overrides can be merged.
      * Custom model files, blockstates, equipment layers, etc. have fixed-size arrays that break when concatenated.
      */
-    public boolean isMergeableJsonFile(File file) {
+    private boolean isMergeableJsonFile(File file) {
         String path = file.getPath().replace("\\", "/");
         String fileName = file.getName();
 
@@ -87,7 +162,7 @@ public final class MergeOperations {
         return false;
     }
 
-    public JsonObject mergeJsonObjects(JsonObject json1, JsonObject json2) {
+    private JsonObject mergeJsonObjects(JsonObject json1, JsonObject json2) {
         JsonObject mergedJson = new JsonObject();
 
         for (String key : json1.keySet()) {
@@ -212,7 +287,7 @@ public final class MergeOperations {
 
         overlayJson.add("sources", merged);
 
-        try (FileWriter writer = new FileWriter(overlayAtlas)) {
+        try (Writer writer = new BufferedWriter(new FileWriter(overlayAtlas), 1 << 16)) {
             new Gson().toJson(overlayJson, writer);
         } catch (IOException e) {
             logger.warn("Failed to merge base atlas sources into overlay atlas: " + overlayAtlas.getPath());
@@ -254,7 +329,7 @@ public final class MergeOperations {
         boolean clampedUvs = clampModelUvs(json);
         if (!addedParticle && !clampedUvs) return;
 
-        try (FileWriter writer = new FileWriter(file)) {
+        try (Writer writer = new BufferedWriter(new FileWriter(file), 1 << 16)) {
             new Gson().toJson(json, writer);
         } catch (IOException e) {
             logger.warn("Failed to sanitize model JSON: " + file.getPath());
@@ -316,7 +391,7 @@ public final class MergeOperations {
         return changed;
     }
 
-    public void mergePackMcmeta(File sourceFile, File targetFile) throws IOException {
+    private void mergePackMcmeta(File sourceFile, File targetFile) throws IOException {
         JsonObject source = readJsonFile(sourceFile);
         JsonObject target = readJsonFile(targetFile);
 
@@ -388,7 +463,7 @@ public final class MergeOperations {
             }
         }
 
-        try (FileWriter writer = new FileWriter(targetFile)) {
+        try (Writer writer = new BufferedWriter(new FileWriter(targetFile), 1 << 16)) {
             new Gson().toJson(target, writer);
         }
 
@@ -656,11 +731,11 @@ public final class MergeOperations {
         return Integer.MAX_VALUE;
     }
 
-    public boolean isLegacyItemModel(File file) {
+    private boolean isLegacyItemModel(File file) {
         return file.getPath().replace("\\", "/").contains("/minecraft/models/item/");
     }
 
-    public JsonObject mergeLegacyItemModelOverrides(JsonObject source, JsonObject target) {
+    private JsonObject mergeLegacyItemModelOverrides(JsonObject source, JsonObject target) {
         if (!source.has("overrides") || !source.get("overrides").isJsonArray()) {
             return target;
         }
@@ -703,12 +778,12 @@ public final class MergeOperations {
         return override.toString();
     }
 
-    public boolean isItemsFile(File file) {
+    private boolean isItemsFile(File file) {
         String path = file.getPath().replace("\\", "/");
         return path.contains("/items/") && !path.contains("/models/item/");
     }
 
-    public void sortModelOverrides(JsonObject modelJson) {
+    private void sortModelOverrides(JsonObject modelJson) {
         JsonArray overrides = modelJson.getAsJsonArray("overrides");
         if (overrides == null || overrides.size() <= 1) return;
 
@@ -736,7 +811,7 @@ public final class MergeOperations {
         }
     }
 
-    public JsonObject mergeItemsModels(JsonObject source, JsonObject target) {
+    private JsonObject mergeItemsModels(JsonObject source, JsonObject target) {
         // Items definitions (assets/<ns>/items/*.json, 1.21.4+) are only safely
         // mergeable when both files have a `model` block of the SAME dispatch
         // type (range_dispatch or select) with the same property. Those have a
@@ -769,11 +844,7 @@ public final class MergeOperations {
             if (!sourceProp.equals(targetProp)) return target;
             mergeRangeDispatchEntries(sourceModel, targetModel);
             target.add("model", targetModel);
-            for (String key : source.keySet()) {
-                if (!key.equals("model") && !target.has(key)) {
-                    target.add(key, source.get(key));
-                }
-            }
+            copyNonModelKeys(source, target);
             return target;
         }
 
@@ -783,17 +854,26 @@ public final class MergeOperations {
             if (sourceProp.equals(targetProp)) {
                 mergeSelectCases(sourceModel, targetModel);
                 target.add("model", targetModel);
-                for (String key : source.keySet()) {
-                    if (!key.equals("model") && !target.has(key)) {
-                        target.add(key, source.get(key));
-                    }
-                }
+                copyNonModelKeys(source, target);
                 return target;
             }
         }
 
         // Incompatible types or non-dispatch model: higher priority (target) wins atomically.
         return target;
+    }
+
+    /**
+     * Copies every top-level key except {@code model} from {@code source} into
+     * {@code target} when the target doesn't already define it (higher priority
+     * wins on conflicts).
+     */
+    private void copyNonModelKeys(JsonObject source, JsonObject target) {
+        for (String key : source.keySet()) {
+            if (!key.equals("model") && !target.has(key)) {
+                target.add(key, source.get(key));
+            }
+        }
     }
 
     private void mergeRangeDispatchEntries(JsonObject sourceModel, JsonObject targetModel) {
@@ -848,7 +928,7 @@ public final class MergeOperations {
         targetModel.add("cases", merged);
     }
 
-    public JsonObject mergeSoundsJson(JsonObject source, JsonObject target) {
+    private JsonObject mergeSoundsJson(JsonObject source, JsonObject target) {
         JsonObject merged = new JsonObject();
 
         // Start with all source (lower priority) events

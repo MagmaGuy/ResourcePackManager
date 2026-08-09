@@ -1,6 +1,7 @@
 package com.magmaguy.resourcepackmanager.config;
 
 import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.utils.RSPLogger;
 import com.magmaguy.magmacore.util.ZipFile;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 
@@ -14,10 +15,10 @@ public class BlueprintFolder {
     }
 
     public static void initialize() {
-        Logger.info("Creating blueprint folder");
+        RSPLogger.detail("Creating blueprint folder");
         File blueprintDirectory = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath() + File.separatorChar + "blueprint");
         if (!blueprintDirectory.exists()) blueprintDirectory.mkdir();
-        Logger.info("Copying image");
+        RSPLogger.detail("Copying image");
         File imageFile = new File(blueprintDirectory.getAbsolutePath() + File.separatorChar + "pack.png");
         if (!imageFile.exists()) {
             try (InputStream inputStream = ResourcePackManager.plugin.getResource("pack.png")) {
@@ -26,7 +27,7 @@ public class BlueprintFolder {
                 e.printStackTrace();
             }
         }
-        Logger.info("Copying mcmeta");
+        RSPLogger.detail("Copying mcmeta");
         File mcmetaFile = new File(blueprintDirectory.getAbsolutePath() + File.separatorChar + "pack.mcmeta");
         if (!mcmetaFile.exists()) {
             try (InputStream inputStream = ResourcePackManager.plugin.getResource("pack.mcmeta")) {

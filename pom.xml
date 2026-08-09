@@ -5,7 +5,7 @@
 
     <groupId>com.magmaguy</groupId>
     <artifactId>ResourcePackManager-parent</artifactId>
-    <version>2.2.2</version>
+    <version>2.3.1</version>
     <packaging>pom</packaging>
 
     <modules>
@@ -30,12 +30,10 @@
         <gson.version>2.11.0</gson.version>
         <httpclient5.version>5.3.1</httpclient5.version>
         <bstats.version>3.0.2</bstats.version>
-        <geyser.version>2.9.6-SNAPSHOT</geyser.version>
+        <geyser.version>2.11.0-SNAPSHOT</geyser.version>
         <velocity.version>3.4.0-SNAPSHOT</velocity.version>
         <bungeecord.version>1.20-R0.2</bungeecord.version>
         <junit.version>6.0.3</junit.version>
-        <mockbukkit.version>4.110.0</mockbukkit.version>
-        <paper-api.test.version>1.21.11-R0.1-SNAPSHOT</paper-api.test.version>
         <maven.surefire.version>3.5.2</maven.surefire.version>
         <slf4j.version>2.0.16</slf4j.version>
     </properties>
@@ -122,28 +120,12 @@
                 <version>${bungeecord.version}</version>
                 <scope>provided</scope>
             </dependency>
+            <!-- Kept for the opt-in resourcepackmanager-system-tests module
+                 (activated via -Prspm-system-tests), which inherits these. -->
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>
                 <version>${junit.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>io.papermc.paper</groupId>
-                <artifactId>paper-api</artifactId>
-                <version>${paper-api.test.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.mockbukkit.mockbukkit</groupId>
-                <artifactId>mockbukkit-v1.21</artifactId>
-                <version>${mockbukkit.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.slf4j</groupId>
-                <artifactId>slf4j-nop</artifactId>
-                <version>${slf4j.version}</version>
                 <scope>test</scope>
             </dependency>
         </dependencies>
@@ -182,6 +164,20 @@
             </plugins>
         </pluginManagement>
     </build>
+
+    <!--
+      Deliberately inactive. The system-test module starts Docker containers and
+      must never become part of the normal build, package, or release lifecycle.
+      Run it explicitly with -Prspm-system-tests.
+    -->
+    <profiles>
+        <profile>
+            <id>rspm-system-tests</id>
+            <modules>
+                <module>resourcepackmanager-system-tests</module>
+            </modules>
+        </profile>
+    </profiles>
 
     <distributionManagement>
         <snapshotRepository>

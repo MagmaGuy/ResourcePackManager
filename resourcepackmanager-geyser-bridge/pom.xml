@@ -6,14 +6,10 @@
     <parent>
         <groupId>com.magmaguy</groupId>
         <artifactId>ResourcePackManager-parent</artifactId>
-        <version>2.2.2</version>
+        <version>2.3.1</version>
     </parent>
 
     <artifactId>resourcepackmanager-geyser-bridge</artifactId>
-
-    <properties>
-        <geyser.standalone.jar>${project.basedir}/libs/Geyser-Standalone.jar</geyser.standalone.jar>
-    </properties>
 
     <dependencies>
         <dependency>
@@ -24,8 +20,7 @@
             <groupId>org.geysermc.geyser</groupId>
             <artifactId>core</artifactId>
             <version>${geyser.version}</version>
-            <scope>system</scope>
-            <systemPath>${geyser.standalone.jar}</systemPath>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>com.magmaguy</groupId>
@@ -39,7 +34,9 @@
     </dependencies>
 
     <build>
-        <finalName>ResourcePackManager-GeyserBridge</finalName>
+        <!-- Internal build adapter only. It is shaded into the one public
+             ResourcePackManager.jar and is never copied or distributed alone. -->
+        <finalName>resourcepackmanager-geyser-adapter-internal</finalName>
         <resources>
             <resource>
                 <directory>src/main/resources</directory>

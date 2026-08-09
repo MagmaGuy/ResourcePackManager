@@ -6,8 +6,15 @@ import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Detects a Geyser installation and deploys the Geyser custom mappings file to
@@ -29,6 +36,8 @@ import java.nio.file.StandardCopyOption;
  */
 public class GeyserDeployer {
 
+    private static final String OWNERSHIP_FILE_NAME = ".rspm-geyser-mapping-target";
+
     /**
      * Deploys the Geyser custom mappings file to the detected Geyser installation.
      * The Bedrock pack zip is intentionally NOT copied — it's served live per
@@ -37,36 +46,207 @@ public class GeyserDeployer {
      * @param mappingsFile the Geyser custom mappings JSON file
      */
     public static void deployMappings(File mappingsFile) {
-        File geyserDir = detectGeyserDir();
-        if (geyserDir == null) {
-            // No local Geyser. On a backend in network mode this is EXPECTED
-            // (Geyser is on the proxy). Silent — the mappings file is already
-            // written to output/, which the proxy fetches via the embedded
-            // HTTP server. Operators with a real "where do I copy these"
-            // question can run /rspm status to see the output path.
-            return;
+        reconcileMappings(mappingsFile, true);
+    }
+
+    /**
+     * Converges the previously owned destination to the currently configured
+     * one. Provenance is read before the copy and changed only after the old
+     * exact target is gone, so a Geyser path change cannot orphan an RSPM file.
+     */
+    public static boolean reconcileMappings(File mappingsFile, boolean deployEnabled) {
+        File previousTarget = ownedMappingsTarget();
+        if (!deployEnabled || mappingsFile == null || !mappingsFile.isFile()) {
+            return removeMappings();
         }
 
-        // Per-deploy "Detected Geyser at ..." / "Geyser mappings deployed to ..."
-        // fires once at startup AND once per /reload / pack mix, so on a busy
-        // server it shows up in the console several times in a row even though
-        // it's not surfacing new information (the path doesn't change between
-        // boots). Demoted to BedrockLog.debug, gated on `bedrockConverterDebug`
-        // in config.yml so operators who actually want to verify the detection
-        // worked can opt back in.
-        BedrockLog.debug("Detected Geyser at: " + geyserDir.getAbsolutePath());
+        File targetFile = mappingsTarget();
+        if (targetFile == null) {
+            // No local Geyser is normal on network-mode backends, but a target
+            // retained from an earlier configuration still has to converge away.
+            return previousTarget == null || removeMappings();
+        }
 
-        File mappingsDir = new File(geyserDir, "custom_mappings");
+        File mappingsDir = targetFile.getParentFile();
+        BedrockLog.debug("Detected Geyser at: " + mappingsDir.getParentFile().getAbsolutePath());
         mappingsDir.mkdirs();
         try {
-            Files.copy(mappingsFile.toPath(),
-                    new File(mappingsDir, mappingsFile.getName()).toPath(),
-                    StandardCopyOption.REPLACE_EXISTING);
+            Path target = targetFile.toPath();
+            Path temporary = target.resolveSibling(
+                    "." + target.getFileName() + "." + UUID.randomUUID() + ".tmp");
+            try {
+                Files.copy(mappingsFile.toPath(), temporary,
+                        StandardCopyOption.REPLACE_EXISTING);
+                publishAtomically(temporary, target);
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
             BedrockLog.debug("Geyser mappings deployed to " + mappingsDir.getAbsolutePath()
                     + " — restart Geyser to apply mapping changes (the pack itself is served live).");
+
+            if (previousTarget != null
+                    && !previousTarget.toPath().toAbsolutePath().normalize().equals(
+                    targetFile.toPath().toAbsolutePath().normalize())) {
+                File validatedPrevious = validateOwnedTarget(previousTarget.getAbsolutePath());
+                if (validatedPrevious == null) {
+                    Logger.warn("Refusing to remove invalid prior Geyser mapping target: "
+                            + previousTarget.getAbsolutePath());
+                    return false;
+                }
+                try {
+                    Files.deleteIfExists(validatedPrevious.toPath());
+                } catch (IOException cleanupFailure) {
+                    Logger.warn("Failed to remove prior Geyser custom mapping after path change: "
+                            + cleanupFailure.getMessage());
+                    return false;
+                }
+            }
+            recordOwnedMappingsTarget(targetFile);
+            return true;
         } catch (IOException e) {
-            // Real I/O failure — keep at warn so operators see the deploy actually broke.
             Logger.warn("Failed to copy mappings to Geyser custom_mappings/ directory: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Returns the exact Geyser custom-mapping destination without mutating it.
+     * Exposed so the conversion pipeline can include this third publication
+     * target in the same rollback transaction as the local ZIP and sidecar.
+     */
+    public static File mappingsTarget() {
+        File geyserDir = detectGeyserDir();
+        if (geyserDir == null) return null;
+        return new File(new File(geyserDir, "custom_mappings"),
+                BedrockConversion.GEYSER_MAPPINGS_NAME);
+    }
+
+    /** Persistent provenance independent of the live auto-deploy/path setting. */
+    public static File ownershipFile() {
+        return new File(ResourcePackManager.plugin.getDataFolder(), OWNERSHIP_FILE_NAME);
+    }
+
+    /**
+     * Returns the last committed RSPM-owned mapping target. Pre-provenance
+     * installs conservatively fall back to the currently detected exact RSPM
+     * filename so disabling auto-deploy also cleans upgrades from older builds.
+     */
+    public static File ownedMappingsTarget() {
+        File provenance = ownershipFile();
+        if (provenance.isFile()) {
+            try {
+                File target = validateOwnedTarget(Files.readString(
+                        provenance.toPath(), StandardCharsets.UTF_8));
+                if (target != null) return target;
+                Logger.warn("Ignoring invalid RSPM Geyser mapping ownership provenance at "
+                        + provenance.getAbsolutePath());
+            } catch (IOException e) {
+                Logger.warn("Failed to read RSPM Geyser mapping ownership provenance: "
+                        + e.getMessage());
+            }
+        }
+        File detected = mappingsTarget();
+        return detected != null && detected.isFile() ? detected : null;
+    }
+
+    /** Atomically records the exact non-recursive file target RSPM owns. */
+    public static void recordOwnedMappingsTarget(File targetFile) {
+        File provenance = ownershipFile();
+        if (targetFile == null) {
+            try {
+                Files.deleteIfExists(provenance.toPath());
+            } catch (IOException e) {
+                Logger.warn("Failed to clear RSPM Geyser mapping ownership provenance: "
+                        + e.getMessage());
+            }
+            return;
+        }
+        File validated = validateOwnedTarget(targetFile.getAbsolutePath());
+        if (validated == null) {
+            Logger.warn("Refusing to record invalid Geyser mapping target: "
+                    + targetFile.getAbsolutePath());
+            return;
+        }
+        Path target = provenance.toPath();
+        Path pending = target.resolveSibling(
+                "." + target.getFileName() + "." + UUID.randomUUID() + ".tmp");
+        try {
+            Files.createDirectories(target.toAbsolutePath().getParent());
+            Files.writeString(pending,
+                    validated.toPath().toAbsolutePath().normalize() + System.lineSeparator(),
+                    StandardCharsets.UTF_8);
+            publishAtomically(pending, target);
+        } catch (IOException e) {
+            Logger.warn("Failed to persist RSPM Geyser mapping ownership provenance: "
+                    + e.getMessage());
+        } finally {
+            try {
+                Files.deleteIfExists(pending);
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    /** Remove RSPM's deployed custom mapping after an authoritative withdrawal. */
+    public static boolean removeMappings() {
+        Set<File> targets = new LinkedHashSet<>();
+        File owned = ownedMappingsTarget();
+        File detected = mappingsTarget();
+        if (owned != null) targets.add(owned);
+        if (detected != null) targets.add(detected);
+        boolean removed = true;
+        for (File target : targets) {
+            File validated = validateOwnedTarget(target.getAbsolutePath());
+            if (validated == null) {
+                removed = false;
+                Logger.warn("Refusing to remove invalid Geyser mapping target: "
+                        + target.getAbsolutePath());
+                continue;
+            }
+            try {
+                Files.deleteIfExists(validated.toPath());
+            } catch (IOException e) {
+                removed = false;
+                Logger.warn("Failed to remove stale Geyser custom mapping: " + e.getMessage());
+            }
+        }
+        if (removed) {
+            try {
+                Files.deleteIfExists(ownershipFile().toPath());
+            } catch (IOException e) {
+                removed = false;
+                Logger.warn("Failed to clear Geyser mapping ownership provenance: "
+                        + e.getMessage());
+            }
+        }
+        return removed;
+    }
+
+    private static File validateOwnedTarget(String rawPath) {
+        if (rawPath == null || rawPath.isBlank()) return null;
+        try {
+            Path path = Path.of(rawPath.trim()).toAbsolutePath().normalize();
+            Path name = path.getFileName();
+            Path parent = path.getParent();
+            if (name == null || parent == null
+                    || !BedrockConversion.GEYSER_MAPPINGS_NAME.equals(name.toString())
+                    || parent.getFileName() == null
+                    || !"custom_mappings".equals(parent.getFileName().toString())) {
+                return null;
+            }
+            return path.toFile();
+        } catch (RuntimeException invalidPath) {
+            return null;
+        }
+    }
+
+    private static void publishAtomically(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException atomicMoveFailed) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -127,6 +307,10 @@ public class GeyserDeployer {
     private static File findGeyserSubdir(File parentDir) {
         File[] children = parentDir.listFiles();
         if (children == null) return null;
+        // listFiles() order is filesystem-dependent; sort so the "first match"
+        // is deterministic across boots (same tie-break as the proxy-side
+        // GeyserMappingsDeployer.detectGeyserPluginDir).
+        Arrays.sort(children, Comparator.comparing(File::getName));
         for (File child : children) {
             if (child.isDirectory() && child.getName().startsWith("Geyser-")) {
                 return child;

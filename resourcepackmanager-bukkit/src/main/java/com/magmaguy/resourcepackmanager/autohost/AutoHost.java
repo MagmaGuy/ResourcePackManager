@@ -2,18 +2,21 @@ package com.magmaguy.resourcepackmanager.autohost;
 
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockOutputPublication;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
+import com.magmaguy.resourcepackmanager.utils.RSPLogger;
 import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
 import com.magmaguy.resourcepackmanager.http.BackendIdentity;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient.UploadResult;
 import com.magmaguy.resourcepackmanager.http.PackHttpServer;
 import com.magmaguy.resourcepackmanager.http.RspError;
+import com.magmaguy.resourcepackmanager.update.BackendPluginUpdateArtifactProvider;
 import lombok.Getter;
-import lombok.Setter;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.player.PlayerResourcePackStatusEvent;
@@ -25,12 +28,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 /**
  * Bukkit-side orchestration for the magmaguy.com auto-hosting flow.
@@ -71,19 +76,23 @@ public class AutoHost {
      * safety; all access is on the main thread.
      */
     private static final Map<UUID, Integer> resendAttempts = new ConcurrentHashMap<>();
+    /** Prevent duplicate status events from queueing overlapping retries. */
+    private static final Set<UUID> resendPending = ConcurrentHashMap.newKeySet();
+    private static final Map<UUID, BukkitTask> joinSendTasks = new ConcurrentHashMap<>();
+    private static final Map<UUID, BukkitTask> resendTasks = new ConcurrentHashMap<>();
+    private static final Map<UUID, Long> playerSessionGenerations = new ConcurrentHashMap<>();
+    private static final AtomicLong playerSessionSequence = new AtomicLong();
 
     // Timeout settings for HTTP requests (in seconds)
     private static final int DEFAULT_SOCKET_TIMEOUT = 60;
     private static final int UPLOAD_SOCKET_TIMEOUT = 300; // 5 minutes for file uploads
 
     @Getter
-    @Setter
     private static boolean done = false;
 
     private static BukkitTask keepAlive = null;
     @Getter
     private static String rspUUID = null;
-    @Setter
     private static boolean firstUpload = true;
 
     /** Shared HTTP client. Reconstructed on each {@link #initialize()} call. */
@@ -91,19 +100,44 @@ public class AutoHost {
 
     /** Local self-host server when the magmaguy.com upload fails or is force-skipped. */
     private static volatile PackHttpServer selfHostServer = null;
+    /** Atomically published file/digest pair consumed by the HTTP worker threads. */
+    private static volatile PackHttpServer.FileRouteDescriptor javaPackRouteDescriptor = null;
+    private static volatile PackHttpServer.FileRouteDescriptor bedrockPackRouteDescriptor = null;
+    private static volatile PackHttpServer.FileRouteDescriptor bedrockMappingsRouteDescriptor = null;
     @Getter
     private static volatile String selfHostedUrl = null;
+    /** Ensures the delivery outcome is announced once, not on every keep-alive tick. */
+    private static boolean announcedDelivery = false;
 
     /**
      * Bedrock relay upload task. In network mode, this backend pushes its
      * {@code output/ResourcePackManager_Bedrock.zip} and
      * {@code output/rspm_geyser_mappings.json} to the magmaguy.com relay so
      * that a proxy which can't directly reach this backend's HTTP port still
-     * has a path to fetch the files. Runs every {@link #RELAY_UPLOAD_PERIOD_MINUTES}
+     * has a path to fetch the files. Runs every {@link #RELAY_UPLOAD_PERIOD_TICKS}
      * to refresh the relay entry's TTL (server-side TTL is 30 min — we upload
      * well before that to be safe). Skipped if the files don't yet exist.
      */
     private static BukkitTask relayUploadTask = null;
+    private static BukkitTask relayRetryTask = null;
+    private static final Object RELAY_IO_LOCK = new Object();
+    private static final AtomicLong BEDROCK_PUBLICATION_GENERATION = new AtomicLong();
+    private static volatile boolean bedrockPublicationAuthorized = false;
+    private static final long RELAY_RETRY_DELAY_TICKS = 30L * 20L;
+
+    private static final AtomicLong LIFECYCLE_GENERATION = new AtomicLong();
+    private static volatile LifecycleRun lifecycleRun = null;
+    private static final long HOST_RETRY_PERIOD_TICKS = 30L * 20L;
+    private static final long STILL_ALIVE_PERIOD_NANOS = 6L * 60L * 60L * 1_000_000_000L;
+
+    private record LifecycleRun(long generation, BooleanSupplier cancellationRequested) {
+        private boolean active() {
+            return lifecycleRun == this
+                    && generation == LIFECYCLE_GENERATION.get()
+                    && (cancellationRequested == null || !cancellationRequested.getAsBoolean())
+                    && !com.magmaguy.magmacore.MagmaCore.isShutdownRequested(ResourcePackManager.plugin);
+        }
+    }
     /** Stable per-backend ID. Persisted under plugins/ResourcePackManager/backend-id.txt. */
     private static volatile String backendId = null;
     /**
@@ -119,7 +153,7 @@ public class AutoHost {
         if (backendId == null) {
             backendId = BackendIdentity.loadOrCreate(
                     ResourcePackManager.plugin.getDataFolder().toPath().resolve("backend-id.txt"));
-            Logger.info("RSPM backend-id for Bedrock relay: " + backendId);
+            RSPLogger.detail("RSPM backend-id for Bedrock relay: " + backendId);
         }
         return backendId;
     }
@@ -127,9 +161,27 @@ public class AutoHost {
     private AutoHost() {
     }
 
+    /**
+     * Announces, once per delivery, how players are actually getting the pack.
+     * <p>
+     * This is the line an admin is looking for, and for most servers it is the only one they should
+     * need. The pack can arrive by two very different routes — uploaded to magmaguy.com, or served
+     * straight off this machine — and which one won determines where to look when something is
+     * wrong, so the route is named rather than left implicit.
+     * <p>
+     * Guarded so repeated keep-alive ticks and re-sends do not repeat it; {@link #initialize()}
+     * clears the guard when a genuinely new pack starts being delivered.
+     */
+    private static void announceDelivery(LifecycleRun run, String method, String url) {
+        if (!run.active() || announcedDelivery) return;
+        announcedDelivery = true;
+        RSPLogger.outcome("Resource pack is live via " + method
+                + (url == null || url.isBlank() ? "." : " — " + url));
+    }
+
     public static void sendResourcePack(Player player) {
         if (isFloodgatePlayer(player)) {
-            Logger.info("Skipping Java resource pack send for Bedrock/Floodgate player " + player.getName()
+            RSPLogger.detail("Skipping Java resource pack send for Bedrock/Floodgate player " + player.getName()
                     + "; proxy Geyser handles Bedrock pack delivery.");
             return;
         }
@@ -165,7 +217,7 @@ public class AutoHost {
         }
         hash = Mix.getFinalSHA1Bytes();
 
-        Logger.info("Sending resource pack to " + player.getName());
+        RSPLogger.detail("Sending resource pack to " + player.getName());
 
         String prompt = DefaultConfig.getResourcePackPrompt();
         boolean force = DefaultConfig.isForceResourcePack();
@@ -187,15 +239,46 @@ public class AutoHost {
      * <p>Cross-platform: uses only the core Bukkit scheduler, no Paper API.</p>
      */
     public static void scheduleJoinSend(Player player) {
-        resendAttempts.remove(player.getUniqueId()); // fresh session
-        Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
-            if (player.isOnline()) sendResourcePack(player);
+        UUID id = player.getUniqueId();
+        cancelPlayerTasks(id);
+        resendAttempts.remove(id); // fresh session
+        resendPending.remove(id);
+        long session = playerSessionSequence.incrementAndGet();
+        playerSessionGenerations.put(id, session);
+        AtomicReference<BukkitTask> ownTask = new AtomicReference<>();
+        BukkitTask task = Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
+            try {
+                if (player.isOnline() && playerSessionGenerations.getOrDefault(id, -1L) == session) {
+                    sendResourcePack(player);
+                }
+            } finally {
+                joinSendTasks.remove(id, ownTask.get());
+            }
         }, JOIN_SEND_DELAY_TICKS);
+        ownTask.set(task);
+        joinSendTasks.put(id, task);
     }
 
     /** Drop a player's resend bookkeeping when they leave. */
     public static void forgetPlayer(UUID playerId) {
+        playerSessionGenerations.put(playerId, playerSessionSequence.incrementAndGet());
+        cancelPlayerTasks(playerId);
         resendAttempts.remove(playerId);
+        resendPending.remove(playerId);
+    }
+
+    private static void cancelPlayerTasks(UUID playerId) {
+        BukkitTask joinTask = joinSendTasks.remove(playerId);
+        if (joinTask != null) joinTask.cancel();
+        BukkitTask retryTask = resendTasks.remove(playerId);
+        if (retryTask != null) retryTask.cancel();
+    }
+
+    private static void settlePlayer(UUID playerId) {
+        playerSessionGenerations.put(playerId, playerSessionSequence.incrementAndGet());
+        cancelPlayerTasks(playerId);
+        resendAttempts.remove(playerId);
+        resendPending.remove(playerId);
     }
 
     /**
@@ -218,7 +301,7 @@ public class AutoHost {
         Player player = event.getPlayer();
         UUID id = player.getUniqueId();
         if (isFloodgatePlayer(player)) {
-            resendAttempts.remove(id);
+            settlePlayer(id);
             return;
         }
 
@@ -234,24 +317,41 @@ public class AutoHost {
             case "SUCCESSFULLY_LOADED":
             case "DECLINED":
                 // Settled: applied, or a deliberate opt-out. Nothing more to do.
-                resendAttempts.remove(id);
+                settlePlayer(id);
                 return;
             case "FAILED_DOWNLOAD":
             case "DISCARDED": {
+                if (!resendPending.add(id)) return;
                 int attempts = resendAttempts.getOrDefault(id, 0);
                 if (attempts >= MAX_RESEND_ATTEMPTS) {
                     Logger.warn("Resource pack delivery to " + player.getName() + " failed "
                             + attempts + "x (last status " + event.getStatus().name()
                             + "); giving up. They can retry with /rspm reload.");
-                    resendAttempts.remove(id);
+                    settlePlayer(id);
                     return;
                 }
                 resendAttempts.put(id, attempts + 1);
-                Logger.info("Resource pack " + event.getStatus().name() + " for " + player.getName()
+                RSPLogger.detail("Resource pack " + event.getStatus().name() + " for " + player.getName()
                         + "; resending (attempt " + (attempts + 1) + "/" + MAX_RESEND_ATTEMPTS + ").");
-                Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
-                    if (player.isOnline()) sendResourcePack(player);
+                long session = playerSessionGenerations.computeIfAbsent(
+                        id, ignored -> playerSessionSequence.incrementAndGet());
+                AtomicReference<BukkitTask> ownTask = new AtomicReference<>();
+                BukkitTask task = Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
+                    try {
+                        if (player.isOnline()
+                                && playerSessionGenerations.getOrDefault(id, -1L) == session) {
+                            sendResourcePack(player);
+                        }
+                    } finally {
+                        if (playerSessionGenerations.getOrDefault(id, -1L) == session) {
+                            resendPending.remove(id);
+                        }
+                        resendTasks.remove(id, ownTask.get());
+                    }
                 }, RESEND_DELAY_TICKS);
+                ownTask.set(task);
+                BukkitTask previous = resendTasks.put(id, task);
+                if (previous != null && previous != task) previous.cancel();
                 return;
             }
             case "INVALID_URL":
@@ -259,7 +359,7 @@ public class AutoHost {
                 // resending won't help, so don't loop on it.
                 Logger.warn("Client " + player.getName() + " reported INVALID_URL for the resource pack"
                         + " — hosting/URL problem, not a timing one; not retrying.");
-                resendAttempts.remove(id);
+                settlePlayer(id);
                 return;
             default:
                 // ACCEPTED / DOWNLOADED (in-progress), FAILED_RELOAD, etc.: no action.
@@ -286,21 +386,81 @@ public class AutoHost {
         }
     }
 
+    /**
+     * SHA-1 of the pack this JVM last successfully published, used to recognise a reload that
+     * produced a byte-identical pack.
+     */
+    private static String publishedSHA1 = null;
+
     public static void initialize() {
-        if (!DefaultConfig.isAutoHost()) return;
-        if (Mix.getFinalResourcePack() == null) return;
-        Logger.info("Starting autohost!");
+        initialize(() -> false);
+    }
+
+    public static synchronized void initialize(BooleanSupplier runCancellation) {
+        BooleanSupplier cancellation = runCancellation == null ? () -> false : runCancellation;
+        if (cancellation.getAsBoolean()) return;
+        File currentPack = Mix.getFinalResourcePack();
+        javaPackRouteDescriptor = currentPack == null
+                ? null
+                : new PackHttpServer.FileRouteDescriptor(currentPack, Mix.getFinalSHA1());
+        refreshBedrockPublicationAuthority();
+        boolean javaDeliveryEnabled =
+                DefaultConfig.isAutoHost() || DefaultConfig.isSelfHostForce();
+        boolean networkModeActive = NetworkMode.isActive();
+        if (!javaDeliveryEnabled && !networkModeActive) return;
+
+        // A reload re-runs this path even when the pack did not change, and re-registering costs
+        // two sequential round trips to the host (initialize, then sha1) before the second one
+        // answers "already have it". That was most of what an admin waited through on /em reload.
+        // If this JVM already published exactly this pack and still holds a live registration,
+        // there is nothing to renegotiate — just re-offer it to whoever is online.
+        // Deliberately not applied to self-hosting or network mode, which own extra state
+        // (local HTTP server, relay uploads) that initialize() is responsible for rebuilding.
+        if (done
+                && rspUUID != null
+                && javaDeliveryEnabled
+                && !networkModeActive
+                && !DefaultConfig.isSelfHostForce()
+                && publishedSHA1 != null
+                && publishedSHA1.equals(Mix.getFinalSHA1())) {
+            RSPLogger.detail("Resource pack is unchanged and already hosted; skipping re-registration.");
+            for (Player player : Bukkit.getOnlinePlayers()) sendResourcePack(player);
+            return;
+        }
+
+        long generation = LIFECYCLE_GENERATION.incrementAndGet();
+        LifecycleRun run = new LifecycleRun(generation, cancellation);
+        lifecycleRun = run;
+        if (!run.active()) {
+            LIFECYCLE_GENERATION.incrementAndGet();
+            lifecycleRun = null;
+            return;
+        }
+
         firstUpload = true;
+        announcedDelivery = false;
         done = false;
         rspUUID = null;
         // Reset the public-IP cache so /rspm reload re-detects (admin may have
         // moved the server to a new network between boots / reloads).
         cachedPublicIp = null;
-        if (keepAlive != null) keepAlive.cancel();
+        if (keepAlive != null) {
+            keepAlive.cancel();
+            keepAlive = null;
+        }
+        if (relayUploadTask != null) {
+            relayUploadTask.cancel();
+            relayUploadTask = null;
+        }
+        if (relayRetryTask != null) {
+            relayRetryTask.cancel();
+            relayRetryTask = null;
+        }
 
         // Close any client lingering from a previous initialize() (e.g. /rspm reload).
         if (client != null) {
             try {
+                client.abortInFlight();
                 client.close();
             } catch (Exception ignored) {
             }
@@ -314,13 +474,20 @@ public class AutoHost {
         // proxy plugin's NetworkSync can pull /bedrock.zip and /mappings.json from
         // the very first poll, even before this backend has produced any output.
         // The routes 404 cleanly until the underlying files appear.
-        if (NetworkMode.isActive()) {
-            startBackendHttpServerIfNeeded();
-            startBedrockRelayUploadTask();
+        if (networkModeActive) {
+            startBackendHttpServerIfNeeded(run);
+            startBedrockRelayUploadTask(run);
         }
+
+        // Network mode still needs the backend HTTP/relay path when remote Java
+        // pack hosting is disabled. Do not accidentally upload or push the Java
+        // pack in that configuration.
+        if (!javaDeliveryEnabled || Mix.getFinalResourcePack() == null) return;
+        RSPLogger.detail("Starting autohost!");
 
         keepAlive = new BukkitRunnable() {
             int counter = 0;
+            long nextStillAliveNanos = System.nanoTime() + STILL_ALIVE_PERIOD_NANOS;
 
             @Override
             public void run() {
@@ -329,33 +496,41 @@ public class AutoHost {
                 // already mid-execution; without this check, an in-flight
                 // upload (10s+ blocking) keeps the task alive past onDisable
                 // and Bukkit nags about un-shutdown async tasks.
-                if (com.magmaguy.magmacore.MagmaCore.isShutdownRequested(ResourcePackManager.plugin)
-                        || isCancelled()) return;
+                if (!run.active() || isCancelled()) {
+                    cancel();
+                    return;
+                }
 
-                if (rspUUID != null) {
+                if (rspUUID != null && done) {
                     counter = 0;
+                    if (System.nanoTime() < nextStillAliveNanos) return;
                     try {
-                        sendStillAlive();
+                        sendStillAlive(run);
+                        nextStillAliveNanos = System.nanoTime() + STILL_ALIVE_PERIOD_NANOS;
                     } catch (Exception e) {
-                        rspUUID = null;
-                        Logger.warn("Failed to autohost resource pack!");
-                        e.printStackTrace();
+                        if (run.active()) {
+                            rspUUID = null;
+                            done = false;
+                            Logger.warn("Failed to autohost resource pack!");
+                            e.printStackTrace();
+                        }
                     }
                 } else {
-                    checkFileExistence();
-                    if (rspUUID == null && counter % 10 == 0) {
+                    checkFileExistence(run);
+                    if (!done && rspUUID == null && counter % 10 == 0) {
                         Logger.warn("Failed to connect to remote server to autohost the resource pack!");
                     }
                     counter++;
                 }
             }
-        }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, 6 * 60 * 60 * 20L);
+        }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, HOST_RETRY_PERIOD_TICKS);
     }
 
-    private static void checkFileExistence() {
+    private static void checkFileExistence(LifecycleRun run) {
+        if (!run.active()) return;
         // selfHostForce short-circuits everything — straight to self-host, no probe, no remote.
         if (DefaultConfig.isSelfHostForce()) {
-            fallbackToSelfHost();
+            fallbackToSelfHost(run);
             return;
         }
 
@@ -366,30 +541,34 @@ public class AutoHost {
         if (DefaultConfig.isPreferSelfHost()
                 && DefaultConfig.isSelfHostEnabled()
                 && !NetworkMode.isActive()) {
-            if (trySelfHostFirst()) {
+            if (trySelfHostFirst(run)) {
                 return; // Self-host passed both checks — we're done.
             }
             // Either the host looked non-routable, or the local HTTP server didn't
             // respond correctly to a localhost probe. Fall through to remote.
-            Logger.info("Using magmaguy.com hosting for this resource pack.");
+            RSPLogger.detail("Using magmaguy.com hosting for this resource pack.");
         }
 
-        if (client == null) return;
+        if (client == null || !run.active()) return;
 
         Optional<String> initResult;
         try {
             initResult = client.initialize(DataConfig.getRspUUID());
         } catch (IOException e) {
+            if (!run.active()) return;
             Logger.warn("Failed to communicate with remote server!");
             e.printStackTrace();
             rspUUID = null;
-            fallbackToSelfHost();
+            fallbackToSelfHost(run);
             return;
         }
 
+        if (!run.active()) return;
+
         if (initResult.isEmpty()) {
             rspUUID = null;
-            Logger.info("No resource pack found on the server! Uploading resource pack to the server...");
+            RSPLogger.detail("No resource pack found on the server! Uploading resource pack to the server...");
+            fallbackToSelfHost(run);
             return;
         }
         rspUUID = initResult.get();
@@ -397,26 +576,30 @@ public class AutoHost {
 
         try {
             MagmaguyRspClient.Sha1Result sha1Result = client.sha1Check(rspUUID, Mix.getFinalSHA1());
+            if (!run.active()) return;
             if (sha1Result.matched()) {
                 // Remote server already has this resource pack
-                Logger.info("Remote server already has this resource pack!");
+                RSPLogger.detail("Remote server already has this resource pack!");
+                announceDelivery(run, "automatic hosting", MagmaguyRspClient.BASE_URL + rspUUID);
                 done = true;
-                sendToOnlinePlayersIfFirstUpload();
+                publishedSHA1 = Mix.getFinalSHA1();
+                sendToOnlinePlayersIfFirstUpload(run);
             } else if (sha1Result.errorOrNull() != null) {
                 // Server returned a structured error during sha1 check — react
                 // before wasting a multi-MB upload. SESSION_NOT_FOUND in
                 // particular clears rspUUID so the next keep-alive tick
                 // reinitializes; uploading against a dead session would just
                 // burn bandwidth and fail.
-                handleUploadError(sha1Result.errorOrNull());
-                fallbackToSelfHost();
+                handleUploadError(run, sha1Result.errorOrNull());
+                fallbackToSelfHost(run);
             } else {
-                uploadFile();
+                uploadFile(run);
             }
         } catch (IOException e) {
+            if (!run.active()) return;
             Logger.warn("Failed to communicate with remote server during SHA1 check!");
             e.printStackTrace();
-            fallbackToSelfHost();
+            fallbackToSelfHost(run);
         }
     }
 
@@ -447,10 +630,10 @@ public class AutoHost {
      * the port IS open to the public internet (Layer 3 passes) but the
      * operator's own router doesn't loop traffic back from inside the LAN.
      * External clients work, but the operator testing from the same machine
-     * fails. Per-player URL routing (LAN clients get a LAN URL, internet
-     * clients get the public URL) would close that gap — not yet wired.
-     * Workaround for now: testing from the host machine with a hairpin-broken
-     * router still requires {@code preferSelfHost: false} OR
+     * fails. RSPM does not do per-player URL routing (LAN clients getting a
+     * LAN URL, internet clients the public URL), so this limitation stands.
+     * Workaround: testing from the host machine with a hairpin-broken
+     * router requires {@code preferSelfHost: false} OR
      * {@code selfHostExternalHost: 127.0.0.1}.</p>
      *
      * @return {@code true} when all checks pass and self-host is now active.
@@ -458,20 +641,21 @@ public class AutoHost {
      * {@code false}, the self-host server is torn down so the subsequent
      * remote-upload path doesn't announce a stale URL.
      */
-    private static boolean trySelfHostFirst() {
-        if (Mix.getFinalResourcePack() == null) return false;
+    private static boolean trySelfHostFirst(LifecycleRun run) {
+        if (!run.active() || Mix.getFinalResourcePack() == null) return false;
 
         // Layer 1: heuristic check on resolved external host.
-        String host = resolveExternalHost();
+        String host = resolveExternalHost(run);
+        if (!run.active()) return false;
         if (host == null || isNonRoutableHost(host)) {
-            Logger.info("Self-host check: local pack link is not public"
+            RSPLogger.detail("Self-host check: local pack link is not public"
                     + formatOptionalDetail(host) + ". This is OK.");
             return false;
         }
 
         // Stand up the self-host server WITHOUT broadcasting yet — we only commit
         // (and push the URL to players) after the reachability probes below pass.
-        if (!ensureSelfHostServer()) return false;
+        if (!ensureSelfHostServer(run)) return false;
         if (selfHostedUrl == null) return false;
 
         // Layer 2: localhost self-probe — confirm the HTTP server is up and the
@@ -480,7 +664,8 @@ public class AutoHost {
         // client could download the pack" EXCEPT the external-firewall case.
         int port = (selfHostServer != null) ? selfHostServer.port() : -1;
         if (port <= 0 || !localhostSelfProbe(port)) {
-            Logger.info("Self-host check: local pack server did not answer correctly. This is OK.");
+            if (!run.active()) return false;
+            RSPLogger.detail("Self-host check: local pack server did not answer correctly. This is OK.");
             tearDownSelfHost();
             return false;
         }
@@ -491,7 +676,8 @@ public class AutoHost {
         // what actually matters for the clients we'll announce it to. Catches
         // the very common "public IP detected, port not forwarded at router"
         // failure mode that the previous two-layer check committed to silently.
-        if (!externalReachabilityProbe(selfHostedUrl)) {
+        if (!externalReachabilityProbe(run, selfHostedUrl)) {
+            if (!run.active()) return false;
             // externalReachabilityProbe logs the specific reason. Tear down so
             // the subsequent remote-upload path can re-bind cleanly.
             tearDownSelfHost();
@@ -499,8 +685,9 @@ public class AutoHost {
         }
 
         // All checks passed — NOW commit and push the verified URL to players.
-        commitSelfHost();
-        Logger.info("Self-host sanity checks passed; using self-hosting at " + selfHostedUrl);
+        if (!run.active()) return false;
+        commitSelfHost(run);
+        RSPLogger.detail("Self-host sanity checks passed; using self-hosting at " + selfHostedUrl);
         return true;
     }
 
@@ -531,7 +718,8 @@ public class AutoHost {
      * couldn't be performed. {@code false} only when the hoster explicitly
      * told us the URL is unreachable.
      */
-    private static boolean externalReachabilityProbe(String url) {
+    private static boolean externalReachabilityProbe(LifecycleRun run, String url) {
+        if (!run.active()) return false;
         MagmaguyRspClient c = client;
         if (c == null) {
             // No client (extremely unlikely — initialize() set it before
@@ -540,20 +728,22 @@ public class AutoHost {
         }
         try {
             MagmaguyRspClient.ProbeResult result = c.probe(url);
+            if (!run.active()) return false;
             if (result.reachable()) {
-                Logger.info("External reachability probe via magmaguy.com: " + url
+                RSPLogger.detail("External reachability probe via magmaguy.com: " + url
                         + " is reachable from the public internet (HTTP "
                         + result.status() + ", " + result.durationMs() + " ms). "
                         + "Committing to self-host.");
                 return true;
             }
-            Logger.info("Self-host check: local pack link is not public"
+            RSPLogger.detail("Self-host check: local pack link is not public"
                     + formatOptionalDetail(result.reasonOrNull()) + ". This is OK.");
             return false;
         } catch (java.io.IOException e) {
+            if (!run.active()) return false;
             // We couldn't talk to magmaguy.com to ask. Don't fail-closed —
             // see method javadoc decision policy.
-            Logger.info("External reachability probe via magmaguy.com failed to "
+            RSPLogger.detail("External reachability probe via magmaguy.com failed to "
                     + "communicate (" + e.getMessage() + "); keeping self-host. "
                     + "If clients can't reach the pack URL, set preferSelfHost: false.");
             return true;
@@ -586,16 +776,16 @@ public class AutoHost {
             int code = conn.getResponseCode();
             int len = conn.getContentLength();
             if (code != 200) {
-                Logger.info("Self-host check detail: local pack server returned HTTP " + code + ".");
+                RSPLogger.detail("Self-host check detail: local pack server returned HTTP " + code + ".");
                 return false;
             }
             if (len == 0) {
-                Logger.info("Self-host check detail: local pack file looked empty.");
+                RSPLogger.detail("Self-host check detail: local pack file looked empty.");
                 return false;
             }
             return true;
         } catch (java.io.IOException | java.net.URISyntaxException e) {
-            Logger.info("Self-host check detail: local pack server did not answer"
+            RSPLogger.detail("Self-host check detail: local pack server did not answer"
                     + formatOptionalDetail(e.getMessage()) + ".");
             return false;
         } finally {
@@ -633,9 +823,16 @@ public class AutoHost {
      * the unspecified address. Used to skip the reachability probe entirely
      * when the auto-detected host obviously isn't reachable from outside.
      */
-    private static boolean isNonRoutableHost(String host) {
+    static boolean isNonRoutableHost(String host) {
         if (host == null || host.isBlank()) return true;
-        String h = host.toLowerCase();
+        String h = host.trim().toLowerCase(java.util.Locale.ROOT);
+        if (h.startsWith("[") && h.endsWith("]") && h.length() > 2) {
+            h = h.substring(1, h.length() - 1);
+        }
+        int zoneIndex = h.indexOf('%');
+        if (zoneIndex >= 0) {
+            h = h.substring(0, zoneIndex);
+        }
         if (h.equals("localhost") || h.equals("0.0.0.0")) return true;
         if (h.startsWith("127.")) return true;
         if (h.startsWith("10.")) return true;
@@ -651,41 +848,68 @@ public class AutoHost {
                 } catch (NumberFormatException ignored) {}
             }
         }
+        if (h.indexOf(':') >= 0) {
+            try {
+                java.net.InetAddress address = java.net.InetAddress.getByName(h);
+                if (address.isAnyLocalAddress()
+                        || address.isLoopbackAddress()
+                        || address.isLinkLocalAddress()
+                        || address.isSiteLocalAddress()) {
+                    return true;
+                }
+                byte[] bytes = address.getAddress();
+                // fc00::/7 — IPv6 unique-local addresses. InetAddress does not
+                // classify these as site-local even though they are never
+                // globally routable.
+                return bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc;
+            } catch (java.net.UnknownHostException ignored) {
+                // A malformed configured hostname is handled by the later URL
+                // and reachability checks. It is not evidence of a private IP.
+            }
+        }
         return false;
     }
 
-    public static void uploadFile() {
-        if (client == null || rspUUID == null) return;
-        Logger.info("Uploading resource!");
+    private static void uploadFile(LifecycleRun run) {
+        if (!run.active() || client == null || rspUUID == null) return;
+        RSPLogger.detail("Uploading resource!");
 
         UploadResult result;
         try {
             result = client.upload(rspUUID, Mix.getFinalResourcePack());
         } catch (IOException e) {
+            if (!run.active()) return;
             Logger.warn("Failed to communicate with remote server during upload!");
             e.printStackTrace();
-            fallbackToSelfHost();
+            fallbackToSelfHost(run);
             return;
         }
 
+        if (!run.active()) return;
+
         if (result.success()) {
-            Logger.info("Uploaded resource pack for automatic hosting! url: " + result.urlOrNull());
+            RSPLogger.detail("Uploaded resource pack for automatic hosting! url: " + result.urlOrNull());
+            announceDelivery(run, "automatic hosting", result.urlOrNull());
             done = true;
-            sendToOnlinePlayersIfFirstUpload();
+            publishedSHA1 = Mix.getFinalSHA1();
+            sendToOnlinePlayersIfFirstUpload(run);
         } else {
-            handleUploadError(result.errorOrNull());
-            fallbackToSelfHost();
+            handleUploadError(run, result.errorOrNull());
+            fallbackToSelfHost(run);
         }
     }
 
-    private static void sendStillAlive() throws IOException {
-        if (client == null || rspUUID == null) return;
+    private static void sendStillAlive(LifecycleRun run) throws IOException {
+        if (!run.active() || client == null || rspUUID == null) return;
         try {
             if (!client.stillAlive(rspUUID)) {
+                if (!run.active()) return;
                 // Non-2xx — session may have expired. Reset UUID to trigger re-initialization.
                 rspUUID = null;
+                done = false;
             }
         } catch (IOException e) {
+            if (!run.active()) return;
             Logger.warn("Failed to communicate with remote server during still alive ping!");
             throw e;
         }
@@ -711,22 +935,16 @@ public class AutoHost {
             File zipFile = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath()
                     + File.separatorChar + "data_compliance" + File.separatorChar + "data.zip");
             if (!zipFile.getParentFile().exists()) zipFile.getParentFile().mkdirs();
-            if (zipFile.exists()) zipFile.delete();
-            zipFile.createNewFile();
 
             activeClient.downloadDataCompliance(rspUUID, zipFile);
 
-            InputStream inputStream = ResourcePackManager.plugin.getResource("ReadMe.md");
             File readMe = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath()
                     + File.separatorChar + "data_compliance" + File.separatorChar + "ReadMe.md");
-            if (!readMe.exists()) readMe.createNewFile();
-            // Copy the InputStream to the file
-            if (inputStream != null) {
-                Files.copy(inputStream, readMe.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            try (InputStream inputStream = ResourcePackManager.plugin.getResource("ReadMe.md")) {
+                if (inputStream != null) {
+                    Files.copy(inputStream, readMe.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
             }
-        } catch (Exception e) {
-            Logger.warn("Failed to communicate with remote server!");
-            e.printStackTrace();
         } finally {
             if (ownsClient) {
                 try {
@@ -737,36 +955,65 @@ public class AutoHost {
         }
     }
 
-    public static void shutdown() {
+    public static synchronized void shutdown() {
+        // Invalidate every task before cancelling/aborting it. Any runnable that
+        // was already inside blocking I/O will fail its post-I/O generation check
+        // and cannot resurrect hosting state in the next enable cycle.
+        LIFECYCLE_GENERATION.incrementAndGet();
+        lifecycleRun = null;
+        BEDROCK_PUBLICATION_GENERATION.incrementAndGet();
+        bedrockPublicationAuthorized = false;
+        for (BukkitTask task : joinSendTasks.values()) task.cancel();
+        for (BukkitTask task : resendTasks.values()) task.cancel();
+        joinSendTasks.clear();
+        resendTasks.clear();
+        playerSessionGenerations.clear();
+        resendAttempts.clear();
+        resendPending.clear();
+        // Cleared so that a re-enable does a full registration again. The skip in initialize()
+        // assumes the keepAlive task below is still running; leaving this set across a shutdown
+        // would skip re-registering and leave the host entry with nothing keeping it alive.
+        publishedSHA1 = null;
+        announcedDelivery = false;
         if (keepAlive != null) keepAlive.cancel();
         if (relayUploadTask != null) {
             relayUploadTask.cancel();
             relayUploadTask = null;
         }
+        if (relayRetryTask != null) {
+            relayRetryTask.cancel();
+            relayRetryTask = null;
+        }
+        MagmaguyRspClient c = client;
+        if (c != null) c.abortInFlight();
         // Best-effort: drop this backend's relay entry on clean shutdown so
         // the proxy stops seeing it immediately rather than waiting up to
-        // 30 min for TTL. We DO NOT block shutdown on this — fire and forget
-        // on the existing scheduler if a client is available. If it fails,
-        // the hoster's TTL sweep will catch up.
-        if (NetworkMode.isActive() && backendId != null) {
-            MagmaguyRspClient deleteClient = client;
-            if (deleteClient != null) {
-                try {
-                    String networkKey = NetworkMode.getNetworkKey();
-                    if (networkKey != null && !networkKey.isBlank()) {
-                        deleteClient.deleteBedrockRelay(networkKey, backendId, null);
+        // 30 min for TTL. The client uses a dedicated two-second request here;
+        // if it fails, the hoster's TTL sweep will catch up.
+        if (NetworkMode.isActive() && backendId != null
+                && !MagmaguyRspClient.isRemoteRelayDisabled()) {
+            try {
+                String networkKey = NetworkMode.getNetworkKey();
+                if (networkKey != null && !networkKey.isBlank()) {
+                    // This client is deliberately independent of the already
+                    // aborted lifecycle client above. Keep the shutdown delete
+                    // bounded and serialized with any upload that is finishing.
+                    try (MagmaguyRspClient deleteClient = new MagmaguyRspClient(
+                            ResourcePackManager.plugin.getLogger(), 2, 2)) {
+                        synchronized (RELAY_IO_LOCK) {
+                            deleteClient.deleteBedrockRelayOnShutdown(
+                                    networkKey, backendId);
+                        }
                     }
-                } catch (Exception ignored) {
-                    // Fire-and-forget; TTL covers us.
                 }
+            } catch (Exception ignored) {
+                // One bounded attempt only on shutdown; TTL covers us.
             }
         }
         // Abort any in-flight HTTP request (initialize / sha1 / upload). Without
         // this, a multi-MB upload can keep the async task alive past onDisable
         // and Bukkit nags about un-shutdown async tasks.
-        MagmaguyRspClient c = client;
         if (c != null) {
-            c.abortInFlight();
             try {
                 c.close();
             } catch (Exception ignored) {
@@ -781,6 +1028,9 @@ public class AutoHost {
             selfHostServer = null;
             selfHostedUrl = null;
         }
+        javaPackRouteDescriptor = null;
+        bedrockPackRouteDescriptor = null;
+        bedrockMappingsRouteDescriptor = null;
         done = false;
         rspUUID = null;
     }
@@ -799,17 +1049,23 @@ public class AutoHost {
      * never used by the proxy — they expire on the hoster after 30 min idle
      * and the only cost is the periodic upload of a small Bedrock zip.</p>
      */
-    private static void startBedrockRelayUploadTask() {
+    private static void startBedrockRelayUploadTask(LifecycleRun run) {
+        if (MagmaguyRspClient.isRemoteRelayDisabled()) {
+            RSPLogger.detail("Remote Bedrock relay disabled by JVM system-test property; direct backend HTTP remains active.");
+            return;
+        }
         if (relayUploadTask != null) return;
         ensureBackendId();
         relayUploadTask = new BukkitRunnable() {
             @Override
             public void run() {
-                if (com.magmaguy.magmacore.MagmaCore.isShutdownRequested(ResourcePackManager.plugin)
-                        || isCancelled()) return;
-                pushBedrockRelayOnce();
+                if (!run.active() || isCancelled()) {
+                    cancel();
+                    return;
+                }
+                requestRelayReconcile(run, BEDROCK_PUBLICATION_GENERATION.get());
             }
-        }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 200L, RELAY_UPLOAD_PERIOD_TICKS);
+        }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 1L, RELAY_UPLOAD_PERIOD_TICKS);
     }
 
     /**
@@ -822,8 +1078,31 @@ public class AutoHost {
      * mode (no network key) and harmless if the relay task isn't running.
      */
     public static void publishBedrockOutputs() {
-        if (!NetworkMode.isActive()) return;
-        pushBedrockRelayOnce();
+        refreshBedrockPublicationAuthority();
+        long publicationGeneration = BEDROCK_PUBLICATION_GENERATION.incrementAndGet();
+        bedrockPublicationAuthorized = bedrockPackRouteDescriptor != null
+                && DefaultConfig.isBedrockConversionEnabled();
+        LifecycleRun run = lifecycleRun;
+        if (run != null && run.active() && NetworkMode.isActive()) {
+            requestRelayReconcile(run, publicationGeneration);
+        }
+    }
+
+    /**
+     * Withdraws both relay artifacts after an ordinary conversion failure. The
+     * conversion may have been unable to delete a locked local file, so this is
+     * deliberately unconditional instead of deriving relay state from disk.
+     * Cancellation does not call this path and therefore retains last-good data.
+     */
+    public static void withdrawBedrockOutputs() {
+        bedrockPackRouteDescriptor = null;
+        bedrockMappingsRouteDescriptor = null;
+        bedrockPublicationAuthorized = false;
+        long publicationGeneration = BEDROCK_PUBLICATION_GENERATION.incrementAndGet();
+        LifecycleRun run = lifecycleRun;
+        if (run != null && run.active() && NetworkMode.isActive()) {
+            requestRelayReconcile(run, publicationGeneration);
+        }
     }
 
     /**
@@ -831,48 +1110,130 @@ public class AutoHost {
      * recurring relay task and on demand via {@link #publishBedrockOutputs()} after
      * a fresh BedrockConversion.
      */
-    private static void pushBedrockRelayOnce() {
-        MagmaguyRspClient relayClient = client;
-        if (relayClient == null) return;
-        if (backendId == null) return;
+    private static void requestRelayReconcile(LifecycleRun run, long publicationGeneration) {
+        if (MagmaguyRspClient.isRemoteRelayDisabled() || !run.active()) return;
+        Bukkit.getScheduler().runTaskAsynchronously(ResourcePackManager.plugin,
+                () -> reconcileRelay(run, publicationGeneration));
+    }
 
-        String networkKey = NetworkMode.getNetworkKey();
-        if (networkKey == null || networkKey.isBlank()) {
-            // Without a network key the proxy has no namespace to find us under
-            // — nothing to upload. The proxy will hit the same condition and
-            // skip the relay entirely.
+    private static void reconcileRelay(LifecycleRun run, long requestedGeneration) {
+        boolean retry = false;
+        synchronized (RELAY_IO_LOCK) {
+            if (!run.active()
+                    || requestedGeneration != BEDROCK_PUBLICATION_GENERATION.get()
+                    || MagmaguyRspClient.isRemoteRelayDisabled()) return;
+            MagmaguyRspClient relayClient = client;
+            String id = backendId;
+            String networkKey = NetworkMode.getNetworkKey();
+            if (relayClient == null || id == null || networkKey == null || networkKey.isBlank()) return;
+
+            if (!bedrockPublicationAuthorized) {
+                MagmaguyRspClient.RelayDeleteResult deletion = relayClient.deleteBedrockRelay(
+                        networkKey, id, null);
+                retry = !deletion.confirmed() && deletion.retryable();
+            } else {
+                File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
+                BedrockOutputPublication.Snapshot publication = BedrockOutputPublication.current(outputDir);
+                if (publication == null) {
+                    if (requestedGeneration == BEDROCK_PUBLICATION_GENERATION.get()) {
+                        bedrockPublicationAuthorized = false;
+                        bedrockPackRouteDescriptor = null;
+                        bedrockMappingsRouteDescriptor = null;
+                        MagmaguyRspClient.RelayDeleteResult deletion = relayClient.deleteBedrockRelay(
+                                networkKey, id, null);
+                        retry = !deletion.confirmed() && deletion.retryable();
+                    }
+                } else {
+                    PackHttpServer server = selfHostServer;
+                    if (server != null) announceBackendEndpoint(relayClient, networkKey, server.port());
+                    if (!run.active() || requestedGeneration != BEDROCK_PUBLICATION_GENERATION.get()) return;
+
+                    try {
+                        // The ZIP embeds the complete set manifest and is uploaded
+                        // last as the commit artifact. Until it changes, a new
+                        // mappings entry cannot match the old ZIP manifest.
+                        boolean sidecarReady;
+                        boolean sidecarRetryable = true;
+                        if (publication.hasMappings()) {
+                            sidecarReady = relayClient.uploadBedrockRelay(
+                                    networkKey, id, "mappings", publication.mappings(),
+                                    publication.mappingsSha1()).isPresent();
+                        } else {
+                            MagmaguyRspClient.RelayDeleteResult deletion =
+                                    relayClient.deleteBedrockRelay(
+                                            networkKey, id, "mappings");
+                            sidecarReady = deletion.confirmed();
+                            sidecarRetryable = deletion.retryable();
+                        }
+                        if (!sidecarReady) {
+                            retry = sidecarRetryable;
+                        } else if (!run.active()
+                                || requestedGeneration != BEDROCK_PUBLICATION_GENERATION.get()) {
+                            return;
+                        } else {
+                            boolean zipCommitted = relayClient.uploadBedrockRelay(
+                                    networkKey, id, "zip", publication.pack(),
+                                    publication.packSha1()).isPresent();
+                            retry = !zipCommitted;
+                            if (zipCommitted) RSPLogger.detail(
+                                    "Pushed authoritative Bedrock artifact set to relay for proxy fallback.");
+                        }
+                    } catch (IOException e) {
+                        if (run.active()) Logger.warn("Bedrock relay artifact-set upload failed: " + e.getMessage());
+                        retry = true;
+                    }
+                }
+            }
+        }
+        if (retry && run.active()
+                && requestedGeneration == BEDROCK_PUBLICATION_GENERATION.get()) {
+            scheduleRelayRetry(run, requestedGeneration);
+        }
+    }
+
+    private static synchronized void scheduleRelayRetry(LifecycleRun run, long publicationGeneration) {
+        if (!run.active()
+                || publicationGeneration != BEDROCK_PUBLICATION_GENERATION.get()) return;
+        if (relayRetryTask != null) relayRetryTask.cancel();
+        AtomicReference<BukkitTask> ownTask = new AtomicReference<>();
+        BukkitTask task = Bukkit.getScheduler().runTaskLaterAsynchronously(
+                ResourcePackManager.plugin,
+                () -> {
+                    synchronized (AutoHost.class) {
+                        if (relayRetryTask == ownTask.get()) relayRetryTask = null;
+                    }
+                    if (run.active()
+                            && publicationGeneration == BEDROCK_PUBLICATION_GENERATION.get()) {
+                        reconcileRelay(run, publicationGeneration);
+                    }
+                },
+                RELAY_RETRY_DELAY_TICKS);
+        ownTask.set(task);
+        relayRetryTask = task;
+    }
+
+    private static void refreshBedrockPublicationAuthority() {
+        File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
+        BedrockOutputPublication.Snapshot publication = DefaultConfig.isBedrockConversionEnabled()
+                ? BedrockOutputPublication.current(outputDir)
+                : null;
+        if (publication != null
+                && !BedrockConversion.hasArtifactSetManifest(publication.pack())) {
+            publication = null;
+        }
+        if (publication == null) {
+            bedrockPackRouteDescriptor = null;
+            bedrockMappingsRouteDescriptor = null;
+            bedrockPublicationAuthorized = false;
             return;
         }
-
-        PackHttpServer server = selfHostServer;
-        if (server != null) {
-            announceBackendEndpoint(relayClient, networkKey, server.port());
-        }
-
-        File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
-        File bedrockZip = new File(outputDir, "ResourcePackManager_Bedrock.zip");
-        File geyserMappings = new File(outputDir, "rspm_geyser_mappings.json");
-
-        int uploaded = 0;
-        if (bedrockZip.isFile()) {
-            try {
-                relayClient.uploadBedrockRelay(networkKey, backendId, "zip", bedrockZip, null);
-                uploaded++;
-            } catch (IOException e) {
-                Logger.warn("Bedrock relay upload (zip) failed: " + e.getMessage());
-            }
-        }
-        if (geyserMappings.isFile()) {
-            try {
-                relayClient.uploadBedrockRelay(networkKey, backendId, "mappings", geyserMappings, null);
-                uploaded++;
-            } catch (IOException e) {
-                Logger.warn("Bedrock relay upload (mappings) failed: " + e.getMessage());
-            }
-        }
-        if (uploaded > 0) {
-            Logger.info("Pushed " + uploaded + " file(s) to Bedrock relay for proxy fallback.");
-        }
+        bedrockPackRouteDescriptor = new PackHttpServer.FileRouteDescriptor(
+                publication.pack(), publication.packSha1());
+        bedrockMappingsRouteDescriptor = publication.hasMappings()
+                ? new PackHttpServer.FileRouteDescriptor(
+                publication.mappings(), publication.mappingsSha1())
+                : null;
+        bedrockPublicationAuthorized = true;
     }
 
     // ------------------------------------------------------------------
@@ -921,9 +1282,9 @@ public class AutoHost {
      * already online — covers the /reload scenario where players don't trigger
      * a fresh PlayerJoinEvent.
      */
-    private static void sendToOnlinePlayersIfFirstUpload() {
-        if (firstUpload) {
-            broadcastResourcePackSync();
+    private static void sendToOnlinePlayersIfFirstUpload(LifecycleRun run) {
+        if (run.active() && firstUpload) {
+            broadcastResourcePackSync(run);
             firstUpload = false;
         }
     }
@@ -934,8 +1295,10 @@ public class AutoHost {
      * contract; callers from async contexts (the keep-alive runnable, upload
      * error paths) must hop to the main thread before iterating online players.
      */
-    private static void broadcastResourcePackSync() {
+    private static void broadcastResourcePackSync(LifecycleRun run) {
+        if (!run.active()) return;
         Bukkit.getScheduler().runTask(ResourcePackManager.plugin, () -> {
+            if (!run.active()) return;
             for (Player p : Bukkit.getOnlinePlayers()) {
                 sendResourcePack(p);
             }
@@ -948,8 +1311,8 @@ public class AutoHost {
      * the next keep-alive tick reinitializes the session). The client itself
      * has already emitted detailed log lines for the operator.
      */
-    private static void handleUploadError(RspError error) {
-        if (error == null) return;
+    private static void handleUploadError(LifecycleRun run, RspError error) {
+        if (!run.active() || error == null) return;
         String code = error.code();
         if (code != null && code.equals("SESSION_NOT_FOUND")) {
             rspUUID = null; // Trigger re-initialization on next keep-alive tick
@@ -970,9 +1333,10 @@ public class AutoHost {
      * started or already running), {@code false} if self-host is disabled,
      * the pack file is missing, or the port is unavailable.
      */
-    private static boolean fallbackToSelfHost() {
-        if (!ensureSelfHostServer()) return false;
-        commitSelfHost();
+    private static boolean fallbackToSelfHost(LifecycleRun run) {
+        if (!run.active() || !ensureSelfHostServer(run)) return false;
+        if (!run.active()) return false;
+        commitSelfHost(run);
         return true;
     }
 
@@ -992,27 +1356,39 @@ public class AutoHost {
      * @return {@code true} if a server is serving the pack (newly started or reused),
      * {@code false} if self-host is disabled, the pack is missing, or the port is in use.
      */
-    private static boolean ensureSelfHostServer() {
+    private static boolean ensureSelfHostServer(LifecycleRun run) {
+        if (!run.active()) return false;
         if (!DefaultConfig.isSelfHostEnabled() && !DefaultConfig.isSelfHostForce()) return false;
         File pack = Mix.getFinalResourcePack();
         if (pack == null) return false;
         // In network mode the server may already be running (started by
         // startBackendHttpServerIfNeeded for the Bedrock-output routes). Reuse it.
         if (selfHostServer != null) {
+            if (!run.active()) return false;
             if (selfHostedUrl == null) {
-                selfHostedUrl = selfHostServer.urlOn(resolveExternalHost());
+                String host = resolveExternalHost(run);
+                if (!run.active() || host == null) return false;
+                selfHostedUrl = selfHostServer.urlOn(host);
             }
             return true;
         }
-        int port = resolveHttpPort();
         try {
-            PackHttpServer server = startPackHttpServer(pack, port);
+            int port = resolveHttpPort();
+            PackHttpServer server = startPackHttpServer(port);
+            if (!run.active()) {
+                server.close();
+                return false;
+            }
             selfHostServer = server;
-            selfHostedUrl = server.urlOn(resolveExternalHost());
+            String host = resolveExternalHost(run);
+            if (!run.active() || host == null) {
+                server.close();
+                return false;
+            }
+            selfHostedUrl = server.urlOn(host);
             return true;
         } catch (IOException e) {
-            Logger.warn("Self-host fallback failed (port " + port
-                    + " probably in use): " + e.getMessage());
+            Logger.warn("Self-host fallback failed: " + e.getMessage());
             return false;
         }
     }
@@ -1022,10 +1398,11 @@ public class AutoHost {
      * URL to every online player. Only call after {@link #ensureSelfHostServer()}
      * succeeded AND the URL passed its reachability checks.
      */
-    private static void commitSelfHost() {
-        Logger.info("Self-hosting pack at " + selfHostedUrl);
+    private static void commitSelfHost(LifecycleRun run) {
+        if (!run.active()) return;
+        announceDelivery(run, "self-hosting", selfHostedUrl);
         done = true;
-        broadcastResourcePackSync();
+        broadcastResourcePackSync(run);
     }
 
     /**
@@ -1043,18 +1420,35 @@ public class AutoHost {
      * produced output, so they're safe to wire up before the first conversion
      * has run.</p>
      */
-    private static void startBackendHttpServerIfNeeded() {
-        if (selfHostServer != null) return;
-        int port = resolveHttpPort();
+    private static void startBackendHttpServerIfNeeded(LifecycleRun run) {
+        if (!run.active()) return;
+        if (selfHostServer != null) {
+            registerBedrockOutputRoutes(selfHostServer);
+            return;
+        }
+        final int port;
         try {
-            File pack = Mix.getFinalResourcePack(); // may be null at this point
-            PackHttpServer server = startPackHttpServer(pack, port);
+            port = resolveHttpPort();
+        } catch (IOException e) {
+            Logger.warn("[ERROR] Backend HTTP server configuration is invalid: " + e.getMessage());
+            Logger.warn("[ERROR] This backend's Bedrock resource pack will NOT reach the proxy directly.");
+            return;
+        }
+        try {
+            PackHttpServer server = startPackHttpServer(port);
+            if (!run.active()) {
+                server.close();
+                return;
+            }
             selfHostServer = server;
             registerBedrockOutputRoutes(server);
-            Logger.info("Started backend HTTP server on port " + server.port()
+            RSPLogger.detail("Started backend HTTP server on port " + server.port()
                     + " (serving /rspm.zip, " + PackHttpServer.BEDROCK_PACK_PATH
-                    + ", " + PackHttpServer.GEYSER_MAPPINGS_PATH + ")");
-            announceBackendEndpoint(client, NetworkMode.getNetworkKey(), server.port());
+                    + ", " + PackHttpServer.GEYSER_MAPPINGS_PATH + ", and protected "
+                    + PackHttpServer.EXECUTABLE_UPDATE_PATH + ")");
+            if (run.active()) {
+                announceBackendEndpoint(client, NetworkMode.getNetworkKey(), server.port());
+            }
         } catch (IOException e) {
             // Loud multi-line ERROR: this backend is now invisible to the proxy.
             // Bedrock players will not get its content in the merged pack.
@@ -1073,7 +1467,7 @@ public class AutoHost {
     /**
      * Resolve the HTTP port for the backend's {@link PackHttpServer}.
      * <ul>
-     *   <li>{@code selfHostPort >= 0}: explicit admin-configured port (back-compat).</li>
+     *   <li>{@code selfHostPort != -1}: explicit admin-configured port (back-compat).</li>
      *   <li>{@code selfHostPort == -1} (default sentinel): auto-derive as
      *       {@code Bukkit.getServer().getPort() + networkHttpOffset}. This guarantees
      *       a unique HTTP port per backend on a single-host deployment without any
@@ -1081,38 +1475,83 @@ public class AutoHost {
      *       The actual bound port is announced to proxies after startup.</li>
      * </ul>
      */
-    private static int resolveHttpPort() {
+    private static int resolveHttpPort() throws IOException {
         int explicit = DefaultConfig.getSelfHostPort();
-        if (explicit >= 0) return explicit;
-        int mcPort = Bukkit.getServer().getPort();
-        return mcPort + DefaultConfig.getNetworkHttpOffset();
+        return resolveHttpPort(
+                explicit,
+                Bukkit.getServer().getPort(),
+                DefaultConfig.getNetworkHttpOffset());
+    }
+
+    static int resolveHttpPort(int explicit, int minecraftPort, int networkHttpOffset)
+            throws IOException {
+        if (explicit != -1) {
+            return requireValidHttpPort(explicit, "configured selfHostPort");
+        }
+        long derived = (long) minecraftPort + networkHttpOffset;
+        return requireValidHttpPort(
+                derived,
+                "derived HTTP port (Minecraft port " + minecraftPort
+                        + " + networkHttpOffset-v2 " + networkHttpOffset + ")");
+    }
+
+    private static int requireValidHttpPort(long port, String source) throws IOException {
+        if (port < 1 || port > 65535) {
+            throw new IOException(source + " resolved to " + port
+                    + "; HTTP ports must be between 1 and 65535");
+        }
+        return (int) port;
     }
 
     /**
      * Register the two Bedrock-conversion output routes on the running server.
      * Files are resolved to absolute paths under the plugin data folder's
      * {@code output/} subdirectory — the same paths {@code BedrockConversion}
-     * writes to. {@link PackHttpServer#registerFileRoute(File, String) reads
-     * per-request} so a fresh BedrockConversion run is visible immediately
+     * writes to. {@link PackHttpServer#registerFileRoute(String, File, String)}
+     * reads per-request so a fresh BedrockConversion run is visible immediately
      * to the next proxy poll without restarting anything.
      */
     private static void registerBedrockOutputRoutes(PackHttpServer server) {
+        server.registerFileRoute(
+                PackHttpServer.BEDROCK_PACK_PATH,
+                () -> currentBedrockRouteDescriptor(false),
+                "application/zip");
+        server.registerFileRoute(
+                PackHttpServer.GEYSER_MAPPINGS_PATH,
+                () -> currentBedrockRouteDescriptor(true),
+                "application/json");
+        server.registerProtectedExecutableRoute(
+                PackHttpServer.EXECUTABLE_UPDATE_PATH,
+                () -> BackendPluginUpdateArtifactProvider.current(ResourcePackManager.plugin),
+                NetworkMode::getNetworkKey);
+    }
+
+    private static PackHttpServer.FileRouteDescriptor currentBedrockRouteDescriptor(
+            boolean mappings) {
+        if (!bedrockPublicationAuthorized || !DefaultConfig.isBedrockConversionEnabled()) return null;
         File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
-        File bedrockZip = new File(outputDir, "ResourcePackManager_Bedrock.zip");
-        File geyserMappings = new File(outputDir, "rspm_geyser_mappings.json");
-        server.registerFileRoute(PackHttpServer.BEDROCK_PACK_PATH, bedrockZip, "application/zip");
-        server.registerFileRoute(PackHttpServer.GEYSER_MAPPINGS_PATH, geyserMappings, "application/json");
+        BedrockOutputPublication.Snapshot publication = BedrockOutputPublication.current(outputDir);
+        if (publication == null || (mappings && !publication.hasMappings())) return null;
+        return mappings
+                ? new PackHttpServer.FileRouteDescriptor(
+                publication.mappings(), publication.mappingsSha1())
+                : new PackHttpServer.FileRouteDescriptor(
+                publication.pack(), publication.packSha1());
     }
 
     /**
      * Construct + start the {@link PackHttpServer}. Centralises so the
      * network-mode startup path and the fallback-self-host path can't drift apart.
      */
-    private static PackHttpServer startPackHttpServer(File pack, int port) throws IOException {
-        return PackHttpServer.start(pack, port, "/rspm.zip");
+    private static PackHttpServer startPackHttpServer(int port) throws IOException {
+        return PackHttpServer.startWithDescriptor(
+                () -> javaPackRouteDescriptor,
+                port,
+                "/rspm.zip");
     }
 
     private static void announceBackendEndpoint(MagmaguyRspClient relayClient, String networkKey, int httpPort) {
+        if (MagmaguyRspClient.isRemoteRelayDisabled()) return;
         if (relayClient == null) return;
         if (networkKey == null || networkKey.isBlank()) return;
         if (httpPort <= 0) return;
@@ -1154,10 +1593,11 @@ public class AutoHost {
     /**
      * Returns the host string the plugin would publish to clients right now.
      * Mainly for diagnostic display — does NOT run the public-IP probe if it
-     * hasn't already, so calling this from a command thread is safe and cheap.
+     * hasn't already (returns a {@code "(not yet resolved)"} placeholder in
+     * that case), so calling this from a command thread is safe and cheap.
      */
     public static String currentResolvedHost() {
-        return resolveExternalHost();
+        return resolveExternalHost(false);
     }
 
     /**
@@ -1179,16 +1619,37 @@ public class AutoHost {
      * plugin falls through to remote hosting. See {@link #isNonRoutableHost(String)}.
      */
     private static String resolveExternalHost() {
+        return resolveExternalHost(true, null);
+    }
+
+    private static String resolveExternalHost(LifecycleRun run) {
+        return resolveExternalHost(true, run);
+    }
+
+    /**
+     * @param probeIfUnresolved when {@code true}, run (and cache) the public-IP
+     *                          probe if it hasn't been attempted yet this session.
+     *                          When {@code false} (diagnostic display), never
+     *                          probe — return a {@code "(not yet resolved)"}
+     *                          placeholder instead.
+     */
+    private static String resolveExternalHost(boolean probeIfUnresolved) {
+        return resolveExternalHost(probeIfUnresolved, null);
+    }
+
+    private static String resolveExternalHost(boolean probeIfUnresolved, LifecycleRun run) {
         String configured = DefaultConfig.getSelfHostExternalHost();
         if (configured != null && !configured.isBlank()) return configured;
 
         // Auto-detect via ipify / AWS check-ip. Cached for the session.
         Optional<String> publicIp = cachedPublicIp;
         if (publicIp == null) {
+            if (!probeIfUnresolved) return "(not yet resolved)";
             MagmaguyRspClient c = client;
             publicIp = (c != null) ? c.detectPublicIp() : Optional.empty();
+            if (run != null && !run.active()) return null;
             cachedPublicIp = publicIp;
-            publicIp.ifPresent(ip -> Logger.info("Auto-detected public IPv4 for self-host URL: " + ip));
+            publicIp.ifPresent(ip -> RSPLogger.detail("Auto-detected public IPv4 for self-host URL: " + ip));
         }
         if (publicIp.isPresent()) return publicIp.get();
 

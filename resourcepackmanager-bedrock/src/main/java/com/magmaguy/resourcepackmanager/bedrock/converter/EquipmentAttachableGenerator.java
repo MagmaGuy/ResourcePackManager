@@ -10,8 +10,10 @@ import com.magmaguy.resourcepackmanager.bedrock.generic.AssetResolver;
 import com.magmaguy.resourcepackmanager.bedrock.generic.EquipmentSlotMapper;
 
 import java.io.File;
+import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
@@ -309,7 +311,7 @@ public final class EquipmentAttachableGenerator {
 
         try {
             Files.createDirectories(outputFile.getParentFile().toPath());
-            try (FileWriter w = new FileWriter(outputFile, StandardCharsets.UTF_8)) {
+            try (Writer w = new BufferedWriter(new FileWriter(outputFile, StandardCharsets.UTF_8), 1 << 16)) {
                 GSON.toJson(root, w);
             }
             return true;

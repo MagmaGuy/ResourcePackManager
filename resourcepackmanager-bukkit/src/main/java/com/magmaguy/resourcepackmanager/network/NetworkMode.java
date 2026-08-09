@@ -40,6 +40,18 @@ public final class NetworkMode {
 
     private static Boolean cached;
 
+    /**
+     * Cached result of {@link #getNetworkKey()}. The key is boot-stable
+     * (Floodgate's {@code key.pem} only changes with a restart, matching how
+     * the proxy plugins derive it exactly once at boot), and the supplier is
+     * wired into per-request HTTP paths ({@code PackHttpServer}'s protected
+     * executable route), so re-reading + re-hashing {@code key.pem} — or, on
+     * Floodgate-less backends, re-hitting the generate-and-persist fallback —
+     * on every request would be both wasteful and unsafe. Never invalidated;
+     * like {@link #cached}, /reload re-initializes the static.
+     */
+    private static volatile String cachedNetworkKey;
+
     private NetworkMode() {}
 
     public static boolean isActive() {
@@ -107,6 +119,14 @@ public final class NetworkMode {
      * </ol>
      */
     public static String getNetworkKey() {
+        String cachedKey = cachedNetworkKey;
+        if (cachedKey != null) return cachedKey;
+        String resolved = resolveNetworkKey();
+        cachedNetworkKey = resolved;
+        return resolved;
+    }
+
+    private static String resolveNetworkKey() {
         // 1. Derive from Floodgate key.pem — the canonical path.
         //    plugins/floodgate/key.pem (same on every backend AND proxy that talks
         //    to the same network — Floodgate requires this for Bedrock auth).

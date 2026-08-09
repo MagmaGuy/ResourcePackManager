@@ -1,5 +1,6 @@
 package com.magmaguy.resourcepackmanager.proxy;
 
+import com.magmaguy.resourcepackmanager.http.NetworkKeyResolver;
 import com.magmaguy.resourcepackmanager.http.PackHttpServer;
 
 import java.io.File;
@@ -53,12 +54,13 @@ public final class ProxyStatusRenderer {
     public void render(Consumer<String> line) {
         line.accept("&8&m----- &6&lRSPM Status (proxy) &8&m-----");
         line.accept("&7Version: &f" + pluginVersion);
-        line.accept("&7Network key: &f" + maskKey(networkKey));
+        line.accept("&7Network key fingerprint: &f" + networkKeyFingerprint(networkKey));
         line.accept("");
 
         // ---------- Backends NetworkSync sees ----------
         line.accept("&8&m----- &eBackends &8&m-----");
         List<BackendListProvider.Backend> backends = snapshot.backends();
+        java.util.List<String> executableUpdateAuthRejected = new java.util.ArrayList<>();
         if (backends.isEmpty()) {
             line.accept("&c⚠ NetworkSync sees ZERO backends.");
             line.accept("&c  The proxy plugin manager reports no registered servers. Causes:");
@@ -68,7 +70,7 @@ public final class ProxyStatusRenderer {
         } else {
             line.accept("&7Count: &f" + backends.size());
             for (BackendListProvider.Backend b : backends) {
-                String key = sanitizeBackendName(b.name());
+                String key = NetworkSync.sanitizeBackendName(b.name());
                 NetworkSync.ResolvedBackendEndpoint endpoint = NetworkSync.resolveBackendHttpEndpoint(
                         b, snapshot.networkHttpOffset(), snapshot.announcedEndpoints());
                 line.accept("&7  • &f" + b.name() + " &8(MC " + b.host() + ":" + b.mcPort()
@@ -78,8 +80,16 @@ public final class ProxyStatusRenderer {
                         .get(key + ":" + PackHttpServer.BEDROCK_PACK_PATH);
                 NetworkSync.FetchOutcome mapOutcome = snapshot.fetchOutcomes()
                         .get(key + ":" + PackHttpServer.GEYSER_MAPPINGS_PATH);
+                NetworkSync.FetchOutcome updateOutcome = snapshot.fetchOutcomes()
+                        .get(key + ":" + PackHttpServer.EXECUTABLE_UPDATE_PATH);
                 line.accept("&7      /bedrock.zip:   " + describeOutcome(zipOutcome));
                 line.accept("&7      /mappings.json: " + describeOutcome(mapOutcome));
+                if (updateOutcome != null) {
+                    line.accept("&7      /rspm-update.jar: " + describeOutcome(updateOutcome));
+                    if (updateOutcome.httpStatus() == 401) {
+                        executableUpdateAuthRejected.add(b.name());
+                    }
+                }
             }
         }
         line.accept("");
@@ -185,7 +195,8 @@ public final class ProxyStatusRenderer {
         boolean somethingWrong = backends.isEmpty()
                 || snapshot.currentMergedPack() == null
                 || !geyserDetected
-                || !floodgateDetected;
+                || !floodgateDetected
+                || !executableUpdateAuthRejected.isEmpty();
         if (somethingWrong) {
             line.accept("");
             line.accept("&8&m----- &c⚠ Diagnostic &8&m-----");
@@ -208,6 +219,23 @@ public final class ProxyStatusRenderer {
             if (!geyserDetected) {
                 line.accept("&c• Geyser is not installed on this proxy. The merged pack has no way");
                 line.accept("&c  to reach Bedrock clients without Geyser.");
+            }
+            if (!executableUpdateAuthRejected.isEmpty()) {
+                line.accept("&e• Executable update authentication was rejected (HTTP 401) by: &f"
+                        + String.join(", ", executableUpdateAuthRejected));
+                line.accept("&e  This does NOT directly block /bedrock.zip or /mappings.json;");
+                line.accept("&e  those routes keep polling separately. It blocks automatic");
+                line.accept("&e  ResourcePackManager.jar propagation from the affected backend.");
+                line.accept("&e  Run /rspm status on this proxy and each affected backend, then");
+                line.accept("&e  compare the Network key fingerprint shown at the top.");
+                line.accept("&e  Common cause: missing/different plugins/floodgate/key.pem files.");
+                line.accept("&e  If they differ: fully stop both, back up the backend key.pem, then");
+                line.accept("&e  manually copy the proxy's key.pem to the affected backend. Start");
+                line.accept("&e  the backend, then proxy. Never post/paste key.pem or weaken auth.");
+                line.accept("&e  If they match: confirm the same candidate/version is loaded and the");
+                line.accept("&e  HTTP URL targets this backend. If 401 persists, attach both status");
+                line.accept("&e  outputs plus the warning to support (never attach the key itself).");
+                line.accept("&e  RSPM retries automatically with bounded backoff.");
             }
         }
         line.accept("&8&m-------------------------");
@@ -238,24 +266,9 @@ public final class ProxyStatusRenderer {
         return String.format("%.2f GiB", bytes / (1024.0 * 1024 * 1024));
     }
 
-    /** Mirrors NetworkSync.sanitizeBackendName so the keys line up. */
-    private static String sanitizeBackendName(String raw) {
-        if (raw == null || raw.isEmpty()) return "_";
-        StringBuilder sb = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
-                    || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
-                sb.append(c);
-            } else {
-                sb.append('_');
-            }
-        }
-        return sb.toString();
-    }
-
-    private static String maskKey(String key) {
-        if (key == null || key.length() < 4) return "&c(unresolved)";
-        return "&a********-****-****-****-************" + key.substring(key.length() - 4);
+    private static String networkKeyFingerprint(String key) {
+        String hash = NetworkKeyResolver.shortHashForRelay(key);
+        if (hash == null) return "&c(unresolved)";
+        return "&a" + hash.substring(0, Math.min(12, hash.length()));
     }
 }

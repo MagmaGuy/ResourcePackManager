@@ -63,10 +63,6 @@ public final class BedrockLog {
         debugEnabled = enabled;
     }
 
-    public static boolean isDebugEnabled() {
-        return debugEnabled;
-    }
-
     public static void info(String message) {
         sink.info(message);
     }

@@ -9,6 +9,7 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 import com.magmaguy.resourcepackmanager.bedrock.util.BedrockShortName;
+import com.magmaguy.resourcepackmanager.mixer.engine.internal.Cancellation;
 
 import java.io.File;
 import java.io.IOException;
@@ -19,12 +20,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
 
 public final class BedrockEntityBundleImporter {
@@ -57,7 +61,13 @@ public final class BedrockEntityBundleImporter {
      *
      * @return number of files copied
      */
-    public static int importBundles(File mergedJavaPack, File bedrockPackDir) {
+    public static int importBundles(File mergedJavaPack, File bedrockPackDir)
+            throws IOException {
+        return importBundles(mergedJavaPack, bedrockPackDir, () -> false);
+    }
+
+    public static int importBundles(File mergedJavaPack, File bedrockPackDir,
+                                    BooleanSupplier cancellationRequested) throws IOException {
         File assetsDir = new File(mergedJavaPack, "assets");
         if (!assetsDir.isDirectory()) {
             return 0;
@@ -67,14 +77,19 @@ public final class BedrockEntityBundleImporter {
         if (namespaces == null || namespaces.length == 0) {
             return 0;
         }
+        Arrays.sort(namespaces, Comparator.comparing(File::getName));
 
         AtomicInteger copied = new AtomicInteger();
         for (File namespace : namespaces) {
+            if (isCancelled(cancellationRequested)) return copied.get();
             Path bundleRoot = namespace.toPath().resolve(BUNDLE_ROOT);
             if (!Files.isDirectory(bundleRoot)) {
                 continue;
             }
-            copied.addAndGet(copyBundleRoot(bundleRoot, bedrockPackDir.toPath()));
+            copied.addAndGet(copyBundleRoot(
+                    bundleRoot,
+                    bedrockPackDir.toPath(),
+                    cancellationRequested));
         }
         if (copied.get() > 0) {
             BedrockLog.debug("[BedrockConverter] Imported " + copied.get() + " Bedrock custom entity bundle files.");
@@ -82,7 +97,8 @@ public final class BedrockEntityBundleImporter {
         return copied.get();
     }
 
-    private static int copyBundleRoot(Path bundleRoot, Path bedrockPackRoot) {
+    private static int copyBundleRoot(Path bundleRoot, Path bedrockPackRoot,
+                                      BooleanSupplier cancellationRequested) throws IOException {
         AtomicInteger copied = new AtomicInteger();
         List<Path> sources;
         try (Stream<Path> files = Files.walk(bundleRoot)) {
@@ -90,16 +106,13 @@ public final class BedrockEntityBundleImporter {
                     .filter(Files::isRegularFile)
                     .sorted(Comparator.comparing(source -> normalizeRelative(bundleRoot.relativize(source))))
                     .toList();
-        } catch (IOException exception) {
-            BedrockLog.warn("[BedrockConverter] Failed to scan Bedrock entity bundle root "
-                    + bundleRoot + ": " + exception.getMessage());
-            return 0;
         }
 
         Map<String, String> pathRewrites = buildLongPathRewrites(bundleRoot, sources);
         Map<String, String> referenceRewrites = buildReferenceRewrites(pathRewrites);
 
         for (Path source : sources) {
+            if (isCancelled(cancellationRequested)) return copied.get();
             Path relative = bundleRoot.relativize(source).normalize();
             String relativeName = normalizeRelative(relative);
             if (!isAllowed(relative)) {
@@ -111,22 +124,36 @@ public final class BedrockEntityBundleImporter {
             String destinationName = pathRewrites.getOrDefault(relativeName, relativeName);
             Path destination = bedrockPackRoot.resolve(destinationName).normalize();
             if (!destination.startsWith(bedrockPackRoot.normalize())) {
-                BedrockLog.warn("[BedrockConverter] Skipping unsafe Bedrock entity bundle path " + relative);
-                continue;
+                throw new IOException("Unsafe Bedrock entity bundle path " + relative);
             }
 
+            Files.createDirectories(destination.getParent());
+            Path temporary = destination.resolveSibling(
+                    "." + destination.getFileName() + "." + UUID.randomUUID() + ".tmp");
             try {
-                Files.createDirectories(destination.getParent());
                 if (!referenceRewrites.isEmpty() && isJsonFile(relativeName)) {
-                    copyJsonWithReferenceRewrites(source, destination, referenceRewrites);
+                    copyJsonWithReferenceRewrites(source, temporary, referenceRewrites);
                 } else {
-                    Files.copy(source, destination, StandardCopyOption.REPLACE_EXISTING);
+                    Files.copy(source, temporary, StandardCopyOption.REPLACE_EXISTING);
                 }
-                copied.incrementAndGet();
-            } catch (IOException exception) {
-                BedrockLog.warn("[BedrockConverter] Failed to copy Bedrock entity bundle file "
-                        + source + ": " + exception.getMessage());
+                if (Files.isRegularFile(destination)) {
+                    if (Files.mismatch(temporary, destination) != -1L) {
+                        throw new IOException("Conflicting Bedrock entity bundle output "
+                                + destination + " from " + source);
+                    }
+                } else {
+                    try {
+                        Files.move(temporary, destination,
+                                StandardCopyOption.ATOMIC_MOVE,
+                                StandardCopyOption.REPLACE_EXISTING);
+                    } catch (IOException atomicMoveFailed) {
+                        Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+            } finally {
+                Files.deleteIfExists(temporary);
             }
+            copied.incrementAndGet();
         }
         return copied.get();
     }
@@ -186,10 +213,9 @@ public final class BedrockEntityBundleImporter {
             JsonElement root = JsonParser.parseReader(reader);
             GSON.toJson(rewriteJsonStrings(root, referenceRewrites), writer);
         } catch (Exception parseException) {
-            String rewritten = rewriteText(Files.readString(source, StandardCharsets.UTF_8), referenceRewrites);
-            Files.writeString(destination, rewritten, StandardCharsets.UTF_8);
-            BedrockLog.debug("[BedrockConverter] Rewrote Bedrock bundle references in "
-                    + source + " using text fallback: " + parseException.getMessage());
+            Files.deleteIfExists(destination);
+            throw new IOException("Failed to parse Bedrock bundle JSON " + source,
+                    parseException);
         }
     }
 
@@ -221,14 +247,6 @@ public final class BedrockEntityBundleImporter {
             return rewritten;
         }
         return element;
-    }
-
-    private static String rewriteText(String text, Map<String, String> referenceRewrites) {
-        String rewritten = text;
-        for (Map.Entry<String, String> entry : referenceRewrites.entrySet()) {
-            rewritten = rewritten.replace(entry.getKey(), entry.getValue());
-        }
-        return rewritten;
     }
 
     private static boolean isAllowed(Path relative) {
@@ -325,5 +343,9 @@ public final class BedrockEntityBundleImporter {
 
     private static String normalizeRelative(Path path) {
         return path.normalize().toString().replace('\\', '/');
+    }
+
+    private static boolean isCancelled(BooleanSupplier cancellationRequested) {
+        return Cancellation.isCancelled(cancellationRequested);
     }
 }

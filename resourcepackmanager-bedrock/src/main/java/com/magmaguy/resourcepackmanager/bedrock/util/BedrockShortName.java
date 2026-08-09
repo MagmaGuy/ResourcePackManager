@@ -1,9 +1,5 @@
 package com.magmaguy.resourcepackmanager.bedrock.util;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-
 /**
  * Generates short, opaque, deterministic identifiers for the Bedrock pack's
  * internal file paths and Geyser mapping identifiers.
@@ -144,24 +140,10 @@ public final class BedrockShortName {
      * are possible.
      */
     public static String shortHash(String input) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(8);
-            // First nibble → 'a'..'p' (one of 16 letters). Maps 0=a, 1=b, ..., 15=p.
-            int firstNibble = (digest[0] >> 4) & 0xf;
-            sb.append((char) ('a' + firstNibble));
-            // Second nibble → hex (still 4 bits of entropy from byte 0).
-            int secondNibble = digest[0] & 0xf;
-            sb.append(Integer.toHexString(secondNibble));
-            // Bytes 1, 2, 3 → 6 more hex chars. Total: 1 + 1 + 6 = 8 chars,
-            // 4 + 4 + 24 = 32 bits of entropy.
-            for (int i = 1; i < 4; i++) {
-                sb.append(String.format("%02x", digest[i] & 0xff));
-            }
-            return sb.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 not available; this should never happen on a standard JRE.", e);
-        }
+        // Delegates to the mixer's canonical implementation: the proxy-side
+        // merger must shorten identical inputs to identical names or merged
+        // packs would dangle references, so there is exactly one copy of the
+        // recipe (see BedrockPackMerger.shortHash for the nibble layout).
+        return com.magmaguy.resourcepackmanager.mixer.bedrock.BedrockPackMerger.shortHash(input);
     }
 }

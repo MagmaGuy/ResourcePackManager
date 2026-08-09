@@ -6,16 +6,12 @@
     <parent>
         <groupId>com.magmaguy</groupId>
         <artifactId>ResourcePackManager-parent</artifactId>
-        <version>2.2.2</version>
+        <version>2.3.1</version>
     </parent>
 
     <artifactId>resourcepackmanager-velocity</artifactId>
 
     <dependencies>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-        </dependency>
         <dependency>
             <groupId>com.velocitypowered</groupId>
             <artifactId>velocity-api</artifactId>
@@ -48,6 +44,32 @@
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>verify-generated-velocity-descriptor-version</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <loadfile property="velocity.descriptor"
+                                          srcFile="${project.build.outputDirectory}/velocity-plugin.json"/>
+                                <condition property="velocity.descriptor.version.matches">
+                                    <contains string="${velocity.descriptor}"
+                                              substring="&quot;version&quot;:&quot;${project.version}&quot;"/>
+                                </condition>
+                                <fail unless="velocity.descriptor.version.matches"
+                                      message="Generated velocity-plugin.json version must match ${project.version}"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

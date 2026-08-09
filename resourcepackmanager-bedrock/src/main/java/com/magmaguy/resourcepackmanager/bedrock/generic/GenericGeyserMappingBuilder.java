@@ -7,8 +7,10 @@ import com.google.gson.JsonObject;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import java.io.File;
+import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -57,7 +59,7 @@ public final class GenericGeyserMappingBuilder {
      * @param outputFile destination
      */
     public static void merge(MappedItemRegistry registry,
-                             File outputFile) {
+                             File outputFile) throws IOException {
         // Accumulate per-base-item entry lists, sorting base items alphabetically.
         TreeMap<String, List<JsonObject>> byBase = new TreeMap<>();
 
@@ -94,12 +96,11 @@ public final class GenericGeyserMappingBuilder {
         // success.
         int total = byBase.values().stream().mapToInt(List::size).sum();
         int baseCount = byBase.size();
-        File tmpFile = new File(outputFile.getParentFile(), outputFile.getName() + ".tmp");
+        File parent = outputFile.getAbsoluteFile().getParentFile();
+        File tmpFile = new File(parent, outputFile.getName() + ".tmp");
         try {
-            if (outputFile.getParentFile() != null) {
-                Files.createDirectories(outputFile.getParentFile().toPath());
-            }
-            try (FileWriter w = new FileWriter(tmpFile, StandardCharsets.UTF_8)) {
+            Files.createDirectories(parent.toPath());
+            try (Writer w = new BufferedWriter(new FileWriter(tmpFile, StandardCharsets.UTF_8), 1 << 16)) {
                 GSON.toJson(root, w);
             }
             try {
@@ -118,9 +119,8 @@ public final class GenericGeyserMappingBuilder {
             BedrockLog.debug("[BedrockConverter] Wrote merged Geyser mappings: "
                     + total + " entries across " + baseCount + " base items -> "
                     + outputFile.getAbsolutePath());
-        } catch (IOException e) {
-            BedrockLog.warn("[BedrockConverter] Failed to write Geyser mappings: " + e.getMessage());
-            try { Files.deleteIfExists(tmpFile.toPath()); } catch (IOException ignored) {}
+        } finally {
+            Files.deleteIfExists(tmpFile.toPath());
         }
     }
 

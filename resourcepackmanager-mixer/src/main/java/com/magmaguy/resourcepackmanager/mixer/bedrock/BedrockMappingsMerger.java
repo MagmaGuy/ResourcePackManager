@@ -10,10 +10,13 @@ import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 
 import java.io.File;
 import java.io.FileReader;
+import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -66,7 +69,8 @@ public final class BedrockMappingsMerger {
      * @param inputs the per-backend mappings files, ordered by priority
      *               (later entries win on {@code bedrock_identifier} collisions)
      * @param output destination file
-     * @return the merged file on success, {@code null} on failure
+     * @return the merged file on success, {@code null} when there is no mapping
+     * content or the complete input set cannot be merged safely
      */
     public File merge(List<File> inputs, File output) {
         if (output == null) {
@@ -75,38 +79,48 @@ public final class BedrockMappingsMerger {
         }
 
         List<File> sources = inputs == null ? Collections.emptyList() : inputs;
+        if (sources.isEmpty()) {
+            logger.info("[BedrockMappingsMerger] No mapping inputs supplied; producing no merged mappings.");
+            deleteOutputIfExists(output);
+            return null;
+        }
 
-        // Parse each input. Non-readable inputs are warned and skipped.
+        // A partial mapping set can pair custom-item definitions with the wrong
+        // Bedrock pack. Fail the complete merge on any unreadable or malformed
+        // backend input so callers retain their last-good published pair.
         List<JsonObject> parsed = new ArrayList<>(sources.size());
         JsonElement formatVersionFromFirst = null;
 
         for (int i = 0; i < sources.size(); i++) {
             File f = sources.get(i);
             if (f == null || !f.isFile()) {
-                logger.warn("[BedrockMappingsMerger] Input #" + i + " is missing or not a file; skipping: "
+                logger.warn("[BedrockMappingsMerger] Input #" + i + " is missing or not a file; aborting: "
                         + (f == null ? "null" : f.getAbsolutePath()));
-                continue;
+                return null;
             }
             JsonObject root = parseJsonOrNull(f);
             if (root == null) {
                 logger.warn("[BedrockMappingsMerger] Could not parse input #" + i + ": "
                         + f.getAbsolutePath());
-                continue;
+                return null;
             }
-            if (formatVersionFromFirst == null && root.has("format_version")) {
-                formatVersionFromFirst = root.get("format_version");
+            if (!root.has("items") || !root.get("items").isJsonObject()) {
+                logger.warn("[BedrockMappingsMerger] Input #" + i
+                        + " has no object-valued items field; aborting.");
+                return null;
+            }
+            JsonElement candidateFormat = root.has("format_version")
+                    ? root.get("format_version") : null;
+            if (formatVersionFromFirst == null && candidateFormat != null) {
+                formatVersionFromFirst = candidateFormat;
+            } else if (candidateFormat != null
+                    && formatVersionFromFirst != null
+                    && !candidateFormat.equals(formatVersionFromFirst)) {
+                logger.warn("[BedrockMappingsMerger] Input #" + i
+                        + " uses a different format_version; aborting.");
+                return null;
             }
             parsed.add(root);
-        }
-
-        // Zero-readable-inputs path: per user policy, emit nothing rather than a
-        // normalized empty mappings file. Delete any stale previous-cycle output so
-        // the boot-time pre-deploy on the next proxy restart skips this network
-        // entirely instead of registering an empty mappings file.
-        if (parsed.isEmpty()) {
-            logger.info("[BedrockMappingsMerger] No readable input mappings files; producing no merged mappings.");
-            deleteOutputIfExists(output);
-            return null;
         }
 
         // Accumulate per-base-item entry lists. LinkedHashMap on the outer map preserves
@@ -118,21 +132,25 @@ public final class BedrockMappingsMerger {
 
         for (int i = 0; i < parsed.size(); i++) {
             JsonObject root = parsed.get(i);
-            if (!root.has("items") || !root.get("items").isJsonObject()) continue;
             JsonObject items = root.getAsJsonObject("items");
 
             for (String baseItem : items.keySet()) {
                 JsonElement defsEl = items.get(baseItem);
                 if (!defsEl.isJsonArray()) {
                     logger.warn("[BedrockMappingsMerger] Backend #" + i + " base-item '" + baseItem
-                            + "' is not an array; skipping.");
-                    continue;
+                            + "' is not an array; aborting.");
+                    return null;
                 }
                 JsonArray defs = defsEl.getAsJsonArray();
                 List<JsonObject> bucket = byBase.computeIfAbsent(baseItem, k -> new ArrayList<>());
 
                 for (JsonElement el : defs) {
-                    if (!el.isJsonObject()) continue;
+                    if (!el.isJsonObject()) {
+                        logger.warn("[BedrockMappingsMerger] Backend #" + i
+                                + " has a non-object definition under '" + baseItem
+                                + "'; aborting.");
+                        return null;
+                    }
                     JsonObject def = el.getAsJsonObject();
                     String bedrockId = def.has("bedrock_identifier")
                             && def.get("bedrock_identifier").isJsonPrimitive()
@@ -140,9 +158,8 @@ public final class BedrockMappingsMerger {
 
                     if (bedrockId == null || bedrockId.isEmpty()) {
                         logger.warn("[BedrockMappingsMerger] Backend #" + i + " has a definition under '"
-                                + baseItem + "' with missing/empty bedrock_identifier; keeping as-is.");
-                        bucket.add(def);
-                        continue;
+                                + baseItem + "' with missing/empty bedrock_identifier; aborting.");
+                        return null;
                     }
 
                     String key = baseItem + "|" + bedrockId;
@@ -228,9 +245,16 @@ public final class BedrockMappingsMerger {
         // Atomic temp-then-rename so a reader (Geyser at boot, or the proxy's deploy
         // hook) never sees a half-written JSON. Matches the convention used by
         // GenericGeyserMappingBuilder.merge.
-        File tmpFile = new File(parent == null ? new File(".") : parent, output.getName() + ".tmp");
+        File tmpFile = null;
         try {
-            try (FileWriter w = new FileWriter(tmpFile, StandardCharsets.UTF_8)) {
+            Path outputDirectory = parent == null
+                    ? Path.of(".").toAbsolutePath().normalize()
+                    : parent.toPath();
+            tmpFile = Files.createTempFile(
+                    outputDirectory,
+                    output.getName() + ".",
+                    ".tmp").toFile();
+            try (Writer w = new BufferedWriter(new FileWriter(tmpFile, StandardCharsets.UTF_8), 1 << 16)) {
                 GSON.toJson(root, w);
             }
             try {
@@ -245,11 +269,17 @@ public final class BedrockMappingsMerger {
             return output;
         } catch (IOException e) {
             logger.warn("[BedrockMappingsMerger] Failed to write merged mappings: " + e.getMessage());
-            try {
-                Files.deleteIfExists(tmpFile.toPath());
-            } catch (IOException ignored) {
-            }
             return null;
+        } finally {
+            // On success the move consumed the temporary path. On failure, make
+            // sure no partial staging file survives.
+            //noinspection ConstantValue
+            if (tmpFile != null) {
+                try {
+                    Files.deleteIfExists(tmpFile.toPath());
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 

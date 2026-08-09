@@ -22,14 +22,26 @@ import org.apache.hc.core5.util.Timeout;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
+import java.util.zip.ZipFile;
 
 /**
  * Reusable HTTP client for the magmaguy.com resource-pack hosting API.
@@ -38,28 +50,59 @@ import java.util.logging.Logger;
  * supply the per-call {@code uuid}/{@code sha1} arguments and own the lifecycle of
  * any keep-alive scheduling. The client only handles HTTP request/response plumbing.</p>
  *
- * <p>An in-flight cancellation mechanism is provided via {@link #abortInFlight()}:
- * the most recently issued blocking request keeps a reference to its underlying
- * {@code CloseableHttpClient} so that on plugin shutdown the multi-MB upload can be
- * torn down promptly rather than blocking the async task past {@code onDisable}.</p>
+ * <p>An in-flight cancellation mechanism is provided via {@link #abortInFlight()}.
+ * Every shared or per-upload client is tracked so concurrent keep-alive, relay,
+ * and pack uploads are all torn down promptly during plugin disable.</p>
  */
 public final class MagmaguyRspClient implements AutoCloseable {
 
     public static final String BASE_URL = "https://magmaguy.com/rsp/";
+    public static final String DISABLE_REMOTE_RELAY_PROPERTY = "rspm.test.disableRemoteRelay";
 
     private static final int DEFAULT_CONNECT_TIMEOUT = 30;
+    private static volatile String requestBaseUrl = BASE_URL;
+
+    /**
+     * Scoped loopback-only endpoint override for hermetic integration tests.
+     * Production code cannot redirect hosting traffic to a non-loopback host.
+     */
+    static AutoCloseable useLoopbackBaseUrlForTests(URI uri) {
+        if (uri == null || !"http".equalsIgnoreCase(uri.getScheme())) {
+            throw new IllegalArgumentException("test hosting URL must use http");
+        }
+        String host = uri.getHost();
+        if (!("127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host)
+                || "::1".equals(host))) {
+            throw new IllegalArgumentException("test hosting URL must be loopback");
+        }
+        String value = uri.toString();
+        if (!value.endsWith("/")) value += "/";
+        String previous = requestBaseUrl;
+        requestBaseUrl = value;
+        return () -> requestBaseUrl = previous;
+    }
+
+    private static String requestBaseUrl() {
+        return requestBaseUrl;
+    }
 
     private final Logger log;
     private final CloseableHttpClient httpClient;
     private final int uploadSocketTimeoutSeconds;
 
+    private final Set<CloseableHttpClient> abortableClients =
+            ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+
     /**
-     * Tracks the HTTP client currently in flight (initialize / sha1 / upload /
-     * still_alive / data_compliance). On plugin disable we close it to abort
-     * the blocking request immediately. May reference either {@link #httpClient}
-     * (regular requests) or a per-call upload client (longer socket timeout).
+     * Explicitly disables only the distributed Bedrock endpoint registry and
+     * relay calls. This is a JVM-level system-test escape hatch so disposable
+     * proxy labs can exercise direct backend HTTP without touching the public
+     * hoster. Ordinary Java pack hosting is intentionally unaffected.
      */
-    private volatile CloseableHttpClient inFlight;
+    public static boolean isRemoteRelayDisabled() {
+        return Boolean.getBoolean(DISABLE_REMOTE_RELAY_PROPERTY);
+    }
 
     /**
      * @param logger                      JUL logger used for all status/error output. Plugin
@@ -72,12 +115,19 @@ public final class MagmaguyRspClient implements AutoCloseable {
     public MagmaguyRspClient(Logger logger, int defaultSocketTimeoutSeconds, int uploadSocketTimeoutSeconds) {
         this.log = logger != null ? logger : Logger.getLogger(MagmaguyRspClient.class.getName());
         this.httpClient = buildClient(defaultSocketTimeoutSeconds);
+        this.abortableClients.add(httpClient);
         this.uploadSocketTimeoutSeconds = uploadSocketTimeoutSeconds;
     }
 
     private static CloseableHttpClient buildClient(int socketTimeoutSeconds) {
+        return buildClient(DEFAULT_CONNECT_TIMEOUT, socketTimeoutSeconds);
+    }
+
+    private static CloseableHttpClient buildClient(
+            int connectTimeoutSeconds,
+            int socketTimeoutSeconds) {
         ConnectionConfig connectionConfig = ConnectionConfig.custom()
-                .setConnectTimeout(Timeout.ofSeconds(DEFAULT_CONNECT_TIMEOUT))
+                .setConnectTimeout(Timeout.ofSeconds(connectTimeoutSeconds))
                 .setSocketTimeout(Timeout.ofSeconds(socketTimeoutSeconds))
                 .build();
 
@@ -86,7 +136,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 .build();
 
         RequestConfig requestConfig = RequestConfig.custom()
-                .setConnectionRequestTimeout(Timeout.ofSeconds(DEFAULT_CONNECT_TIMEOUT))
+                .setConnectionRequestTimeout(Timeout.ofSeconds(connectTimeoutSeconds))
                 .setResponseTimeout(Timeout.ofSeconds(socketTimeoutSeconds))
                 .build();
 
@@ -108,7 +158,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
      *         error info is logged via JUL.
      */
     public Optional<String> initialize(String existingUuidOrNull) throws IOException {
-        HttpPost httpPost = new HttpPost(BASE_URL + "initialize");
+        HttpPost httpPost = new HttpPost(requestBaseUrl() + "initialize");
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
         builder.addTextBody(
                 "uuid",
@@ -116,7 +166,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
         httpPost.setEntity(builder.build());
 
-        inFlight = httpClient;
         try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
             String responseString = readEntity(response.getEntity());
             int statusCode = response.getCode();
@@ -131,7 +180,9 @@ public final class MagmaguyRspClient implements AutoCloseable {
                         String message = jsonResponse.has("message")
                                 ? jsonResponse.get("message").getAsString()
                                 : "";
-                        log.info("Server initialized successfully: " + message);
+                        //Handshake detail, not an outcome. AutoHost announces the single line that
+                        //says whether players are getting the pack and by which route.
+                        log.fine("Server initialized successfully: " + message);
                         return Optional.of(uuid);
                     } else {
                         log.warning("Server returned error in response: " + responseString);
@@ -153,8 +204,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 logErrorResponse(responseString, statusCode, "initialization");
                 return Optional.empty();
             }
-        } finally {
-            inFlight = null;
         }
     }
 
@@ -167,7 +216,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * @throws IOException on transport-level failures
      */
     public Sha1Result sha1Check(String uuid, String sha1) throws IOException {
-        HttpPost httpPost = new HttpPost(BASE_URL + "sha1");
+        HttpPost httpPost = new HttpPost(requestBaseUrl() + "sha1");
 
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
         builder.addTextBody("uuid", uuid, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
@@ -176,7 +225,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
         HttpEntity entity = builder.build();
         httpPost.setEntity(entity);
 
-        inFlight = httpClient;
         try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
             String responseString = readEntity(response.getEntity());
             int statusCode = response.getCode();
@@ -207,20 +255,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 RspError err = logErrorResponse(responseString, statusCode, "SHA1 check");
                 return new Sha1Result(false, err);
             }
-        } finally {
-            inFlight = null;
         }
-    }
-
-    /**
-     * @deprecated prefer {@link #sha1Check(String, String)} so callers can react
-     * to server-returned errors (notably {@code SESSION_NOT_FOUND}) before
-     * proceeding to upload. This thin wrapper preserves the previous boolean
-     * shape for callers that don't need the error detail.
-     */
-    @Deprecated
-    public boolean sha1Matches(String uuid, String sha1) throws IOException {
-        return sha1Check(uuid, sha1).matched();
     }
 
     /**
@@ -230,14 +265,14 @@ public final class MagmaguyRspClient implements AutoCloseable {
      *         or a parsed {@link RspError} on failure (also logged).
      */
     public UploadResult upload(String uuid, File pack) throws IOException {
-        return doUpload(BASE_URL + "upload", uuid, pack);
+        return doUpload(uuid, pack);
     }
 
-    private UploadResult doUpload(String url, String uuid, File pack) throws IOException {
+    private UploadResult doUpload(String uuid, File pack) throws IOException {
         CloseableHttpClient uploadClient = buildClient(uploadSocketTimeoutSeconds);
-        inFlight = uploadClient;
+        track(uploadClient);
         try {
-            HttpPost uploadRequest = new HttpPost(url);
+            HttpPost uploadRequest = new HttpPost(requestBaseUrl() + "upload");
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
             builder.addTextBody("uuid", uuid, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
@@ -250,7 +285,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 int statusCode = response.getCode();
 
                 if (statusCode >= 200 && statusCode < 300) {
-                    return new UploadResult(true, BASE_URL + uuid, null);
+                    return new UploadResult(true, requestBaseUrl() + uuid, null);
                 } else {
                     RspError err = logErrorResponse(responseString, statusCode, "upload");
                     if (err == null) {
@@ -260,7 +295,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 }
             }
         } finally {
-            inFlight = null;
+            abortableClients.remove(uploadClient);
             try {
                 uploadClient.close();
             } catch (IOException ignored) {
@@ -274,13 +309,12 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * (session may have expired).
      */
     public boolean stillAlive(String uuid) throws IOException {
-        HttpPost httpPost = new HttpPost(BASE_URL + "still_alive");
+        HttpPost httpPost = new HttpPost(requestBaseUrl() + "still_alive");
 
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
         builder.addTextBody("uuid", uuid);
         httpPost.setEntity(builder.build());
 
-        inFlight = httpClient;
         try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
             String responseString = readEntity(response.getEntity());
             int statusCode = response.getCode();
@@ -291,8 +325,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 logErrorResponse(responseString, statusCode, "still alive");
                 return false;
             }
-        } finally {
-            inFlight = null;
         }
     }
 
@@ -326,7 +358,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
             try {
                 org.apache.hc.client5.http.classic.methods.HttpGet get =
                         new org.apache.hc.client5.http.classic.methods.HttpGet(endpoint);
-                inFlight = httpClient;
                 try (CloseableHttpResponse response = httpClient.execute(get)) {
                     if (response.getCode() < 200 || response.getCode() >= 300) continue;
                     String body = readEntity(response.getEntity()).trim();
@@ -334,8 +365,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 }
             } catch (IOException | RuntimeException e) {
                 log.fine("Public-IP probe via " + endpoint + " failed: " + e.getMessage());
-            } finally {
-                inFlight = null;
             }
         }
         return Optional.empty();
@@ -368,22 +397,81 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * directory exists and is writable.
      */
     public void downloadDataCompliance(String uuid, File destination) throws IOException {
-        HttpPost httpPost = new HttpPost(BASE_URL + "data_compliance");
+        HttpPost httpPost = new HttpPost(requestBaseUrl() + "data_compliance");
 
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
         builder.addTextBody("uuid", uuid);
         httpPost.setEntity(builder.build());
 
-        inFlight = httpClient;
         try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+            int statusCode = response.getCode();
             HttpEntity responseEntity = response.getEntity();
-            if (responseEntity != null) {
-                try (FileOutputStream outStream = new FileOutputStream(destination)) {
+            if (statusCode < 200 || statusCode >= 300) {
+                String responseString = responseEntity == null ? "" : readEntity(responseEntity);
+                logErrorResponse(responseString, statusCode, "data compliance download");
+                throw new IOException("Data compliance download returned HTTP " + statusCode);
+            }
+            if (responseEntity == null || responseEntity.getContentLength() == 0) {
+                throw new IOException("Data compliance download returned an empty response");
+            }
+
+            Path destinationPath = destination.toPath().toAbsolutePath();
+            Path parent = destinationPath.getParent();
+            if (parent == null || !Files.isDirectory(parent)) {
+                throw new IOException("Data compliance destination directory does not exist: " + parent);
+            }
+
+            Path temporary = Files.createTempFile(parent, "rspm-data-compliance-", ".part");
+            boolean published = false;
+            try {
+                try (OutputStream outStream = Files.newOutputStream(temporary)) {
                     responseEntity.writeTo(outStream);
                 }
+
+                long actualLength = Files.size(temporary);
+                long declaredLength = responseEntity.getContentLength();
+                if (actualLength == 0) {
+                    throw new IOException("Data compliance download returned an empty response");
+                }
+                if (declaredLength >= 0 && actualLength != declaredLength) {
+                    throw new IOException("Data compliance download was truncated: expected "
+                            + declaredLength + " bytes but received " + actualLength);
+                }
+                validateZipArchive(temporary);
+
+                try {
+                    Files.move(
+                            temporary,
+                            destinationPath,
+                            StandardCopyOption.ATOMIC_MOVE,
+                            StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException ignored) {
+                    Files.move(
+                            temporary,
+                            destinationPath,
+                            StandardCopyOption.REPLACE_EXISTING);
+                }
+                published = true;
+            } finally {
+                if (!published) {
+                    Files.deleteIfExists(temporary);
+                }
             }
-        } finally {
-            inFlight = null;
+        }
+    }
+
+    private static void validateZipArchive(Path archive) throws IOException {
+        try (ZipFile zip = new ZipFile(archive.toFile())) {
+            Enumeration<? extends ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry entry = entries.nextElement();
+                if (entry.isDirectory()) continue;
+                try (java.io.InputStream input = zip.getInputStream(entry)) {
+                    input.transferTo(OutputStream.nullOutputStream());
+                }
+            }
+        } catch (ZipException e) {
+            throw new IOException("Data compliance response is not a valid ZIP archive", e);
         }
     }
 
@@ -397,23 +485,38 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * past {@code onDisable}.
      */
     public void abortInFlight() {
-        CloseableHttpClient client = inFlight;
-        if (client != null) {
+        closed.set(true);
+        for (CloseableHttpClient client : List.copyOf(abortableClients)) {
             try {
                 client.close();
             } catch (Exception ignored) {
                 // expected — abort during in-flight write may throw
             }
-            inFlight = null;
         }
+        abortableClients.clear();
     }
 
     @Override
     public void close() {
-        try {
-            httpClient.close();
-        } catch (IOException ignored) {
-            // ignore close failures
+        abortInFlight();
+    }
+
+    private void track(CloseableHttpClient client) throws IOException {
+        if (client == null) return;
+        if (closed.get()) {
+            try {
+                client.close();
+            } catch (IOException ignored) {
+            }
+            throw new IOException("RSP HTTP client is closed");
+        }
+        abortableClients.add(client);
+        if (closed.get() && abortableClients.remove(client)) {
+            try {
+                client.close();
+            } catch (IOException ignored) {
+            }
+            throw new IOException("RSP HTTP client closed while starting a request");
         }
     }
 
@@ -538,12 +641,11 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * comes back as {@code reachable=false, reason="RATE_LIMITED"}.</p>
      */
     public ProbeResult probe(String url) throws IOException {
-        HttpPost req = new HttpPost(BASE_URL + "probe");
+        HttpPost req = new HttpPost(requestBaseUrl() + "probe");
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
         builder.addTextBody("url", url, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
         req.setEntity(builder.build());
 
-        inFlight = httpClient;
         try (CloseableHttpResponse response = httpClient.execute(req)) {
             String body = readEntity(response.getEntity());
             int code = response.getCode();
@@ -565,8 +667,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
             } catch (Exception e) {
                 return new ProbeResult(false, 0, 0L, "PARSE_ERROR");
             }
-        } finally {
-            inFlight = null;
         }
     }
 
@@ -600,7 +700,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
             String publicHostOrNull,
             int mcPort,
             int httpPort) throws IOException {
-        HttpPost req = new HttpPost(BASE_URL + "bedrock/endpoint/announce");
+        HttpPost req = new HttpPost(requestBaseUrl() + "bedrock/endpoint/announce");
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
         builder.addTextBody("networkKey", networkKey, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
         builder.addTextBody("backendId", backendId, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
@@ -611,7 +711,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
         }
         req.setEntity(builder.build());
 
-        inFlight = httpClient;
         try (CloseableHttpResponse response = httpClient.execute(req)) {
             String body = readEntity(response.getEntity());
             int code = response.getCode();
@@ -625,8 +724,6 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 return Optional.empty();
             }
             return Optional.of(toEndpoint(json.getAsJsonObject("entry")));
-        } finally {
-            inFlight = null;
         }
     }
 
@@ -639,9 +736,9 @@ public final class MagmaguyRspClient implements AutoCloseable {
     public Optional<BedrockRelayEntry> uploadBedrockRelay(
             String networkKey, String backendId, String kind, File file, String sha1HexOrNull) throws IOException {
         CloseableHttpClient uploadClient = buildClient(uploadSocketTimeoutSeconds);
-        inFlight = uploadClient;
+        track(uploadClient);
         try {
-            HttpPost req = new HttpPost(BASE_URL + "bedrock/upload");
+            HttpPost req = new HttpPost(requestBaseUrl() + "bedrock/upload");
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
             builder.addTextBody("networkKey", networkKey, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
             builder.addTextBody("backendId", backendId, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
@@ -667,7 +764,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 return Optional.of(toEntry(json.getAsJsonObject("entry")));
             }
         } finally {
-            inFlight = null;
+            abortableClients.remove(uploadClient);
             try { uploadClient.close(); } catch (IOException ignored) {}
         }
     }
@@ -677,32 +774,38 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * direct-fetch failure to discover backends that uploaded via the bridge.
      */
     public List<BedrockRelayEntry> listBedrockRelay(String networkKey) throws IOException {
-        HttpPost req = new HttpPost(BASE_URL + "bedrock/list");
+        HttpPost req = new HttpPost(requestBaseUrl() + "bedrock/list");
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
         builder.addTextBody("networkKey", networkKey, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
         req.setEntity(builder.build());
 
-        inFlight = httpClient;
         try (CloseableHttpResponse response = httpClient.execute(req)) {
             String body = readEntity(response.getEntity());
             int code = response.getCode();
             if (code < 200 || code >= 300) {
                 logErrorResponse(body, code, "bedrock relay list");
-                return Collections.emptyList();
+                throw new IOException("Bedrock relay list returned HTTP " + code);
             }
-            JsonObject json = new Gson().fromJson(body, JsonObject.class);
+            JsonObject json;
+            try {
+                json = new Gson().fromJson(body, JsonObject.class);
+            } catch (RuntimeException malformed) {
+                throw new IOException("Bedrock relay list returned malformed JSON", malformed);
+            }
             if (json == null || !json.has("success") || !json.get("success").getAsBoolean()
                     || !json.has("entries")) {
-                return Collections.emptyList();
+                throw new IOException("Bedrock relay list returned an invalid success envelope");
             }
-            JsonArray arr = json.getAsJsonArray("entries");
-            List<BedrockRelayEntry> out = new ArrayList<>(arr.size());
-            for (JsonElement e : arr) {
-                if (e.isJsonObject()) out.add(toEntry(e.getAsJsonObject()));
+            try {
+                JsonArray arr = json.getAsJsonArray("entries");
+                List<BedrockRelayEntry> out = new ArrayList<>(arr.size());
+                for (JsonElement e : arr) {
+                    if (e.isJsonObject()) out.add(toEntry(e.getAsJsonObject()));
+                }
+                return out;
+            } catch (RuntimeException malformed) {
+                throw new IOException("Bedrock relay list contained invalid entries", malformed);
             }
-            return out;
-        } finally {
-            inFlight = null;
         }
     }
 
@@ -712,32 +815,38 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * files.
      */
     public List<BedrockEndpoint> listBedrockEndpoints(String networkKey) throws IOException {
-        HttpPost req = new HttpPost(BASE_URL + "bedrock/endpoint/list");
+        HttpPost req = new HttpPost(requestBaseUrl() + "bedrock/endpoint/list");
         MultipartEntityBuilder builder = MultipartEntityBuilder.create();
         builder.addTextBody("networkKey", networkKey, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
         req.setEntity(builder.build());
 
-        inFlight = httpClient;
         try (CloseableHttpResponse response = httpClient.execute(req)) {
             String body = readEntity(response.getEntity());
             int code = response.getCode();
             if (code < 200 || code >= 300) {
                 logErrorResponse(body, code, "bedrock endpoint list");
-                return Collections.emptyList();
+                throw new IOException("Bedrock endpoint list returned HTTP " + code);
             }
-            JsonObject json = new Gson().fromJson(body, JsonObject.class);
+            JsonObject json;
+            try {
+                json = new Gson().fromJson(body, JsonObject.class);
+            } catch (RuntimeException malformed) {
+                throw new IOException("Bedrock endpoint list returned malformed JSON", malformed);
+            }
             if (json == null || !json.has("success") || !json.get("success").getAsBoolean()
                     || !json.has("endpoints")) {
-                return Collections.emptyList();
+                throw new IOException("Bedrock endpoint list returned an invalid success envelope");
             }
-            JsonArray arr = json.getAsJsonArray("endpoints");
-            List<BedrockEndpoint> out = new ArrayList<>(arr.size());
-            for (JsonElement e : arr) {
-                if (e.isJsonObject()) out.add(toEndpoint(e.getAsJsonObject()));
+            try {
+                JsonArray arr = json.getAsJsonArray("endpoints");
+                List<BedrockEndpoint> out = new ArrayList<>(arr.size());
+                for (JsonElement e : arr) {
+                    if (e.isJsonObject()) out.add(toEndpoint(e.getAsJsonObject()));
+                }
+                return out;
+            } catch (RuntimeException malformed) {
+                throw new IOException("Bedrock endpoint list contained invalid entries", malformed);
             }
-            return out;
-        } finally {
-            inFlight = null;
         }
     }
 
@@ -747,44 +856,78 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * under) rather than the raw key — the GET URL would otherwise leak the
      * network identity in access logs.
      *
-     * @return true on 200 with body written to {@code dest}; false on 404 or
-     *         transport error (caller should fall back to direct fetch / wait).
+     * @return an explicit authoritative result. Transport/server/envelope failures
+     *         throw so callers can retain their last-good cached copy; only
+     *         {@link RelayDownloadResult#NOT_FOUND} authorises deletion.
      */
-    public boolean downloadBedrockRelay(String networkKeyHash, String backendId, String kind, File dest) throws IOException {
-        String url = BASE_URL + "bedrock/file/" + networkKeyHash + "/" + backendId + "/" + kind;
+    public RelayDownloadResult downloadBedrockRelay(
+            String networkKeyHash, String backendId, String kind, File dest) throws IOException {
+        String url = requestBaseUrl() + "bedrock/file/" + networkKeyHash + "/" + backendId + "/" + kind;
         org.apache.hc.client5.http.classic.methods.HttpGet req =
                 new org.apache.hc.client5.http.classic.methods.HttpGet(url);
-        inFlight = httpClient;
         try (CloseableHttpResponse response = httpClient.execute(req)) {
             int code = response.getCode();
-            if (code == 404) return false;
+            if (code == 404) return RelayDownloadResult.NOT_FOUND;
             if (code < 200 || code >= 300) {
                 String body = readEntity(response.getEntity());
                 logErrorResponse(body, code, "bedrock relay download");
-                return false;
+                throw new IOException("Bedrock relay download returned HTTP " + code);
             }
             HttpEntity entity = response.getEntity();
-            if (entity == null) return false;
+            if (entity == null) throw new IOException("Bedrock relay download returned no body");
             File parent = dest.getParentFile();
             if (parent != null && !parent.isDirectory()) //noinspection ResultOfMethodCallIgnored
                 parent.mkdirs();
-            try (FileOutputStream fos = new FileOutputStream(dest)) {
-                entity.writeTo(fos);
+            Path parentPath = parent == null
+                    ? Path.of(".").toAbsolutePath().normalize()
+                    : parent.toPath().toAbsolutePath().normalize();
+            Path temporary = Files.createTempFile(
+                    parentPath, "." + dest.getName() + ".", ".part");
+            try {
+                try (FileOutputStream fos = new FileOutputStream(temporary.toFile())) {
+                    entity.writeTo(fos);
+                }
+                try {
+                    Files.move(temporary, dest.toPath(),
+                            StandardCopyOption.ATOMIC_MOVE,
+                            StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException atomicMoveFailed) {
+                    Files.move(temporary, dest.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temporary);
             }
-            return true;
-        } finally {
-            inFlight = null;
+            return RelayDownloadResult.DOWNLOADED;
         }
+    }
+
+    public enum RelayDownloadResult {
+        DOWNLOADED,
+        NOT_FOUND
     }
 
     /**
      * Drop a backend's relay entry (or both kinds if {@code kindOrNull == null}).
-     * Best-effort — failure is logged but not surfaced; the hoster will sweep it
-     * via TTL within {@code entryTtlMinutes}.
+     * Returns explicit confirmation so ordinary lifecycle reconciliation can
+     * retry an unconfirmed withdrawal instead of silently waiting for TTL.
      */
-    public void deleteBedrockRelay(String networkKey, String backendId, String kindOrNull) {
+    public RelayDeleteResult deleteBedrockRelay(
+            String networkKey, String backendId, String kindOrNull) {
+        return deleteBedrockRelay(networkKey, backendId, kindOrNull, false);
+    }
+
+    /** Independent two-second delete path that remains usable after abortInFlight(). */
+    public RelayDeleteResult deleteBedrockRelayOnShutdown(
+            String networkKey, String backendId) {
+        return deleteBedrockRelay(networkKey, backendId, null, true);
+    }
+
+    private RelayDeleteResult deleteBedrockRelay(
+            String networkKey, String backendId, String kindOrNull,
+            boolean independent) {
+        CloseableHttpClient deleteClient = null;
         try {
-            HttpPost req = new HttpPost(BASE_URL + "bedrock/delete");
+            HttpPost req = new HttpPost(requestBaseUrl() + "bedrock/delete");
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
             builder.addTextBody("networkKey", networkKey, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
             builder.addTextBody("backendId", backendId, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
@@ -793,19 +936,47 @@ public final class MagmaguyRspClient implements AutoCloseable {
             }
             req.setEntity(builder.build());
 
-            inFlight = httpClient;
-            try (CloseableHttpResponse response = httpClient.execute(req)) {
+            // Shutdown calls this best-effort cleanup before aborting the main
+            // client. Use a separately tracked, tightly bounded request so a
+            // slow hoster cannot turn plugin disable into a 30-60 second stall.
+            deleteClient = buildClient(2, 2);
+            if (!independent) track(deleteClient);
+            try (CloseableHttpResponse response = deleteClient.execute(req)) {
+                String body = readEntity(response.getEntity());
                 int code = response.getCode();
                 if (code < 200 || code >= 300) {
                     log.fine("Bedrock relay delete returned HTTP " + code);
+                    boolean retryable = code == 408 || code == 425 || code == 429 || code >= 500;
+                    return new RelayDeleteResult(false, retryable, code, "HTTP_" + code);
                 }
+                JsonObject json = new Gson().fromJson(body, JsonObject.class);
+                boolean confirmed = json != null
+                        && json.has("success") && json.get("success").getAsBoolean()
+                        && (!json.has("confirmed") || json.get("confirmed").getAsBoolean());
+                return new RelayDeleteResult(
+                        confirmed, !confirmed, code,
+                        confirmed ? "CONFIRMED" : "INVALID_SUCCESS_ENVELOPE");
             }
         } catch (IOException e) {
             log.fine("Bedrock relay delete failed: " + e.getMessage());
+            return new RelayDeleteResult(false, true, 0,
+                    e.getClass().getSimpleName() + ": " + e.getMessage());
+        } catch (RuntimeException e) {
+            return new RelayDeleteResult(false, true, 0,
+                    "PARSE_ERROR: " + e.getMessage());
         } finally {
-            inFlight = null;
+            if (deleteClient != null) {
+                if (!independent) abortableClients.remove(deleteClient);
+                try {
+                    deleteClient.close();
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
+
+    public record RelayDeleteResult(boolean confirmed, boolean retryable,
+                                    int statusCode, String detail) {}
 
     private static BedrockRelayEntry toEntry(JsonObject e) {
         String backendId = e.has("backendId") ? e.get("backendId").getAsString() : "";

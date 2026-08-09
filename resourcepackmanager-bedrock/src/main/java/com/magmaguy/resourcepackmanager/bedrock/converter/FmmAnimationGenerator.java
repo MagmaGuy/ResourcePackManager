@@ -8,8 +8,10 @@ import com.magmaguy.resourcepackmanager.bedrock.BedrockDisplayOffsets;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import java.io.File;
+import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
@@ -17,7 +19,8 @@ import java.nio.file.Files;
  * Generates per-item Bedrock animation JSON containing the three Rainbow-style
  * animations (hold_first_person, hold_third_person, head) for one model bone.
  *
- * Mirrors org.geysermc.rainbow.mapping.animation.AnimationMapper.
+ * Uses the axis mapping from org.geysermc.rainbow.mapping.animation.AnimationMapper
+ * with community-tuned FMM held-item base transforms.
  *
  * Layout: one file per identifier at animations/&lt;modelName&gt;__&lt;boneName&gt;.animation.json
  * containing three animation entries:
@@ -27,9 +30,9 @@ import java.nio.file.Files;
  *
  * Each entry: loop=true, single bone "bone" with position/rotation/scale arrays.
  *
- * Rainbow magic constants (AnimationMapper.java:25-50):
- *   First person base: rotation (-90, 0, 0), position (0, 12.5, 0)
- *   Third person base: rotation (+90, 0, 0), position (0, 12.5, 0)
+ * Default held-item transforms:
+ *   First person base: rotation (-60, 123, 170), position (-8, 7.5, -5)
+ *   Third person base: rotation (+90, 0, 0), position (0, 6, -10)
  *   Head base:         position (0, 20, 0), scale 0.655
  * If a Java display.head transform is provided, the formula in Rainbow's
  * AnimationMapper.java:48 is:
@@ -81,16 +84,17 @@ public final class FmmAnimationGenerator {
      * Writes one animation file containing all three Rainbow-style animations.
      *
      * <p>Each of the three display arguments is optional; when null, the corresponding
-     * pose falls back to Rainbow's identity base values. The first/third-person formulas
-     * (when displays are provided) mirror Rainbow's AnimationMapper.java:18-41:
+     * pose falls back to the configured base values. The first/third-person formulas
+     * (when displays are provided) retain Rainbow's axis mapping while adding the
+     * community-tuned defaults shown here:
      * <pre>
      *   FIRST-PERSON
-     *   fp_rot = (-90 + jr.y, -jr.z, jr.x)
-     *   fp_pos = (-jt.y, 12.5 + jt.z, jt.x)
+     *   fp_rot = (-60 + jr.y, 123 - jr.z, 170 + jr.x)
+     *   fp_pos = (-8 - jt.y, 7.5 + jt.z, -5 + jt.x)
      *
      *   THIRD-PERSON
-     *   tp_rot = (+90, -jr.z, -jr.y)
-     *   tp_pos = (-jt.x, 12.5 + jt.z, -jt.y)
+     *   tp_rot = (+90 + jr.x, -jr.z, -jr.y)
+     *   tp_pos = (-jt.x, 6 + jt.z, -10 - jt.y)
      * </pre>
      *
      * <p>Critical: the {@code /0.0625} step Rainbow does is SKIPPED. RSPM reads the bone
@@ -116,8 +120,8 @@ public final class FmmAnimationGenerator {
         String hdId = "animation." + animBaseId + ".head";
 
         // First-person base offsets — user-tunable via bedrock_display_offsets.yml.
-        // Defaults reproduce the inherited Rainbow formula: rotation (-90, 0, 0),
-        // position (0, 12.5, 0). The base offsets are added on every axis so a
+        // Defaults use the community-tuned FMM pose: rotation (-60, 123, 170),
+        // position (-8, 7.5, -5). The base offsets are added on every axis so a
         // user reporting "the model floats too high in first person" can adjust
         // firstPersonBasePositionX directly without touching code.
         double fpBaseRotX = BedrockDisplayOffsets.getFirstPersonBaseRotationX();
@@ -249,7 +253,7 @@ public final class FmmAnimationGenerator {
         File outFile = new File(bedrockPackDir, "animations/" + fileBaseName + ".animation.json");
         try {
             Files.createDirectories(outFile.getParentFile().toPath());
-            try (FileWriter w = new FileWriter(outFile, StandardCharsets.UTF_8)) {
+            try (Writer w = new BufferedWriter(new FileWriter(outFile, StandardCharsets.UTF_8), 1 << 16)) {
                 GSON.toJson(root, w);
             }
         } catch (IOException e) {

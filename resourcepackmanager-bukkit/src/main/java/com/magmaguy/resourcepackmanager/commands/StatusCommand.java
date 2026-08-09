@@ -5,8 +5,10 @@ import com.magmaguy.magmacore.command.CommandData;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
+import com.magmaguy.resourcepackmanager.bedrock.BukkitBedrockConverterContext;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
+import com.magmaguy.resourcepackmanager.http.NetworkKeyResolver;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
 import org.bukkit.Bukkit;
@@ -37,8 +39,10 @@ import java.util.Optional;
  * Sections are visually separated by blank lines for readability in the chat log.</p>
  *
  * <p><b>Threading:</b> all values read here are either {@code volatile} accessors
- * or simple {@code static} config fields populated at boot. No I/O — calling
- * this command must not slow down the main thread.</p>
+ * or simple {@code static} config fields populated at boot. No network I/O —
+ * in particular {@link com.magmaguy.resourcepackmanager.autohost.AutoHost#currentResolvedHost()}
+ * never runs the public-IP probe — so calling this command must not slow down
+ * the main thread.</p>
  *
  * <p><b>Permission:</b> {@code resourcepackmanager.*} (same as reload, since the
  * output reveals internal-state details that aren't useful to non-admins).</p>
@@ -61,13 +65,12 @@ public class StatusCommand extends AdvancedCommand {
         Logger.sendMessage(sender, "&7Deploy mode: &f" + (NetworkMode.isActive() ? "network-backend" : "standalone"));
         if (NetworkMode.isActive()) {
             // Auto-derived from plugins/floodgate/key.pem; never a manual config field.
-            // Showing the live resolved value (masked) so operators can confirm both
-            // proxy and backend resolve to the same last-4 chars without exposing the
-            // full secret to anyone who might be screen-sharing the command output.
+            // Showing a non-secret hash prefix so operators can confirm proxy and
+            // backend derive the same key without exposing the access-token secret.
             String key = NetworkMode.getNetworkKey();
-            Logger.sendMessage(sender, "&7Network key: &f" + (key == null || key.isBlank()
+            Logger.sendMessage(sender, "&7Network key fingerprint: &f" + (key == null || key.isBlank()
                     ? "&c(not derived — install Floodgate on this backend)"
-                    : "&a" + maskKey(key)));
+                    : "&a" + networkKeyFingerprint(key)));
         }
         Logger.sendMessage(sender, "");
 
@@ -115,12 +118,7 @@ public class StatusCommand extends AdvancedCommand {
         // those reasons out here saves a Discord-support round trip.
         if (bedrockEnabled && !bedrockReady) {
             boolean networkActive = NetworkMode.isActive();
-            boolean floodgate = Bukkit.getPluginManager().isPluginEnabled("floodgate");
-            boolean geyserSpigot = Bukkit.getPluginManager().isPluginEnabled("Geyser-Spigot");
-            // bedrockTargetPresent reflects the actual gate in
-            // BukkitBedrockConverterContext#isBedrockTargetPresent — keep these
-            // two boolean expressions in sync.
-            boolean bedrockTargetPresent = networkActive || floodgate || geyserSpigot;
+            boolean bedrockTargetPresent = new BukkitBedrockConverterContext().isBedrockTargetPresent();
             Logger.sendMessage(sender, "");
             Logger.sendMessage(sender, "&c⚠ Bedrock pack is not on disk — diagnostic:");
             if (!bedrockTargetPresent) {
@@ -128,7 +126,7 @@ public class StatusCommand extends AdvancedCommand {
                 Logger.sendMessage(sender, "&c  not in network mode). Conversion intentionally skipped.");
                 Logger.sendMessage(sender, "&c  Fix: install Floodgate on this backend (proxy setup) OR");
                 Logger.sendMessage(sender, "&c  Geyser-Spigot (standalone setup), then /rspm reload.");
-            } else if (networkActive && !bedrockReady) {
+            } else if (networkActive) {
                 // We ARE supposed to convert (network mode active) but the file is missing.
                 // Most likely: mixer hasn't run yet, OR the converted pack is being
                 // regenerated this very moment. Tell the operator both possibilities so
@@ -251,15 +249,10 @@ public class StatusCommand extends AdvancedCommand {
         return String.format("%.2f GiB", bytes / (1024.0 * 1024 * 1024));
     }
 
-    /**
-     * Mask all but the last 4 chars of the network key. The key is a UUID-shaped
-     * shared secret between backends and proxy — full-key display in console
-     * scrollback is a leak vector if the operator screen-shares this status
-     * output. Last 4 chars are enough to confirm "yes I have the same key on
-     * the proxy" without exposing the full secret.
-     */
-    private static String maskKey(String key) {
-        if (key == null || key.length() < 8) return "********";
-        return "********-****-****-****-************" + key.substring(key.length() - 4);
+    /** Stable, non-secret comparison value for proxy/backend diagnostics. */
+    private static String networkKeyFingerprint(String key) {
+        String hash = NetworkKeyResolver.shortHashForRelay(key);
+        if (hash == null) return "(unresolved)";
+        return hash.substring(0, Math.min(12, hash.length()));
     }
 }

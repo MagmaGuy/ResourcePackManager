@@ -4,8 +4,10 @@ import com.google.gson.*;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
 import java.io.File;
+import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
@@ -303,7 +305,7 @@ public class FmmAttachableGenerator {
     private static boolean writeJson(File file, JsonObject json) {
         try {
             Files.createDirectories(file.getParentFile().toPath());
-            try (FileWriter writer = new FileWriter(file, StandardCharsets.UTF_8)) {
+            try (Writer writer = new BufferedWriter(new FileWriter(file, StandardCharsets.UTF_8), 1 << 16)) {
                 GSON.toJson(json, writer);
             }
             return true;

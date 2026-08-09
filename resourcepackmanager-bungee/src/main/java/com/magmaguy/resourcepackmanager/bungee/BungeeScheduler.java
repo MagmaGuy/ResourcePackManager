@@ -14,11 +14,6 @@ final class BungeeScheduler implements ProxySchedulerAdapter {
     }
 
     @Override
-    public void runAsync(Runnable task) {
-        plugin.getProxy().getScheduler().runAsync(plugin, task);
-    }
-
-    @Override
     public Cancellable scheduleRepeating(Runnable task, long initialDelayMillis, long intervalMillis) {
         ScheduledTask t = plugin.getProxy().getScheduler().schedule(
                 plugin, task, initialDelayMillis, intervalMillis, TimeUnit.MILLISECONDS);

@@ -16,11 +16,6 @@ final class VelocityScheduler implements ProxySchedulerAdapter {
     }
 
     @Override
-    public void runAsync(Runnable task) {
-        proxy.getScheduler().buildTask(pluginHandle, task).schedule();
-    }
-
-    @Override
     public Cancellable scheduleRepeating(Runnable task, long initialDelayMillis, long intervalMillis) {
         ScheduledTask t = proxy.getScheduler().buildTask(pluginHandle, task)
                 .delay(initialDelayMillis, TimeUnit.MILLISECONDS)

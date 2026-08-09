@@ -6,7 +6,9 @@ import com.magmaguy.resourcepackmanager.proxy.GeyserBinder;
 import com.magmaguy.resourcepackmanager.proxy.GeyserBridgeExtensionInstaller;
 import com.magmaguy.resourcepackmanager.proxy.GeyserMappingsDeployer;
 import com.magmaguy.resourcepackmanager.proxy.MergedPack;
+import com.magmaguy.resourcepackmanager.proxy.MergedOutputPublication;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
+import com.magmaguy.resourcepackmanager.proxy.ProxyPluginUpdateCoordinator;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
@@ -26,7 +28,7 @@ import java.nio.file.Path;
 @Plugin(
         id = "resourcepackmanager",
         name = "ResourcePackManager",
-        version = "2.2.2",
+        version = "2.3.1",
         description = "Network-side companion to ResourcePackManager. Delivers the merged pack to Bedrock clients via Geyser on this proxy.",
         authors = {"MagmaGuy"},
         dependencies = {
@@ -42,7 +44,9 @@ public final class RspmVelocityPlugin {
     private VelocityProxyLogger logger;
     private RspmVelocityConfig config;
     private NetworkSync sync;
+    private ProxyPluginUpdateCoordinator pluginUpdateCoordinator;
     private GeyserBinder bedrock;
+    private VelocityGeyserBridgeLifecycleRelay bridgeLifecycleRelay;
 
     @Inject
     public RspmVelocityPlugin(ProxyServer proxy, Logger slf4j, @DataDirectory Path dataDir) {
@@ -104,7 +108,8 @@ public final class RspmVelocityPlugin {
         // normal case). NetworkSync deploys merged mappings here after each
         // merge; we also pre-deploy the previous run's mappings below.
         File proxyPluginsDir = dataDir.getParent().toFile();
-        File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(proxyPluginsDir);
+        File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(
+                proxyPluginsDir, "Geyser-Velocity");
         GeyserBridgeExtensionInstaller.install(geyserPluginDir, logger);
 
         // Boot-time pre-deploy of previous run's Geyser mappings. Geyser's custom-item
@@ -114,13 +119,36 @@ public final class RspmVelocityPlugin {
         // immediately (the just-generated mappings still need a restart, but the
         // PREVIOUS run's are already deployed).
         File workingDir = dataDir.resolve("work").toFile();
-        File previousMergedMappings = new File(new File(workingDir, "merged"), "rspm_geyser_mappings.json");
-        if (previousMergedMappings.isFile() && geyserPluginDir != null) {
-            if (GeyserMappingsDeployer.isEmptyMappings(previousMergedMappings)) {
-                logger.info("Previous Geyser mappings file exists but is empty (no items); skipping boot-time pre-deploy.");
-            } else {
-                // Silent pre-deploy — boot-time internal plumbing, no operator value.
-                GeyserMappingsDeployer.deploy(geyserPluginDir, previousMergedMappings, logger);
+        try {
+            this.pluginUpdateCoordinator = ProxyPluginUpdateCoordinator.production(
+                    workingDir.toPath(),
+                    geyserPluginDir == null ? null : geyserPluginDir.toPath(),
+                    logger,
+                    RspmVelocityPlugin.class);
+        } catch (Exception exception) {
+            logger.warn("Could not initialize proxy plugin update delivery. "
+                    + "Pack synchronization will continue without proxy updates.", exception);
+        }
+        File mergedDir = new File(workingDir, "merged");
+        MergedOutputPublication.Snapshot previousPublication =
+                MergedOutputPublication.current(mergedDir);
+        if (geyserPluginDir != null) {
+            try {
+                if (previousPublication != null
+                        && previousPublication.hasMappings()
+                        && !GeyserMappingsDeployer.isEmptyMappings(
+                        previousPublication.mappings())) {
+                    GeyserMappingsDeployer.deploy(
+                            geyserPluginDir, previousPublication.mappings(), logger);
+                } else {
+                    GeyserMappingsDeployer.remove(
+                            geyserPluginDir,
+                            MergedOutputPublication.MAPPINGS_NAME,
+                            logger);
+                }
+            } catch (java.io.IOException cleanupFailure) {
+                logger.warn("Could not reconcile boot-time Geyser mappings authority: "
+                        + cleanupFailure.getMessage());
             }
         }
 
@@ -133,11 +161,18 @@ public final class RspmVelocityPlugin {
                 mixerLogger,
                 geyserPluginDir,
                 effectiveKey,
-                this::onMergedPackReady);
+                this::onMergedPackReady,
+                pluginUpdateCoordinator == null ? null : pluginUpdateCoordinator::accept);
 
         boolean geyserPresent = proxy.getPluginManager().getPlugin("geyser").isPresent();
         if (geyserPresent) {
+            this.bridgeLifecycleRelay = new VelocityGeyserBridgeLifecycleRelay(logger);
+            this.bridgeLifecycleRelay.register();
             this.bedrock = new GeyserBinder(logger, EventRegistrar.of(this), this::broadcastBedrockPackUnavailable);
+            MergedPack preloadedPack = this.sync.current();
+            if (preloadedPack != null) {
+                this.bedrock.onMergedPackReady(preloadedPack);
+            }
             this.bedrock.register();
         } else {
             logger.warn("[RSPM] Geyser-Velocity not detected. Bedrock pack delivery disabled. Install Geyser-Velocity to deliver packs to Bedrock players.");
@@ -195,39 +230,9 @@ public final class RspmVelocityPlugin {
                      * on; the logging is verbose). State resets on proxy restart.
                      */
                     private void handleDebugSubcommand(Invocation invocation, String[] args) {
-                        // args[0] = "debug"; expect args[1] = "bedrock"; args[2] = optional on/off
-                        if (args.length < 2 || !"bedrock".equalsIgnoreCase(args[1])) {
-                            invocation.source().sendMessage(net.kyori.adventure.text.Component.text(
-                                    "Usage: /rspm debug bedrock [on|off] — currently only the 'bedrock' subsystem is supported."));
-                            return;
-                        }
-                        if (args.length < 3) {
-                            boolean cur = com.magmaguy.resourcepackmanager.proxy
-                                    .BedrockDeliveryDebugLog.isEnabled();
-                            invocation.source().sendMessage(net.kyori.adventure.text.Component.text(
-                                    "[RSPM] Bedrock delivery debug logging is currently "
-                                            + (cur ? "ON" : "OFF")
-                                            + ". Use /rspm debug bedrock on|off to change."));
-                            return;
-                        }
-                        boolean target;
-                        switch (args[2].toLowerCase()) {
-                            case "on", "true", "enable", "enabled" -> target = true;
-                            case "off", "false", "disable", "disabled" -> target = false;
-                            default -> {
-                                invocation.source().sendMessage(net.kyori.adventure.text.Component.text(
-                                        "Unknown state '" + args[2] + "'. Expected 'on' or 'off'."));
-                                return;
-                            }
-                        }
-                        com.magmaguy.resourcepackmanager.proxy.BedrockDeliveryDebugLog.setEnabled(target);
                         invocation.source().sendMessage(net.kyori.adventure.text.Component.text(
-                                "[RSPM] Bedrock delivery debug logging is now "
-                                        + (target ? "ON" : "OFF")
-                                        + ". Log lines prefixed with [RSPM-BedrockDebug]. "
-                                        + (target
-                                            ? "Reproduce the issue then turn this OFF."
-                                            : "")));
+                                com.magmaguy.resourcepackmanager.proxy.BedrockDeliveryDebugLog
+                                        .handleToggleCommand(args)));
                     }
 
                     @Override
@@ -245,19 +250,34 @@ public final class RspmVelocityPlugin {
     @Subscribe
     public void onProxyShutdown(ProxyShutdownEvent event) {
         if (sync != null) sync.stop();
+        if (pluginUpdateCoordinator != null) {
+            try {
+                pluginUpdateCoordinator.applyPendingAtShutdown();
+            } catch (Exception exception) {
+                logger.warn("Unexpected failure while applying the pending proxy update. "
+                        + "The verified update remains available for the prelaunch applier.", exception);
+            }
+        }
         if (bedrock != null) bedrock.unregister();
+        if (bridgeLifecycleRelay != null) bridgeLifecycleRelay.unregister();
     }
 
     /**
      * Tracks whether the "pack is now ready" broadcast has already fired this
      * proxy session. Operators want to know the FIRST time a pack becomes
      * available (so they know "any Bedrock player connecting from here will
-     * receive custom models"), not every poll cycle — that would be 1 spam
-     * message every 30 seconds.
+     * receive custom models"), not every poll cycle (5 s) — that would spam
+     * chat.
      */
     private volatile boolean packReadyAnnounced = false;
 
     private void onMergedPackReady(MergedPack pack) {
+        if (pack == null) {
+            if (bedrock != null) bedrock.onMergedPackReady(null);
+            logger.info("Merged pack cleared; no Bedrock pack is currently published on this proxy.");
+            packReadyAnnounced = false;
+            return;
+        }
         if (bedrock != null) bedrock.onMergedPackReady(pack);
         logger.info("Merged pack ready at " + pack.packFile().getAbsolutePath()
                 + " (sha1 " + pack.sha1Hex() + ")");

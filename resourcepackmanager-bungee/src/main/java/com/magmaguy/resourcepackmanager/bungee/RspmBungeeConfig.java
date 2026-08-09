@@ -11,16 +11,10 @@ import java.util.Map;
 
 final class RspmBungeeConfig {
 
-    private final boolean forceResourcePack;
     private final int networkHttpOffset;
 
-    private RspmBungeeConfig(boolean forceResourcePack, int networkHttpOffset) {
-        this.forceResourcePack = forceResourcePack;
+    private RspmBungeeConfig(int networkHttpOffset) {
         this.networkHttpOffset = networkHttpOffset;
-    }
-
-    boolean forceResourcePack() {
-        return forceResourcePack;
     }
 
     int networkHttpOffset() {
@@ -52,10 +46,7 @@ final class RspmBungeeConfig {
             if (data.containsKey("network-http-offset-v2")) {
                 offset = ((Number) data.get("network-http-offset-v2")).intValue();
             }
-            return new RspmBungeeConfig(
-                    (Boolean) data.getOrDefault("force-resource-pack", false),
-                    offset
-            );
+            return new RspmBungeeConfig(offset);
         }
     }
 
@@ -73,9 +64,6 @@ final class RspmBungeeConfig {
                 # proxy — make sure Floodgate is installed (it must be, for Bedrock
                 # players to reach the proxy) and that the same key.pem is shared with
                 # every backend (Floodgate requires this anyway). No manual setup needed.
-
-                # Force clients to accept the pack (kick on decline). Default: false.
-                force-resource-pack: false
 
                 # Fallback offset added to each backend's Minecraft port to derive the
                 # HTTP port this proxy will hit for /bedrock.zip and /mappings.json

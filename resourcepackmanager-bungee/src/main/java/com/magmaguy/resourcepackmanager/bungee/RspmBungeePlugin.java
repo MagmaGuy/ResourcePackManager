@@ -5,7 +5,9 @@ import com.magmaguy.resourcepackmanager.proxy.GeyserBinder;
 import com.magmaguy.resourcepackmanager.proxy.GeyserBridgeExtensionInstaller;
 import com.magmaguy.resourcepackmanager.proxy.GeyserMappingsDeployer;
 import com.magmaguy.resourcepackmanager.proxy.MergedPack;
+import com.magmaguy.resourcepackmanager.proxy.MergedOutputPublication;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
+import com.magmaguy.resourcepackmanager.proxy.ProxyPluginUpdateCoordinator;
 import net.md_5.bungee.api.ChatColor;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.chat.ComponentBuilder;
@@ -19,6 +21,7 @@ public final class RspmBungeePlugin extends Plugin {
     private BungeeProxyLogger logger;
     private RspmBungeeConfig config;
     private NetworkSync sync;
+    private ProxyPluginUpdateCoordinator pluginUpdateCoordinator;
     private GeyserBinder bedrock;
 
     @Override
@@ -75,20 +78,44 @@ public final class RspmBungeePlugin extends Plugin {
         // BungeeCord/Waterfall). NetworkSync deploys merged mappings here after
         // each merge; we also pre-deploy the previous run's mappings below.
         File proxyPluginsDir = getDataFolder().getParentFile();
-        File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(proxyPluginsDir);
+        File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(
+                proxyPluginsDir, "Geyser-BungeeCord");
         GeyserBridgeExtensionInstaller.install(geyserPluginDir, logger);
 
         // Boot-time pre-deploy of the previous run's Geyser mappings — Geyser's
         // custom-item registry is boot-frozen, so anything we generate AFTER its
         // startup waits for the next proxy restart to apply.
         File workingDir = new File(getDataFolder(), "work");
-        File previousMergedMappings = new File(new File(workingDir, "merged"), "rspm_geyser_mappings.json");
-        if (previousMergedMappings.isFile() && geyserPluginDir != null) {
-            if (GeyserMappingsDeployer.isEmptyMappings(previousMergedMappings)) {
-                logger.info("Previous Geyser mappings file exists but is empty (no items); skipping boot-time pre-deploy.");
-            } else {
-                // Silent pre-deploy — boot-time internal plumbing, no operator value.
-                GeyserMappingsDeployer.deploy(geyserPluginDir, previousMergedMappings, logger);
+        try {
+            this.pluginUpdateCoordinator = ProxyPluginUpdateCoordinator.production(
+                    workingDir.toPath(),
+                    geyserPluginDir == null ? null : geyserPluginDir.toPath(),
+                    logger,
+                    RspmBungeePlugin.class);
+        } catch (Exception exception) {
+            logger.warn("Could not initialize proxy plugin update delivery. "
+                    + "Pack synchronization will continue without proxy updates.", exception);
+        }
+        File mergedDir = new File(workingDir, "merged");
+        MergedOutputPublication.Snapshot previousPublication =
+                MergedOutputPublication.current(mergedDir);
+        if (geyserPluginDir != null) {
+            try {
+                if (previousPublication != null
+                        && previousPublication.hasMappings()
+                        && !GeyserMappingsDeployer.isEmptyMappings(
+                        previousPublication.mappings())) {
+                    GeyserMappingsDeployer.deploy(
+                            geyserPluginDir, previousPublication.mappings(), logger);
+                } else {
+                    GeyserMappingsDeployer.remove(
+                            geyserPluginDir,
+                            MergedOutputPublication.MAPPINGS_NAME,
+                            logger);
+                }
+            } catch (java.io.IOException cleanupFailure) {
+                logger.warn("Could not reconcile boot-time Geyser mappings authority: "
+                        + cleanupFailure.getMessage());
             }
         }
 
@@ -101,11 +128,16 @@ public final class RspmBungeePlugin extends Plugin {
                 mixerLogger,
                 geyserPluginDir,
                 effectiveKey,
-                this::onMergedPackReady);
+                this::onMergedPackReady,
+                pluginUpdateCoordinator == null ? null : pluginUpdateCoordinator::accept);
 
         boolean geyserPresent = getProxy().getPluginManager().getPlugin("Geyser-BungeeCord") != null;
         if (geyserPresent) {
             this.bedrock = new GeyserBinder(logger, EventRegistrar.of(this), this::broadcastBedrockPackUnavailable);
+            MergedPack preloadedPack = this.sync.current();
+            if (preloadedPack != null) {
+                this.bedrock.onMergedPackReady(preloadedPack);
+            }
             this.bedrock.register();
         } else {
             getLogger().warning("[RSPM] Geyser-BungeeCord not detected. Bedrock pack delivery disabled. Install Geyser-BungeeCord to deliver packs to Bedrock players.");
@@ -137,6 +169,14 @@ public final class RspmBungeePlugin extends Plugin {
     @Override
     public void onDisable() {
         if (sync != null) sync.stop();
+        if (pluginUpdateCoordinator != null) {
+            try {
+                pluginUpdateCoordinator.applyPendingAtShutdown();
+            } catch (Exception exception) {
+                logger.warn("Unexpected failure while applying the pending proxy update. "
+                        + "The verified update remains available for the prelaunch applier.", exception);
+            }
+        }
         if (bedrock != null) bedrock.unregister();
     }
 
@@ -144,11 +184,17 @@ public final class RspmBungeePlugin extends Plugin {
      * Tracks whether the "pack is now ready" broadcast has already fired this
      * proxy session — fire-once semantics, identical to Velocity's tracking.
      * Operators want to know the FIRST time a pack becomes available, not
-     * every poll cycle (that would spam chat every 30s).
+     * every poll cycle (5 s) — that would spam chat.
      */
     private volatile boolean packReadyAnnounced = false;
 
     private void onMergedPackReady(MergedPack pack) {
+        if (pack == null) {
+            if (bedrock != null) bedrock.onMergedPackReady(null);
+            logger.info("Merged pack cleared; no Bedrock pack is currently published on this proxy.");
+            packReadyAnnounced = false;
+            return;
+        }
         if (bedrock != null) bedrock.onMergedPackReady(pack);
         logger.info("Merged pack ready at " + pack.packFile().getAbsolutePath() + " (sha1 " + pack.sha1Hex() + ")");
         if (!packReadyAnnounced) {

@@ -122,7 +122,12 @@ public final class GeyserBinder {
             return;
         }
         try {
-            event.register(ResourcePack.create(PackCodec.path(packFile.toPath())));
+            ResourcePack resourcePack = ResourcePack.create(PackCodec.path(packFile.toPath()));
+            boolean replacedSameUuid = event.unregister(resourcePack.uuid());
+            if (!event.register(resourcePack)) {
+                throw new IllegalStateException("Geyser refused pack UUID " + resourcePack.uuid()
+                        + " after same-UUID replacement");
+            }
             if (BedrockDeliveryDebugLog.isEnabled()) {
                 // One line per Bedrock session load — gives the operator the
                 // exact (player, pack-sha1, pack-bytes, on-disk path) tuple
@@ -132,6 +137,8 @@ public final class GeyserBinder {
                 // client received → which bones FMM tried to display.
                 logger.info("[RSPM-BedrockDebug] GeyserBinder.onSession: announced pack to "
                         + playerName + " — sha1=" + safeShortSha(pack.sha1Hex())
+                        + " uuid=" + resourcePack.uuid()
+                        + " replacedSameUuid=" + replacedSameUuid
                         + " bytes=" + packFile.length()
                         + " path=" + packFile.getAbsolutePath());
             }

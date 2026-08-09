@@ -1,12 +1,14 @@
 package com.magmaguy.resourcepackmanager.bedrock.util;
 
+import com.magmaguy.resourcepackmanager.mixer.engine.internal.Cancellation;
+import com.magmaguy.resourcepackmanager.mixer.engine.internal.PackFileIndex;
+import com.magmaguy.resourcepackmanager.mixer.engine.internal.ParallelZipWriter;
+
 import java.io.*;
 import java.nio.file.*;
-import java.util.Comparator;
 import java.util.List;
-import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Utility for zipping a Bedrock pack directory into a distributable .zip file.
@@ -27,7 +29,8 @@ public class BedrockZip {
      * @param zipName   the name of the zip file (without .zip extension)
      * @return the created zip File, or null on failure
      */
-    public static File zip(File sourceDir, File outputDir, String zipName) {
+    public static File zip(File sourceDir, File outputDir, String zipName,
+                           BooleanSupplier cancellationRequested) {
         if (sourceDir == null || !sourceDir.isDirectory()) return null;
         if (outputDir == null) return null;
         if (zipName == null || zipName.isEmpty()) return null;
@@ -38,21 +41,28 @@ public class BedrockZip {
         File tmpFile = new File(outputDir, zipName + ".zip.tmp");
         Path sourcePath = sourceDir.toPath();
 
-        try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(tmpFile)));
-             Stream<Path> stream = Files.walk(sourcePath)) {
-            List<Path> files = stream
-                    .filter(Files::isRegularFile)
-                    .sorted(Comparator.comparing(path -> sourcePath.relativize(path).toString().replace('\\', '/')))
+        try {
+            // One traversal that keeps the attributes the directory read already produced, rather
+            // than Files.walk + isRegularFile re-stat'ing every one of ~10k entries. Same sorted
+            // order as before, so the archive bytes are unaffected.
+            List<ParallelZipWriter.Entry> entries = PackFileIndex.sortedRegularFiles(sourcePath)
+                    .stream()
+                    .map(file -> new ParallelZipWriter.Entry(
+                            file.relativePath(), file.path()))
                     .toList();
+            checkCancelled(cancellationRequested);
 
-            for (Path file : files) {
-                String entryName = sourcePath.relativize(file).toString().replace('\\', '/');
-                ZipEntry entry = new ZipEntry(entryName);
-                entry.setTime(0L);
-                zos.putNextEntry(entry);
-                Files.copy(file, zos);
-                zos.closeEntry();
+            // Deflating the Bedrock bundle serially was the longest single step in a mix cycle.
+            // ParallelZipWriter compresses entries on a bounded pool and splices them back in this
+            // exact sorted order, reproducing ZipOutputStream's bytes exactly — which the
+            // filesEqual() short-circuit below and Geyser's pack cache both depend on.
+            try (OutputStream out = new BufferedOutputStream(new FileOutputStream(tmpFile), 1 << 16)) {
+                ParallelZipWriter.write(entries, out, cancellationRequested);
             }
+            checkCancelled(cancellationRequested);
+        } catch (CancellationException cancelled) {
+            try { Files.deleteIfExists(tmpFile.toPath()); } catch (IOException ignored) {}
+            return null;
         } catch (IOException e) {
             com.magmaguy.resourcepackmanager.bedrock.BedrockLog.warn("Failed to zip Bedrock pack: " + e.getMessage());
             try { Files.deleteIfExists(tmpFile.toPath()); } catch (IOException ignored) {}
@@ -60,7 +70,8 @@ public class BedrockZip {
         }
 
         try {
-            if (zipFile.isFile() && Files.mismatch(tmpFile.toPath(), zipFile.toPath()) == -1L) {
+            checkCancelled(cancellationRequested);
+            if (zipFile.isFile() && filesEqual(tmpFile.toPath(), zipFile.toPath(), cancellationRequested)) {
                 Files.deleteIfExists(tmpFile.toPath());
                 return zipFile;
             }
@@ -76,8 +87,21 @@ public class BedrockZip {
                 try { Files.deleteIfExists(tmpFile.toPath()); } catch (IOException ignored) {}
                 return null;
             }
+        } catch (CancellationException cancelled) {
+            try { Files.deleteIfExists(tmpFile.toPath()); } catch (IOException ignored) {}
+            return null;
         }
 
         return zipFile;
+    }
+
+    private static boolean filesEqual(Path first, Path second,
+                                      BooleanSupplier cancellationRequested) throws IOException {
+        return Cancellation.contentEquals(first, second, cancellationRequested,
+                "Bedrock pack archive operation cancelled");
+    }
+
+    private static void checkCancelled(BooleanSupplier cancellationRequested) {
+        Cancellation.check(cancellationRequested, "Bedrock pack archive operation cancelled");
     }
 }

@@ -3,6 +3,7 @@ package com.magmaguy.resourcepackmanager.bedrock.generic;
 import com.google.gson.JsonObject;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -40,28 +41,50 @@ public final class BaseItemResolver {
 
     /**
      * Resolves the candidate base-item list for a given items definition.
-     * Never returns empty: falls through to {@link FilenameHeuristic#genericFallback()}.
+     * The heuristic itself always produces at least one candidate, but the final
+     * result can be empty when every candidate is unsafe to register as a Geyser
+     * custom-item override.
      */
     public static List<String> resolve(ItemsDefinition def, AssetResolver resolver) {
-        if (def.hasExplicitBaseItems()) return def.explicitBaseItems();
-        if (isRootVanillaItemDefinition(def)) return List.of(def.itemIdentifier());
+        List<String> candidates;
+        if (def.hasExplicitBaseItems()) {
+            candidates = def.explicitBaseItems();
+        } else if (isRootVanillaItemDefinition(def)) {
+            candidates = List.of(def.itemIdentifier());
+        } else {
+            candidates = resolveHeuristic(def, resolver);
 
-        List<String> bases = resolveHeuristic(def, resolver);
-
-        // FreeMinecraftModels always wears items on a leather_horse_armor carrier when
-        // rendering bones via packet armor stands. Ensure the FMM model is registered
-        // under that base item too, in addition to whatever the filename heuristic
-        // picked (which covers the /craftify or held-item case). Without this the
-        // bone armor stand renders as plain leather-horse-armor on Bedrock and the
-        // user-visible FMM furniture / props / weapons are invisible.
-        if ("freeminecraftmodels".equals(def.namespace()) && !bases.contains(FMM_BONE_CARRIER)) {
-            // Build a fresh list so we don't mutate the (often-shared) heuristic-returned list.
-            java.util.List<String> merged = new java.util.ArrayList<>(bases.size() + 1);
-            merged.addAll(bases);
-            merged.add(FMM_BONE_CARRIER);
-            return merged;
+            // FreeMinecraftModels always wears items on a leather_horse_armor carrier when
+            // rendering bones via packet armor stands. Ensure the FMM model is registered
+            // under that base item too, in addition to whatever the filename heuristic
+            // picked (which covers the /craftify or held-item case). Without this the
+            // bone armor stand renders as plain leather-horse-armor on Bedrock and the
+            // user-visible FMM furniture / props / weapons are invisible.
+            if ("freeminecraftmodels".equals(def.namespace())
+                    && !candidates.contains(FMM_BONE_CARRIER)) {
+                // Build a fresh list so we don't mutate the (often-shared)
+                // heuristic-returned list.
+                List<String> merged = new ArrayList<>(candidates.size() + 1);
+                merged.addAll(candidates);
+                merged.add(FMM_BONE_CARRIER);
+                candidates = merged;
+            }
         }
-        return bases;
+
+        List<String> supported = candidates.stream()
+                .filter(GeyserBaseItemCompatibility::supportsCustomItemOverride)
+                .toList();
+        if (supported.size() != candidates.size()) {
+            List<String> rejected = candidates.stream()
+                    .filter(base -> !GeyserBaseItemCompatibility.supportsCustomItemOverride(base))
+                    .toList();
+            BedrockLog.warn("[BedrockConverter] Skipping Geyser custom-item mapping for "
+                    + def.itemIdentifier() + " on incompatible block-item base(s): "
+                    + String.join(", ", rejected)
+                    + ". Bedrock will use the vanilla icon until Geyser can override "
+                    + "these item/block identifier mismatches safely.");
+        }
+        return supported;
     }
 
     private static boolean isRootVanillaItemDefinition(ItemsDefinition def) {

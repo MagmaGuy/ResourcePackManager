@@ -53,11 +53,12 @@ public final class GeyserPackProvider {
     public static void register() {
         if (registered) return;
         if (Bukkit.getPluginManager().getPlugin("Geyser-Spigot") != null) {
-            // One-shot migration: prior RSPM versions copied our pack zip into Geyser's
-            // packs/ folder. Geyser auto-loads everything in that folder at boot, so
-            // leaving the legacy copy in place can keep stale Bedrock packs alive even
-            // after Bedrock conversion is disabled.
-            cleanupLegacyPackCopy();
+            // Geyser has already scanned packs/ by the time this soft-depend loads.
+            // Deleting an already-scanned legacy copy here leaves Geyser holding a
+            // codec for a path that no longer exists; registering the live provider
+            // as well can also duplicate the same pack UUID. Fail closed for this
+            // boot and require a full stop/delete/start migration.
+            if (legacyPackBlocksRegistration()) return;
         }
         if (!DefaultConfig.isBedrockConversionEnabled()) return;
         if (NetworkMode.isActive()) {
@@ -91,17 +92,20 @@ public final class GeyserPackProvider {
         }
     }
 
-    private static void cleanupLegacyPackCopy() {
+    private static boolean legacyPackBlocksRegistration() {
         try {
             java.nio.file.Path geyserPacksDir = GeyserApi.api().packDirectory();
-            if (geyserPacksDir == null) return;
+            if (geyserPacksDir == null) return false;
             java.nio.file.Path legacy = geyserPacksDir.resolve("ResourcePackManager_Bedrock.zip");
-            // One-time silent migration: prior versions dropped the pack into
-            // Geyser's packs/ folder. Just delete the leftover if found —
-            // operator doesn't need to know.
-            java.nio.file.Files.deleteIfExists(legacy);
-        } catch (Throwable ignored) {
-            // Best-effort cleanup; not fatal if it fails.
+            if (!java.nio.file.Files.isRegularFile(legacy)) return false;
+            Logger.warn("Legacy RSPM Bedrock pack detected at " + legacy.toAbsolutePath() + ".");
+            Logger.warn("Geyser already scanned that file, so RSPM will not register its live pack provider this boot.");
+            Logger.warn("Fully stop the server, delete only that legacy file, then start the server again.");
+            return true;
+        } catch (Throwable t) {
+            Logger.warn("Could not inspect Geyser's legacy pack folder; live RSPM pack registration was skipped safely: "
+                    + t.getMessage());
+            return true;
         }
     }
 
@@ -121,16 +125,21 @@ public final class GeyserPackProvider {
 
     private static void onSessionLoadResourcePacks(SessionLoadResourcePacksEvent event) {
         File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
-        File packFile = new File(outputDir, "ResourcePackManager_Bedrock.zip");
-        if (!packFile.isFile()) {
+        BedrockOutputPublication.Snapshot publication = BedrockOutputPublication.current(outputDir);
+        if (publication == null
+                || !BedrockConversion.hasArtifactSetManifest(publication.pack())) {
             // First boot before any mix has completed, or a failed mix wiped the
             // output. The user explicitly accepted this small window — the joiner
             // just doesn't get a pack this one time.
             return;
         }
         try {
-            ResourcePack pack = ResourcePack.create(PackCodec.path(packFile.toPath()));
-            event.register(pack);
+            ResourcePack pack = ResourcePack.create(PackCodec.path(publication.pack().toPath()));
+            event.unregister(pack.uuid());
+            if (!event.register(pack)) {
+                Logger.warn("Geyser refused the current RSPM Bedrock pack after same-UUID replacement (UUID "
+                        + pack.uuid() + ").");
+            }
         } catch (Throwable t) {
             Logger.warn("Failed to register Bedrock pack for session: " + t.getMessage());
         }

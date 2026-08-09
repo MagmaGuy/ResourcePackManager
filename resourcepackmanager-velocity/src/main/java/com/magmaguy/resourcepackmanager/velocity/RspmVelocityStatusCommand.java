@@ -22,10 +22,9 @@ import java.util.function.Supplier;
  * scroll far enough, but the log is async + interleaved with every other
  * plugin's output; a command gives operators an at-a-glance snapshot.</p>
  *
- * <p><b>Permission:</b> {@code resourcepackmanager.command.status} — defaults
- * to allowed for everyone because the output reveals no secrets (network key
- * is masked, no auth tokens, just topology + reachability). Operators on
- * restricted servers can disable via LuckPerms or Velocity's own ACL.</p>
+ * <p><b>Permission:</b> requires {@code resourcepackmanager.command.status} or
+ * {@code resourcepackmanager.*}. The output reveals no secrets (only a short
+ * hash fingerprint of the network key, no auth tokens, just topology + reachability).</p>
  */
 final class RspmVelocityStatusCommand implements SimpleCommand {
 

@@ -3,6 +3,7 @@ package com.magmaguy.resourcepackmanager.bedrock;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 
 import java.io.File;
+import java.io.IOException;
 
 /**
  * Platform-neutral context passed into {@link BedrockConversion}. Implementations
@@ -71,6 +72,67 @@ public interface BedrockConverterContext {
     void deployMappingsIfNeeded(File mappingsFile);
 
     /**
+     * Exact destination used by {@link #deployMappingsIfNeeded(File)}, when the
+     * platform can expose it.  BedrockConversion uses this path to publish the
+     * local pack, local mappings sidecar, and deployed Geyser mapping as one
+     * rollback-capable artifact set.  A {@code null} result means deployment is
+     * disabled or no local Geyser installation was found.
+     */
+    default File deployedMappingsFile() {
+        return null;
+    }
+
+    /**
+     * Previously RSPM-owned deployment target, retained independently of the
+     * current auto-deploy setting. A conversion transaction removes this path
+     * when deployment is disabled or moves to another Geyser installation.
+     */
+    default File previousDeployedMappingsFile() {
+        return null;
+    }
+
+    /** Sidecar that records the exact RSPM-owned deployed mapping target. */
+    default File deployedMappingsProvenanceFile() {
+        return null;
+    }
+
+    /** Invalidates cached publication authority before stable paths mutate. */
+    default void beginPublishedArtifactSetMutation(File outputDir) {
+    }
+
+    /**
+     * Final authority commit for a fully replaced local artifact set. This hook
+     * runs while BedrockConversion still owns byte-for-byte rollback snapshots.
+     */
+    default boolean commitPublishedArtifactSet(File outputDir) throws IOException {
+        return !isCancellationRequested();
+    }
+
+    /** Fail-closed hook when byte-for-byte rollback itself cannot complete. */
+    default void invalidatePublishedArtifactSet(File outputDir) {
+    }
+
+    /**
+     * Persistently withdraws publication authority before an authoritative
+     * disabled/no-target/no-content cleanup touches any artifact path. A false
+     * result means the platform failed to persist its fail-closed state, though
+     * the caller still proceeds with best-effort physical cleanup.
+     */
+    default boolean withdrawPublishedArtifactSet(File outputDir) {
+        invalidatePublishedArtifactSet(outputDir);
+        return true;
+    }
+
+    /**
+     * Removes the platform-deployed Geyser mapping after an authoritative
+     * withdrawal (conversion disabled, no convertible content, or an ordinary
+     * conversion failure).  Cancellation deliberately does not call this hook,
+     * preserving the last known-good publication.
+     */
+    default void removeDeployedMappingsIfNeeded() {
+    }
+
+    /**
      * True iff the operator has opted in to verbose per-item / per-bone progress
      * logging from the Bedrock conversion pipeline. When {@code false} (the
      * default), {@link BedrockLog#debug(String)} calls are no-ops and the
@@ -91,6 +153,16 @@ public interface BedrockConverterContext {
      */
     default BedrockDisplayOffsets.Snapshot displayOffsets() {
         return BedrockDisplayOffsets.Snapshot.defaults();
+    }
+
+    /**
+     * True when the platform is shutting down and conversion should stop before
+     * touching any more plugin classes or output files. Long-running conversion
+     * phases poll this cooperatively so the platform can wait for a clean exit
+     * before unloading the plugin jar.
+     */
+    default boolean isCancellationRequested() {
+        return Thread.currentThread().isInterrupted();
     }
 
     /**

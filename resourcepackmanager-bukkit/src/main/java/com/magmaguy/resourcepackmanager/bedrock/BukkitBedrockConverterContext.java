@@ -9,6 +9,7 @@ import com.magmaguy.resourcepackmanager.network.NetworkMode;
 import org.bukkit.Bukkit;
 
 import java.io.File;
+import java.util.function.BooleanSupplier;
 
 /**
  * Backend (Bukkit) implementation of {@link BedrockConverterContext}. Wires the
@@ -17,11 +18,12 @@ import java.io.File;
  * {@link GeyserDeployer} (for path resolution into
  * {@code plugins/Geyser-*\/custom_mappings/}).
  *
- * <p>Singleton — there's only one RPM plugin instance per JVM. Held by
- * {@code ResourcePackManager} and reused by both {@link BedrockConversion#generate}
- * and the boot-time {@link BedrockConversion#deployPreviousMappingsIfNeeded} call.</p>
+ * <p>A context is cheap and created for each conversion so it can carry that
+ * run's cancellation token. Configuration and platform state are still read
+ * live rather than cached.</p>
  */
 public final class BukkitBedrockConverterContext implements BedrockConverterContext {
+    private final BooleanSupplier runCancellation;
 
     /**
      * Adapter exposing MagmaCore's static {@code Logger} as the converter
@@ -35,9 +37,11 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
     };
 
     public BukkitBedrockConverterContext() {
-        // No state — the impl reads from static config classes and Bukkit.getPluginManager
-        // at call time, which is fine because both update on /reload and we don't need
-        // to cache anything.
+        this(() -> false);
+    }
+
+    public BukkitBedrockConverterContext(BooleanSupplier runCancellation) {
+        this.runCancellation = runCancellation == null ? () -> false : runCancellation;
     }
 
     @Override
@@ -83,15 +87,67 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
     }
 
     @Override
+    public boolean isCancellationRequested() {
+        return Thread.currentThread().isInterrupted()
+                || runCancellation.getAsBoolean()
+                || com.magmaguy.magmacore.MagmaCore.isShutdownRequested(ResourcePackManager.plugin);
+    }
+
+    @Override
     public void deployMappingsIfNeeded(File mappingsFile) {
-        if (!DefaultConfig.isBedrockAutoDeployToGeyser()) return;
-        GeyserDeployer.deployMappings(mappingsFile);
+        GeyserDeployer.reconcileMappings(
+                mappingsFile,
+                DefaultConfig.isBedrockAutoDeployToGeyser());
+    }
+
+    @Override
+    public File deployedMappingsFile() {
+        if (!DefaultConfig.isBedrockAutoDeployToGeyser()) return null;
+        return GeyserDeployer.mappingsTarget();
+    }
+
+    @Override
+    public File previousDeployedMappingsFile() {
+        return GeyserDeployer.ownedMappingsTarget();
+    }
+
+    @Override
+    public File deployedMappingsProvenanceFile() {
+        return GeyserDeployer.ownershipFile();
+    }
+
+    @Override
+    public void beginPublishedArtifactSetMutation(File outputDir) {
+        BedrockOutputPublication.invalidateCache();
+    }
+
+    @Override
+    public boolean commitPublishedArtifactSet(File outputDir) {
+        return BedrockOutputPublication.publishCurrent(outputDir, this::isCancellationRequested);
+    }
+
+    @Override
+    public void invalidatePublishedArtifactSet(File outputDir) {
+        BedrockOutputPublication.withdraw(outputDir);
+    }
+
+    @Override
+    public boolean withdrawPublishedArtifactSet(File outputDir) {
+        return BedrockOutputPublication.revokeAuthority(outputDir);
+    }
+
+    @Override
+    public void removeDeployedMappingsIfNeeded() {
+        // Cleanup is authoritative even when auto-deploy was just disabled: a
+        // mapping copied by the previous configuration must not survive forever.
+        GeyserDeployer.removeMappings();
     }
 
     @Override
     public File previousMappingsFile() {
         File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
-        return new File(outputDir, BedrockConversion.GEYSER_MAPPINGS_NAME);
+        BedrockOutputPublication.Snapshot publication = BedrockOutputPublication.current(outputDir);
+        return publication == null ? null : publication.mappings();
     }
 
     @Override

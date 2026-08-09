@@ -8,14 +8,19 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
+import com.magmaguy.resourcepackmanager.mixer.engine.internal.PackFileIndex;
+import com.magmaguy.resourcepackmanager.mixer.engine.internal.ParallelZipWriter;
 import com.magmaguy.resourcepackmanager.mixer.engine.internal.ZipUtil;
 
 import java.io.BufferedOutputStream;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,7 +41,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
@@ -145,26 +149,17 @@ public final class BedrockPackMerger {
             for (int i = 0; i < inputs.size(); i++) {
                 File zip = inputs.get(i);
                 if (zip == null || !zip.isFile()) {
-                    logger.warn("[BedrockPackMerger] Input #" + i + " is missing or not a file; skipping: "
+                    throw new IOException("[BedrockPackMerger] Input #" + i
+                            + " is missing or not a file: "
                             + (zip == null ? "null" : zip.getAbsolutePath()));
-                    unzippedDirs.add(null);
-                    continue;
                 }
                 File dest = new File(scratchRoot, "in_" + i);
                 if (!dest.mkdirs()) {
-                    logger.warn("[BedrockPackMerger] Failed to create unzip dir for input #" + i + ": "
-                            + dest.getAbsolutePath());
-                    unzippedDirs.add(null);
-                    continue;
+                    throw new IOException("[BedrockPackMerger] Failed to create unzip dir for input #"
+                            + i + ": " + dest.getAbsolutePath());
                 }
-                try {
-                    ZipUtil.unzip(zip, dest);
-                    unzippedDirs.add(dest);
-                } catch (IOException e) {
-                    logger.warn("[BedrockPackMerger] Failed to unzip input #" + i + " ("
-                            + zip.getAbsolutePath() + "): " + e.getMessage());
-                    unzippedDirs.add(null);
-                }
+                ZipUtil.unzip(zip, dest);
+                unzippedDirs.add(dest);
             }
 
             // 2b. Empty-input detection: if every input is a manifest-only / no-real-
@@ -206,32 +201,27 @@ public final class BedrockPackMerger {
 
                 int backendIndex = i;
                 Path packRoot = packDir.toPath();
-                try {
-                    Files.walkFileTree(packRoot, new SimpleFileVisitor<>() {
-                        @Override
-                        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                            String rel = packRoot.relativize(file).toString().replace('\\', '/');
-                            if (rel.equals(MANIFEST_NAME)) return FileVisitResult.CONTINUE;
-                            if (rel.equals(ITEM_TEXTURE_REL)) return FileVisitResult.CONTINUE;
+                Files.walkFileTree(packRoot, new SimpleFileVisitor<>() {
+                    @Override
+                    public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                        String rel = packRoot.relativize(file).toString().replace('\\', '/');
+                        if (rel.equals(MANIFEST_NAME)) return FileVisitResult.CONTINUE;
+                        if (rel.equals(ITEM_TEXTURE_REL)) return FileVisitResult.CONTINUE;
 
-                            File target = new File(stagingDir, rel);
-                            if (target.exists()) {
-                                Integer prev = lastWriterByRelPath.get(rel);
-                                logger.warn("[BedrockPackMerger] File collision on '" + rel
-                                        + "' between backend #" + (prev == null ? "?" : prev)
-                                        + " and backend #" + backendIndex
-                                        + "; last writer wins (backend #" + backendIndex + ").");
-                            }
-                            Files.createDirectories(target.getParentFile().toPath());
-                            Files.copy(file, target.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                            lastWriterByRelPath.put(rel, backendIndex);
-                            return FileVisitResult.CONTINUE;
+                        File target = new File(stagingDir, rel);
+                        if (target.exists()) {
+                            Integer prev = lastWriterByRelPath.get(rel);
+                            logger.warn("[BedrockPackMerger] File collision on '" + rel
+                                    + "' between backend #" + (prev == null ? "?" : prev)
+                                    + " and backend #" + backendIndex
+                                    + "; last writer wins (backend #" + backendIndex + ").");
                         }
-                    });
-                } catch (IOException e) {
-                    logger.warn("[BedrockPackMerger] Walk failed on backend #" + backendIndex
-                            + " (" + packDir.getAbsolutePath() + "): " + e.getMessage());
-                }
+                        Files.createDirectories(target.getParentFile().toPath());
+                        Files.copy(file, target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                        lastWriterByRelPath.put(rel, backendIndex);
+                        return FileVisitResult.CONTINUE;
+                    }
+                });
             }
 
             // 4. JSON-merge every textures/item_texture.json: union the texture_data map.
@@ -239,6 +229,11 @@ public final class BedrockPackMerger {
 
             // 5. Compact any long backend-supplied paths before the manifest digest.
             compactLongPackPaths(stagingDir);
+
+            // Multiple models and backends frequently emit byte-identical atlases under
+            // different paths. Consolidate only exact matches, rewriting every structural
+            // JSON reference before deleting an alias. Ambiguous references are retained.
+            BedrockPackOptimizer.deduplicateExactTextures(stagingDir.toPath(), logger);
 
             // 6. Generate a fresh manifest.json pinned to stableMergedPackUuid.
             // Version is derived from staged content so no-op proxy remixes keep
@@ -261,7 +256,7 @@ public final class BedrockPackMerger {
         }
     }
 
-    private void compactLongPackPaths(File stagingDir) {
+    private void compactLongPackPaths(File stagingDir) throws IOException {
         Path root = stagingDir.toPath();
         List<Path> files;
         try (Stream<Path> stream = Files.walk(root)) {
@@ -269,9 +264,6 @@ public final class BedrockPackMerger {
                     .filter(Files::isRegularFile)
                     .sorted(Comparator.comparing(path -> root.relativize(path).toString().replace('\\', '/')))
                     .toList();
-        } catch (IOException e) {
-            logger.warn("[BedrockPackMerger] Failed to scan merged pack for long paths: " + e.getMessage());
-            return;
         }
 
         Map<String, String> pathRewrites = buildLongPathRewrites(root, files);
@@ -283,17 +275,11 @@ public final class BedrockPackMerger {
             Path source = root.resolve(rewrite.getKey()).normalize();
             Path destination = root.resolve(rewrite.getValue()).normalize();
             if (!source.startsWith(root) || !destination.startsWith(root)) {
-                logger.warn("[BedrockPackMerger] Skipping unsafe path compaction rewrite: "
+                throw new IOException("Unsafe path compaction rewrite: "
                         + rewrite.getKey() + " -> " + rewrite.getValue());
-                continue;
             }
-            try {
-                Files.createDirectories(destination.getParent());
-                Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException e) {
-                logger.warn("[BedrockPackMerger] Failed to compact Bedrock path '"
-                        + rewrite.getKey() + "' -> '" + rewrite.getValue() + "': " + e.getMessage());
-            }
+            Files.createDirectories(destination.getParent());
+            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
         }
 
         Map<String, String> referenceRewrites = buildReferenceRewrites(pathRewrites);
@@ -345,7 +331,8 @@ public final class BedrockPackMerger {
         return rewrites;
     }
 
-    private void rewriteJsonReferences(File stagingDir, Map<String, String> referenceRewrites) {
+    private void rewriteJsonReferences(File stagingDir, Map<String, String> referenceRewrites)
+            throws IOException {
         if (referenceRewrites.isEmpty()) {
             return;
         }
@@ -357,9 +344,6 @@ public final class BedrockPackMerger {
                     .filter(path -> path.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".json"))
                     .sorted(Comparator.comparing(path -> root.relativize(path).toString().replace('\\', '/')))
                     .toList();
-        } catch (IOException e) {
-            logger.warn("[BedrockPackMerger] Failed to scan JSON files for long-path rewrites: " + e.getMessage());
-            return;
         }
 
         for (Path jsonFile : jsonFiles) {
@@ -368,7 +352,7 @@ public final class BedrockPackMerger {
                 try (FileReader reader = new FileReader(jsonFile.toFile(), StandardCharsets.UTF_8)) {
                     rootElement = JsonParser.parseReader(reader);
                 }
-                try (FileWriter writer = new FileWriter(jsonFile.toFile(), StandardCharsets.UTF_8)) {
+                try (Writer writer = new BufferedWriter(new FileWriter(jsonFile.toFile(), StandardCharsets.UTF_8), 1 << 16)) {
                     GSON.toJson(rewriteJsonStrings(rootElement, referenceRewrites), writer);
                 }
             } catch (Exception parseException) {
@@ -379,8 +363,8 @@ public final class BedrockPackMerger {
                             + root.relativize(jsonFile).toString().replace('\\', '/') + ": "
                             + parseException.getMessage());
                 } catch (IOException ioException) {
-                    logger.warn("[BedrockPackMerger] Failed to rewrite JSON references in "
-                            + jsonFile + ": " + ioException.getMessage());
+                    throw new IOException("Failed to rewrite JSON references in "
+                            + jsonFile, ioException);
                 }
             }
         }
@@ -495,7 +479,16 @@ public final class BedrockPackMerger {
         return stripExtension(path);
     }
 
-    private static String shortHash(String input) {
+    /**
+     * Canonical 8-char short-hash for Bedrock-safe file names: first nibble
+     * mapped to a letter ({@code a..p}) so the result can never be all-digits
+     * (which Bedrock's item-ID parser rejects as a legacy aux-value), remaining
+     * 7 nibbles hex. {@code BedrockShortName} (bedrock module) delegates here —
+     * the merger and the converter MUST shorten identical inputs to identical
+     * names or merged packs would dangle references, so there is exactly one
+     * implementation.
+     */
+    public static String shortHash(String input) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
@@ -519,7 +512,8 @@ public final class BedrockPackMerger {
      * fields are kept from the merged-pack convention so the output matches what
      * Geyser expects on the proxy side.
      */
-    private void mergeItemTextures(List<File> unzippedDirs, File stagingDir) {
+    private void mergeItemTextures(List<File> unzippedDirs, File stagingDir)
+            throws IOException {
         JsonObject mergedTextureData = new JsonObject();
         Map<String, Integer> ownerByKey = new LinkedHashMap<>();
 
@@ -530,9 +524,8 @@ public final class BedrockPackMerger {
             if (!f.isFile()) continue;
             JsonObject root = parseJsonOrNull(f);
             if (root == null) {
-                logger.warn("[BedrockPackMerger] Could not parse " + ITEM_TEXTURE_REL
+                throw new IOException("Could not parse " + ITEM_TEXTURE_REL
                         + " from backend #" + i + " (" + f.getAbsolutePath() + ")");
-                continue;
             }
             if (!root.has("texture_data") || !root.get("texture_data").isJsonObject()) continue;
             JsonObject textureData = root.getAsJsonObject("texture_data");
@@ -555,13 +548,9 @@ public final class BedrockPackMerger {
         root.add("texture_data", mergedTextureData);
 
         File output = new File(stagingDir, ITEM_TEXTURE_REL);
-        try {
-            Files.createDirectories(output.getParentFile().toPath());
-            try (FileWriter w = new FileWriter(output, StandardCharsets.UTF_8)) {
-                GSON.toJson(root, w);
-            }
-        } catch (IOException e) {
-            logger.warn("[BedrockPackMerger] Failed to write merged item_texture.json: " + e.getMessage());
+        Files.createDirectories(output.getParentFile().toPath());
+        try (Writer w = new BufferedWriter(new FileWriter(output, StandardCharsets.UTF_8), 1 << 16)) {
+            GSON.toJson(root, w);
         }
     }
 
@@ -606,7 +595,8 @@ public final class BedrockPackMerger {
      * version when the merged bytes actually change.
      */
     private void writeMergedManifest(File outputDir, UUID stableMergedPackUuid,
-                                     int[] minEngineVersion, String cacheBustToken) {
+                                     int[] minEngineVersion, String cacheBustToken)
+            throws IOException {
         UUID moduleUuid = UUID.nameUUIDFromBytes(
                 (stableMergedPackUuid.toString() + ":resources").getBytes(StandardCharsets.UTF_8));
 
@@ -640,13 +630,9 @@ public final class BedrockPackMerger {
         manifest.put("metadata", metadata);
 
         File manifestFile = new File(outputDir, MANIFEST_NAME);
-        try {
-            Files.createDirectories(outputDir.toPath());
-            try (FileWriter w = new FileWriter(manifestFile, StandardCharsets.UTF_8)) {
-                GSON.toJson(manifest, w);
-            }
-        } catch (IOException e) {
-            logger.warn("[BedrockPackMerger] Failed to write merged manifest.json: " + e.getMessage());
+        Files.createDirectories(outputDir.toPath());
+        try (Writer w = new BufferedWriter(new FileWriter(manifestFile, StandardCharsets.UTF_8), 1 << 16)) {
+            GSON.toJson(manifest, w);
         }
     }
 
@@ -686,20 +672,11 @@ public final class BedrockPackMerger {
     private String contentDigest(File stagingDir, int[] minEngineVersion) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            Path root = stagingDir.toPath();
-            try (Stream<Path> stream = Files.walk(root)) {
-                List<Path> files = stream
-                        .filter(Files::isRegularFile)
-                        .sorted(Comparator.comparing(path -> root.relativize(path).toString().replace('\\', '/')))
-                        .toList();
-                for (Path file : files) {
-                    String relative = root.relativize(file).toString().replace('\\', '/');
-                    digest.update(relative.getBytes(StandardCharsets.UTF_8));
-                    digest.update((byte) 0);
-                    digest.update(Files.readAllBytes(file));
-                    digest.update((byte) 0);
-                }
-            }
+            // Same material, same order as the previous serial loop — only the reads feeding the
+            // digest are overlapped — so the merged pack version Bedrock caches against is
+            // unchanged for unchanged content.
+            PackFileIndex.updateDigest(
+                    digest, PackFileIndex.sortedRegularFiles(stagingDir.toPath()), () -> false);
             digest.update("min_engine_version".getBytes(StandardCharsets.UTF_8));
             digest.update((byte) 0);
             for (int component : minEngineVersion) {
@@ -765,19 +742,17 @@ public final class BedrockPackMerger {
         File tmpFile = new File(parent, outputZip.getName() + ".tmp");
         Path sourcePath = stagingDir.toPath();
 
-        try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(tmpFile)));
-             Stream<Path> stream = Files.walk(sourcePath)) {
-            List<Path> files = stream
-                    .filter(Files::isRegularFile)
-                    .sorted(Comparator.comparing(path -> sourcePath.relativize(path).toString().replace('\\', '/')))
+        try {
+            // Single-stat traversal; same sorted order, so the archive bytes are unchanged.
+            List<ParallelZipWriter.Entry> entries = PackFileIndex.sortedRegularFiles(sourcePath)
+                    .stream()
+                    .map(file -> new ParallelZipWriter.Entry(file.relativePath(), file.path()))
                     .toList();
-            for (Path file : files) {
-                String entryName = sourcePath.relativize(file).toString().replace('\\', '/');
-                ZipEntry entry = new ZipEntry(entryName);
-                entry.setTime(0L);
-                zos.putNextEntry(entry);
-                Files.copy(file, zos);
-                zos.closeEntry();
+            // Byte-identical to the previous serial ZipOutputStream write, which the
+            // Files.mismatch() short-circuit below relies on to skip republishing an
+            // unchanged merged pack.
+            try (OutputStream out = new BufferedOutputStream(new FileOutputStream(tmpFile), 1 << 16)) {
+                ParallelZipWriter.write(entries, out, () -> false);
             }
         } catch (IOException e) {
             logger.warn("[BedrockPackMerger] Failed to zip merged Bedrock pack: " + e.getMessage());

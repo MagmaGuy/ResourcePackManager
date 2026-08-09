@@ -28,19 +28,19 @@ public class DefaultConfig extends ConfigurationFile {
     @Getter
     private static boolean bedrockConverterDebug = false;
     @Getter
+    private static boolean verboseLogging = false;
+    @Getter
     private static boolean selfHostEnabled = true;
     @Getter
     private static int selfHostPort = -1;
     @Getter
-    private static int networkHttpOffset = 100;
+    private static int networkHttpOffset = 1;
     @Getter
     private static String selfHostExternalHost = "";
     @Getter
     private static boolean selfHostForce = false;
     @Getter
     private static boolean preferSelfHost = true;
-    @Getter
-    private static boolean autoDownloadPluginUpdates;
 
 
     public DefaultConfig() {
@@ -49,7 +49,7 @@ public class DefaultConfig extends ConfigurationFile {
 
     @Override
     public void initializeValues() {
-        autoDownloadPluginUpdates = NightbreakPluginUpdater.setAutoDownloadConfigDefault(fileConfiguration);
+        NightbreakPluginUpdater.setAutoDownloadConfigDefault(fileConfiguration);
 
         priorityOrder = ConfigurationEngine.setList(
                 List.of(
@@ -80,7 +80,7 @@ public class DefaultConfig extends ConfigurationFile {
                 List.of("Sets whether the resource pack use will be forced to clients"),
                 fileConfiguration, "forceResourcePack", false);
         resourcePackPrompt = ConfigurationEngine.setString(
-                List.of("Sets whether the resource pack use will be forced to clients"),
+                List.of("Sets the message shown to players when they are prompted to accept the resource pack"),
                 fileConfiguration, "resourcePackPrompt", "Use recommended resource pack?");
         resourcePackRerouting = ConfigurationEngine.setString(
                 List.of(
@@ -111,6 +111,15 @@ public class DefaultConfig extends ConfigurationFile {
                         "operation. Leave this off for clean console output; flip on if you are debugging a Bedrock",
                         "conversion issue and want to see every per-item / per-attachable / per-mapping step."),
                 fileConfiguration, "bedrockConverterDebug", false);
+
+        verboseLogging = ConfigurationEngine.setBoolean(
+                List.of(
+                        "Prints every step of resource pack preparation: each pack staged, each cluster merged,",
+                        "each stability check, the hosting handshake, and so on.",
+                        "Default false. Normally the only thing worth reporting is whether the pack ended up",
+                        "reaching players and, if it did not, why. Turn this on when a pack is not behaving and",
+                        "you want to see exactly which step produced the result."),
+                fileConfiguration, "verboseLogging", false);
 
         // network-key is intentionally NOT a config option. It's auto-derived
         // from plugins/floodgate/key.pem on every backend and on the proxy.

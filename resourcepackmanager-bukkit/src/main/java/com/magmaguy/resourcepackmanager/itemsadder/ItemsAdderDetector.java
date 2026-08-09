@@ -2,6 +2,7 @@ package com.magmaguy.resourcepackmanager.itemsadder;
 
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
+import com.magmaguy.resourcepackmanager.utils.RSPLogger;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.YamlConfiguration;
 
@@ -34,39 +35,46 @@ public class ItemsAdderDetector {
         if (!isItemsAdderInstalled()) return false;
 
         File configFile = getItemsAdderConfigFile();
-        if (configFile == null || !configFile.exists()) {
+        if (!configFile.exists()) {
             Logger.warn("Could not find ItemsAdder config.yml");
             return false;
         }
 
-        try {
-            YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
+        return isItemsAdderHosting(YamlConfiguration.loadConfiguration(configFile));
+    }
 
+    /**
+     * Same check against an already-loaded config so multi-check callers
+     * ({@link #needsConfiguration()}) parse config.yml once instead of once
+     * per question.
+     */
+    private static boolean isItemsAdderHosting(YamlConfiguration config) {
+        try {
             // Check self-host
             boolean selfHostEnabled = config.getBoolean("resource-pack.hosting.self-host.enabled", false);
             if (selfHostEnabled) {
-                Logger.info("ItemsAdder is configured with self-host enabled");
+                RSPLogger.detail("ItemsAdder is configured with self-host enabled");
                 return true;
             }
 
             // Check external-host
             String externalHostUrl = config.getString("resource-pack.hosting.external-host.url", "");
             if (externalHostUrl != null && !externalHostUrl.isEmpty() && !externalHostUrl.equals("http://example.com/resourcepack.zip")) {
-                Logger.info("ItemsAdder is configured with external-host URL: " + externalHostUrl);
+                RSPLogger.detail("ItemsAdder is configured with external-host URL: " + externalHostUrl);
                 return true;
             }
 
             // Check lobfile hosting
             boolean lobfileEnabled = config.getBoolean("resource-pack.hosting.lobfile.enabled", false);
             if (lobfileEnabled) {
-                Logger.info("ItemsAdder is configured with lobfile hosting enabled");
+                RSPLogger.detail("ItemsAdder is configured with lobfile hosting enabled");
                 return true;
             }
 
             // Check if no-host is enabled (this means ItemsAdder is NOT hosting)
             boolean noHostEnabled = config.getBoolean("resource-pack.hosting.no-host.enabled", false);
             if (noHostEnabled) {
-                Logger.info("ItemsAdder has no-host enabled - not hosting");
+                RSPLogger.detail("ItemsAdder has no-host enabled - not hosting");
                 return false;
             }
 
@@ -87,11 +95,13 @@ public class ItemsAdderDetector {
         if (!isItemsAdderInstalled()) return false;
 
         File configFile = getItemsAdderConfigFile();
-        if (configFile == null || !configFile.exists()) return false;
+        if (!configFile.exists()) return false;
 
+        return hasProtectionEnabled(YamlConfiguration.loadConfiguration(configFile));
+    }
+
+    private static boolean hasProtectionEnabled(YamlConfiguration config) {
         try {
-            YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
-
             boolean protection1 = config.getBoolean("resource-pack.zip.protect-file-from-unzip.protection_1", false);
             boolean protection2 = config.getBoolean("resource-pack.zip.protect-file-from-unzip.protection_2", false);
             boolean protection3 = config.getBoolean("resource-pack.zip.protect-file-from-unzip.protection_3", false);
@@ -113,10 +123,13 @@ public class ItemsAdderDetector {
         if (!isItemsAdderInstalled()) return false;
 
         File configFile = getItemsAdderConfigFile();
-        if (configFile == null || !configFile.exists()) return false;
+        if (!configFile.exists()) return false;
 
+        return hasCompressedJsonEnabled(YamlConfiguration.loadConfiguration(configFile));
+    }
+
+    private static boolean hasCompressedJsonEnabled(YamlConfiguration config) {
         try {
-            YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
             return config.getBoolean(COMPRESS_JSON_FILES, false);
         } catch (Exception e) {
             Logger.warn("Failed to check ItemsAdder JSON compression setting: " + e.getMessage());
@@ -125,8 +138,8 @@ public class ItemsAdderDetector {
     }
 
     /**
-     * Get the ItemsAdder config.yml file.
-     * @return the config file, or null if not found
+     * Get the ItemsAdder config.yml file location. Never returns {@code null};
+     * the returned file may not exist (callers check {@link File#exists()}).
      */
     public static File getItemsAdderConfigFile() {
         File pluginsFolder = ResourcePackManager.plugin.getDataFolder().getParentFile();
@@ -136,24 +149,27 @@ public class ItemsAdderDetector {
     /**
      * Check if ItemsAdder needs configuration for ResourcePackManager to host.
      * Returns true if ItemsAdder is installed but not set up for external hosting.
+     * Parses config.yml exactly once per call.
      * @return true if ItemsAdder needs to be configured
      */
     public static boolean needsConfiguration() {
         if (!isItemsAdderInstalled()) return false;
 
-        // If ItemsAdder is hosting via any method, don't warn
-        if (isItemsAdderHosting()) return false;
-
-        // If no-host is already enabled, check if protections need to be disabled
         File configFile = getItemsAdderConfigFile();
-        if (configFile == null || !configFile.exists()) return false;
+        if (!configFile.exists()) {
+            Logger.warn("Could not find ItemsAdder config.yml");
+            return false;
+        }
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
+
+        // If ItemsAdder is hosting via any method, don't warn
+        if (isItemsAdderHosting(config)) return false;
 
         try {
-            YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
             boolean noHostEnabled = config.getBoolean("resource-pack.hosting.no-host.enabled", false);
 
             // If no-host is enabled but protections/compressed JSON are still on, needs configuration
-            if (noHostEnabled && (hasProtectionEnabled() || hasCompressedJsonEnabled())) {
+            if (noHostEnabled && (hasProtectionEnabled(config) || hasCompressedJsonEnabled(config))) {
                 return true;
             }
 

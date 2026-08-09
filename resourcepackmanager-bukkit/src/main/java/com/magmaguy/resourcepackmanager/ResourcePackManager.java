@@ -8,6 +8,7 @@ import com.magmaguy.magmacore.initialization.PluginInitializationState;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginBootstrap;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginHooks;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginSpec;
+import com.magmaguy.magmacore.nightbreak.NightbreakPluginUpdater;
 import com.magmaguy.magmacore.nightbreak.NightbreakSetupControls;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
@@ -27,8 +28,10 @@ import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfigFields;
+import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.playermanager.PlayerManager;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
+import com.magmaguy.resourcepackmanager.update.BackendPluginUpdateArtifactProvider;
 import org.bstats.bukkit.Metrics;
 import org.bukkit.Bukkit;
 import org.bukkit.event.HandlerList;
@@ -45,6 +48,7 @@ public class ResourcePackManager extends JavaPlugin {
             false, false, false);
 
     public static JavaPlugin plugin;
+    private NightbreakPluginUpdater.ListenerRegistration pluginUpdateListener;
 
     @Override
     public void onEnable() {
@@ -56,6 +60,23 @@ public class ResourcePackManager extends JavaPlugin {
                 "                                    |___/         ");
         Bukkit.getLogger().info("ResourcePackManager v." + this.getDescription().getVersion());
         plugin = this;
+        pluginUpdateListener = NightbreakPluginUpdater.onPluginUpdateDownloaded(
+                this, result -> {
+                    if (!BackendPluginUpdateArtifactProvider.recordDownloaded(
+                            result.downloadedFile())) return;
+                    Bukkit.getScheduler().runTask(this, () ->
+                            GeyserBridgeInstaller.stageDownloadedUpdate(
+                                    result.downloadedFile().toPath()));
+                });
+
+        // Load the small, local config surface needed to validate and host a
+        // copied saved mix before MagmaCore waits for every soft dependency.
+        // Plugin source discovery and staging still happen in the normal
+        // dependency-aware initialization below.
+        new DataConfig();
+        new DefaultConfig();
+        new CompatiblePluginConfig();
+
         NightbreakPluginBootstrap.startInitialization(this,
                 new PluginInitializationConfig("ResourcePackManager", null, 10),
                 NIGHTBREAK_PLUGIN_SPEC,
@@ -80,6 +101,7 @@ public class ResourcePackManager extends JavaPlugin {
                         throwable.printStackTrace();
                     }
                 });
+        Mix.publishVerifiedExistingMixAsync();
     }
 
     @Override
@@ -89,18 +111,18 @@ public class ResourcePackManager extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        boolean shutdownDuringInitialization =
+                MagmaCore.getInitializationState(this.getName())
+                        == PluginInitializationState.INITIALIZING;
         MagmaCore.requestInitializationShutdown(this);
-        if (MagmaCore.getInitializationState(this.getName()) == PluginInitializationState.INITIALIZING) {
-            Logger.info("Disabling ResourcePackManager during initialization");
-            ThirdPartyResourcePack.shutdown();
-            AutoHost.shutdown();
-            GeyserBridgeInstaller.unregister();
-            GeyserPackProvider.unregister();
-            HandlerList.unregisterAll(this);
-            MagmaCore.shutdown(this);
-            return;
+        Mix.cancelStartupReuse();
+        if (pluginUpdateListener != null) {
+            pluginUpdateListener.close();
+            pluginUpdateListener = null;
         }
-        Logger.info("Disabling ResourcePackManager");
+        Logger.info(shutdownDuringInitialization
+                ? "Disabling ResourcePackManager during initialization"
+                : "Disabling ResourcePackManager");
         ThirdPartyResourcePack.shutdown();
         AutoHost.shutdown();
         GeyserBridgeInstaller.unregister();
@@ -110,12 +132,6 @@ public class ResourcePackManager extends JavaPlugin {
     }
 
     private void asyncInitialization(PluginInitializationContext initializationContext) {
-        initializationContext.step("Data Config");
-        new DataConfig();
-
-        initializationContext.step("Default Config");
-        new DefaultConfig();
-
         initializationContext.step("Bedrock Display Offsets Config");
         new BedrockDisplayOffsetsConfig();
 
@@ -134,12 +150,8 @@ public class ResourcePackManager extends JavaPlugin {
         initializationContext.step("Blueprint Folder");
         BlueprintFolder.initialize();
 
-        initializationContext.step("Compatible Plugins");
-        new CompatiblePluginConfig();
-
         initializationContext.step("Pack Integrations");
         for (CompatiblePluginConfigFields compatiblePluginConfigFields : CompatiblePluginConfig.getCompatiblePlugins().values()) {
-            if (!compatiblePluginConfigFields.isEnabled()) continue;
             ThirdPartyResourcePack.initializeThirdPartyResourcePack(compatiblePluginConfigFields);
         }
     }
@@ -149,7 +161,7 @@ public class ResourcePackManager extends JavaPlugin {
         ThirdPartyResourcePack.startResourcePackChangeWatchdog();
 
         initializationContext.step("Event Listeners");
-        if (DefaultConfig.isAutoHost()) {
+        if (DefaultConfig.isAutoHost() || DefaultConfig.isSelfHostForce()) {
             Bukkit.getPluginManager().registerEvents(new PlayerManager(), this);
         }
         Bukkit.getPluginManager().registerEvents(new ItemsAdderWarningListener(), this);

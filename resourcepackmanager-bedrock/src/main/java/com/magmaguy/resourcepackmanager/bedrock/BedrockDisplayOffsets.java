@@ -9,8 +9,8 @@ package com.magmaguy.resourcepackmanager.bedrock;
  *
  * <p>Same pattern as {@link BedrockLog}: rather than thread a snapshot parameter
  * through every animation/attachable helper, install it in a static slot for the
- * duration of one (non-concurrent) conversion run. Defaults to the Mojang-tuned
- * inherited values so unit tests that exercise the animation helper directly
+ * duration of one (non-concurrent) conversion run. Defaults to the community-tuned
+ * FMM values so unit tests that exercise the animation helper directly
  * don't need to set up a context.</p>
  *
  * <p>The backend's Bukkit context reads from
@@ -40,15 +40,15 @@ public final class BedrockDisplayOffsets {
             double thirdPersonBasePositionZ) {
 
         /**
-         * Defaults that match the legacy Rainbow/RPM-inherited tuning. Used by
+         * Community-validated defaults for FMM held-item conversion. Used by
          * any context that doesn't want to expose a YAML knob.
          */
         public static Snapshot defaults() {
             return new Snapshot(
-                    -90.0, 0.0, 0.0,
-                    0.0, 12.5, 0.0,
+                    -60.0, 123.0, 170.0,
+                    -8.0, 7.5, -5.0,
                     90.0, 0.0, 0.0,
-                    0.0, 12.5, 0.0);
+                    0.0, 6.0, -10.0);
         }
     }
 

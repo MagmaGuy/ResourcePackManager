@@ -5,12 +5,17 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
+import com.magmaguy.resourcepackmanager.mixer.engine.internal.Cancellation;
 
 import java.io.File;
 import java.io.FileReader;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
 /**
  * Scans a merged Java resource pack directory for 1.21.4+ items definition files
@@ -34,23 +39,32 @@ public final class GenericJavaScanner {
      * Walks the merged pack's {@code assets/} tree and returns every parseable items
      * definition file (1.21.4+ format).
      */
-    public static List<ItemsDefinition> scan(File mergedJavaPack) {
+    public static List<ItemsDefinition> scan(File mergedJavaPack) throws IOException {
+        return scan(mergedJavaPack, () -> false);
+    }
+
+    public static List<ItemsDefinition> scan(File mergedJavaPack,
+                                             BooleanSupplier cancellationRequested) throws IOException {
         List<ItemsDefinition> result = new ArrayList<>();
         File assetsDir = new File(mergedJavaPack, "assets");
         if (!assetsDir.isDirectory()) return result;
 
         File[] namespaceDirs = assetsDir.listFiles(File::isDirectory);
         if (namespaceDirs == null) return result;
+        Arrays.sort(namespaceDirs, Comparator.comparing(File::getName));
 
         for (File nsDir : namespaceDirs) {
+            if (isCancelled(cancellationRequested)) return result;
             String namespace = nsDir.getName();
             File itemsDir = new File(nsDir, "items");
             if (!itemsDir.isDirectory()) continue;
-            scanItemsDir(namespace, itemsDir, "", result);
+            scanItemsDir(namespace, itemsDir, "", result, cancellationRequested);
         }
 
+        if (isCancelled(cancellationRequested)) return result;
         int modernCount = result.size();
-        scanLegacyCustomModelOverrides(assetsDir, result);
+        scanLegacyCustomModelOverrides(assetsDir, result, cancellationRequested);
+        if (isCancelled(cancellationRequested)) return result;
         int legacyCount = result.size() - modernCount;
 
         // Per-mix scanner status — useful when debugging "why isn't my pack converting"
@@ -66,11 +80,11 @@ public final class GenericJavaScanner {
         // convert the 1.21.4+ custom item system, and old (e.g. ItemsAdder) packs predating that
         // either use legacy custom_model_data overrides or a layout RSPM can't read at all.
         if (legacyCount > 0) {
-            BedrockLog.warn("[BedrockConverter] Detected " + legacyCount + " custom item(s) in the LEGACY "
-                    + "pre-1.21.4 'custom_model_data' override format (assets/minecraft/models/item/*.json). "
-                    + "RSPM will attempt to convert these, but legacy/ItemsAdder-style packs frequently do NOT "
-                    + "render on Bedrock (Geyser/Floodgate). If Bedrock models are invisible, re-export the pack "
-                    + "in the 1.21.4+ item-definition format (assets/<namespace>/items/*.json).");
+            //Kept short on purpose. The full explanation used to run to five lines of console, which
+            //made a "your models may not show up on Bedrock" note read like a crash report.
+            BedrockLog.warn("[BedrockConverter] " + legacyCount + " item(s) use the pre-1.21.4 model format; "
+                    + "these often do not render on Bedrock. Re-export in the 1.21.4+ item-definition "
+                    + "format if Bedrock models are missing.");
         }
         if (result.isEmpty() && looksLikeCustomPack(assetsDir, namespaceDirs)) {
             BedrockLog.warn("[BedrockConverter] This resource pack contains custom models/textures but NO "
@@ -82,13 +96,17 @@ public final class GenericJavaScanner {
         return result;
     }
 
-    private static void scanItemsDir(String namespace, File dir, String relPath, List<ItemsDefinition> out) {
+    private static void scanItemsDir(String namespace, File dir, String relPath,
+                                     List<ItemsDefinition> out,
+                                     BooleanSupplier cancellationRequested) throws IOException {
         File[] entries = dir.listFiles();
         if (entries == null) return;
+        Arrays.sort(entries, Comparator.comparing(File::getName));
         for (File entry : entries) {
+            if (isCancelled(cancellationRequested)) return;
             if (entry.isDirectory()) {
                 String childRel = relPath.isEmpty() ? entry.getName() : relPath + "/" + entry.getName();
-                scanItemsDir(namespace, entry, childRel, out);
+                scanItemsDir(namespace, entry, childRel, out, cancellationRequested);
             } else if (entry.isFile() && entry.getName().endsWith(".json")) {
                 String stem = entry.getName().substring(0, entry.getName().length() - ".json".length());
                 String fullRel = relPath.isEmpty() ? stem : relPath + "/" + stem;
@@ -96,8 +114,8 @@ public final class GenericJavaScanner {
                     JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
                     out.add(new ItemsDefinition(namespace, fullRel, entry, root));
                 } catch (Exception e) {
-                    BedrockLog.warn("[BedrockConverter] Failed to parse items definition "
-                            + entry.getPath() + ": " + e.getMessage());
+                    throw new IOException("Failed to parse items definition "
+                            + entry.getPath(), e);
                 }
             }
         }
@@ -109,14 +127,19 @@ public final class GenericJavaScanner {
      * both the Java base item and the custom model data threshold, so synthesize a
      * modern range_dispatch-shaped definition and let the normal converter handle it.
      */
-    private static void scanLegacyCustomModelOverrides(File assetsDir, List<ItemsDefinition> out) {
+    private static void scanLegacyCustomModelOverrides(File assetsDir,
+                                                       List<ItemsDefinition> out,
+                                                       BooleanSupplier cancellationRequested)
+            throws IOException {
         File legacyItemsDir = new File(assetsDir, "minecraft/models/item");
         if (!legacyItemsDir.isDirectory()) return;
 
         File[] files = legacyItemsDir.listFiles((dir, name) -> name.endsWith(".json"));
         if (files == null) return;
+        Arrays.sort(files, Comparator.comparing(File::getName));
 
         for (File file : files) {
+            if (isCancelled(cancellationRequested)) return;
             String baseStem = file.getName().substring(0, file.getName().length() - ".json".length());
             if (baseStem.contains("/") || baseStem.contains("\\")) continue;
             String baseItem = "minecraft:" + baseStem;
@@ -126,17 +149,24 @@ public final class GenericJavaScanner {
                 if (!parsed.isJsonObject()) continue;
                 JsonObject root = parsed.getAsJsonObject();
                 if (!root.has("overrides") || !root.get("overrides").isJsonArray()) continue;
-                scanLegacyOverridesFile(file, baseItem, root.getAsJsonArray("overrides"), out);
+                scanLegacyOverridesFile(
+                        file,
+                        baseItem,
+                        root.getAsJsonArray("overrides"),
+                        out,
+                        cancellationRequested);
             } catch (Exception e) {
-                BedrockLog.warn("[BedrockConverter] Failed to parse legacy item model overrides "
-                        + file.getPath() + ": " + e.getMessage());
+                throw new IOException("Failed to parse legacy item model overrides "
+                        + file.getPath(), e);
             }
         }
     }
 
     private static void scanLegacyOverridesFile(File file, String baseItem, JsonArray overrides,
-                                                List<ItemsDefinition> out) {
+                                                List<ItemsDefinition> out,
+                                                BooleanSupplier cancellationRequested) {
         for (JsonElement overrideElement : overrides) {
+            if (isCancelled(cancellationRequested)) return;
             if (!overrideElement.isJsonObject()) continue;
             JsonObject override = overrideElement.getAsJsonObject();
             if (!override.has("model") || !override.get("model").isJsonPrimitive()) continue;
@@ -218,5 +248,9 @@ public final class GenericJavaScanner {
 
     private static String normalizeReference(String reference) {
         return reference.contains(":") ? reference : "minecraft:" + reference;
+    }
+
+    private static boolean isCancelled(BooleanSupplier cancellationRequested) {
+        return Cancellation.isCancelled(cancellationRequested);
     }
 }

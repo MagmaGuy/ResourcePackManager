@@ -3,20 +3,16 @@ package com.magmaguy.resourcepackmanager.bedrock.bridge;
 import com.magmaguy.easyminecraftgoals.customentity.BedrockCustomEntityBridgeRegistry;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.bridge.BridgeChannels;
+import com.magmaguy.resourcepackmanager.bridge.UniversalPluginJarInstaller;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,8 +21,6 @@ import java.util.concurrent.ConcurrentMap;
 public final class GeyserBridgeInstaller {
     public static final String CHANNEL = BridgeChannels.CUSTOM_ENTITY;
 
-    private static final String BRIDGE_RESOURCE = "geyser-extension/ResourcePackManager-GeyserBridge.jar";
-    private static final String BRIDGE_FILE_NAME = "ResourcePackManager-GeyserBridge.jar";
     private static final List<String> RELOCATED_CUSTOM_ENTITY_PACKAGES = List.of(
             "com.magmaguy.freeminecraftmodels.easyminecraftgoals.customentity",
             "com.magmaguy.elitemobs.easyminecraftgoals.customentity"
@@ -99,46 +93,101 @@ public final class GeyserBridgeInstaller {
 
     private static void installBundledExtension() {
         Plugin geyser = Bukkit.getPluginManager().getPlugin("Geyser-Spigot");
-        if (geyser == null) {
-            ResourcePackManager.plugin.getLogger().info(
-                    "Geyser-Spigot is not installed locally; RSPM custom Bedrock entity bridge messages are still registered for proxy-side Geyser extensions.");
+        if (geyser != null) {
+            installIntoLocalGeyser(geyser);
             return;
         }
 
-        Path extensionsDirectory = geyser.getDataFolder().toPath().resolve("extensions");
-        Path extensionFile = extensionsDirectory.resolve(BRIDGE_FILE_NAME);
-        try (InputStream inputStream = ResourcePackManager.plugin.getResource(BRIDGE_RESOURCE)) {
-            if (inputStream == null) {
-                ResourcePackManager.plugin.getLogger().warning(
-                        "Bundled RSPM Geyser bridge extension jar is missing from the plugin jar.");
-                return;
-            }
-
-            byte[] bundledBytes = inputStream.readAllBytes();
-            Files.createDirectories(extensionsDirectory);
-            boolean changed = !Files.isRegularFile(extensionFile)
-                    || !Arrays.equals(sha256(extensionFile), sha256(bundledBytes));
-            if (!changed) {
-                return;
-            }
-
-            Files.write(extensionFile, bundledBytes);
+        boolean floodgate = Bukkit.getPluginManager().getPlugin("floodgate") != null
+                || Bukkit.getPluginManager().getPlugin("Floodgate") != null;
+        if (floodgate) {
+            Path exported = exportUniversalJarForExternalGeyser();
             ResourcePackManager.plugin.getLogger().warning(
-                    "Installed or updated " + BRIDGE_FILE_NAME + " in Geyser-Spigot/extensions. "
-                            + "Restart the server so Geyser loads the RSPM custom entity bridge before Bedrock players join.");
-        } catch (IOException | NoSuchAlgorithmException exception) {
-            ResourcePackManager.plugin.getLogger().warning(
-                    "Failed to install RSPM Geyser bridge extension: " + exception.getMessage());
+                    "Floodgate is installed but Geyser is external. Custom Bedrock models require the "
+                            + "RSPM Geyser extension in that Geyser process."
+                            + (exported == null ? "" : " Copy the exact universal JAR at " + exported
+                            + " into the external Geyser 'extensions' folder and restart Geyser.")
+                            + " On proxy networks, install this same ResourcePackManager.jar on the proxy too. "
+                            + "Setup: https://nightbreak.io/plugin/resourcepackmanager/");
+        } else {
+            ResourcePackManager.plugin.getLogger().info(
+                    "Geyser-Spigot and Floodgate were not detected locally; skipping automatic Geyser extension installation.");
         }
     }
 
-    private static byte[] sha256(Path path) throws IOException, NoSuchAlgorithmException {
-        return sha256(Files.readAllBytes(path));
+    private static void installIntoLocalGeyser(Plugin geyser) {
+        Path extensionsDirectory = geyser.getDataFolder().toPath().resolve("extensions");
+        try {
+            UniversalPluginJarInstaller.Result result =
+                    UniversalPluginJarInstaller.installRunningJar(
+                            extensionsDirectory, ResourcePackManager.class);
+            switch (result.state()) {
+                case CURRENT -> {
+                }
+                case INSTALLED_DIRECTLY_RESTART_REQUIRED ->
+                        ResourcePackManager.plugin.getLogger().warning(
+                                "Installed the byte-identical universal ResourcePackManager.jar in Geyser-Spigot/extensions "
+                                        + "(SHA-256 " + result.sha256() + "). Restart the server once so Geyser loads it.");
+                case STAGED_FOR_GEYSER_RESTART ->
+                        ResourcePackManager.plugin.getLogger().warning(
+                                "Staged the byte-identical universal ResourcePackManager.jar through Geyser's update queue at "
+                                        + result.staged() + ". Restart the server once; Geyser will replace every older RSPM extension before loading it.");
+            }
+        } catch (IOException exception) {
+            ResourcePackManager.plugin.getLogger().warning(
+                    "Failed to install the universal RSPM JAR for Geyser: " + exception.getMessage());
+        }
     }
 
-    private static byte[] sha256(byte[] bytes) throws NoSuchAlgorithmException {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        return digest.digest(bytes);
+    /**
+     * Stages the just-downloaded, checksum-verified universal update for a
+     * locally hosted Geyser-Spigot instance. This avoids requiring a second
+     * restart after Bukkit has already consumed its own update folder.
+     */
+    public static void stageDownloadedUpdate(Path updateJar) {
+        Plugin geyser = Bukkit.getPluginManager().getPlugin("Geyser-Spigot");
+        if (geyser == null || updateJar == null) return;
+        try {
+            UniversalPluginJarInstaller.Result result =
+                    UniversalPluginJarInstaller.install(
+                            updateJar, geyser.getDataFolder().toPath().resolve("extensions"));
+            if (result.downgradePrevented()) {
+                ResourcePackManager.plugin.getLogger().warning(
+                        "Did not stage ResourcePackManager " + result.sourceVersion()
+                                + " for Geyser because Geyser already has newer "
+                                + result.retainedVersion() + ".");
+            } else if (result.state() != UniversalPluginJarInstaller.State.CURRENT) {
+                ResourcePackManager.plugin.getLogger().warning(
+                        "Staged the downloaded ResourcePackManager " + result.sourceVersion()
+                                + " update for local Geyser using the same SHA-256 "
+                                + result.sha256() + ". One server restart will update both.");
+            }
+        } catch (IOException exception) {
+            ResourcePackManager.plugin.getLogger().warning(
+                    "Could not stage the downloaded ResourcePackManager update for local Geyser: "
+                            + exception.getMessage());
+        }
+    }
+
+    private static Path exportUniversalJarForExternalGeyser() {
+        Path exportDirectory = ResourcePackManager.plugin.getDataFolder().toPath().resolve("geyser-extension");
+        try {
+            UniversalPluginJarInstaller.Result result =
+                    UniversalPluginJarInstaller.installRunningJar(
+                            exportDirectory, ResourcePackManager.class);
+            // The installer stages replacements when an older universal export
+            // already exists, just as it does for a loaded Geyser extension.
+            // Returning installed() in that state told the administrator to
+            // copy the stale root JAR instead of the newly verified update.
+            return result.state() == UniversalPluginJarInstaller.State.STAGED_FOR_GEYSER_RESTART
+                    ? result.staged()
+                    : result.installed();
+        } catch (IOException exception) {
+            ResourcePackManager.plugin.getLogger().warning(
+                    "Failed to export the universal RSPM JAR for external Geyser: "
+                            + exception.getMessage());
+            return null;
+        }
     }
 
     private record ReflectiveBridgeRegistration(Class<?> registryClass, Class<?> bridgeInterface, Object proxy) {

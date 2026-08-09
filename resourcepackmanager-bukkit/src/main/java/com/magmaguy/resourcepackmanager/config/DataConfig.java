@@ -2,6 +2,7 @@ package com.magmaguy.resourcepackmanager.config;
 
 import com.magmaguy.magmacore.config.ConfigurationFile;
 import com.magmaguy.magmacore.util.Logger;
+import com.magmaguy.resourcepackmanager.utils.RSPLogger;
 
 import java.util.UUID;
 
@@ -23,7 +24,8 @@ public class DataConfig extends ConfigurationFile {
             return null;
         }
 
-        // Return null for empty/null UUIDs instead of empty string
+        // Normalize missing/empty UUIDs to an empty string so callers can
+        // check isEmpty() without a null guard.
         return (uuid == null || uuid.isEmpty()) ? "" : uuid;
     }
 
@@ -39,7 +41,7 @@ public class DataConfig extends ConfigurationFile {
         try {
             instance.getFileConfiguration().save(instance.file);
             if (rspUUID != null && !rspUUID.isEmpty()) {
-                Logger.info("Successfully saved UUID: " + rspUUID);
+                RSPLogger.detail("Successfully saved UUID: " + rspUUID);
             } else {
                 Logger.info("Successfully cleared UUID from config.");
             }

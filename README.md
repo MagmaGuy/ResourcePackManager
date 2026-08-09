@@ -4,7 +4,8 @@ ResourcePackManager (RSPM) is a universal Bukkit/Paper, Velocity, and
 BungeeCord/Waterfall plugin. On backend servers it merges the resource packs of
 every plugin into a single pack, hosts it, and pushes it to players
 automatically. On proxies it runs the network-side pack delivery bridge for
-Bedrock players through GeyserMC.
+Bedrock players through GeyserMC. The same release jar also contains RSPM's
+Geyser extension entrypoint; there is no separately versioned bridge jar.
 
 By default the merged pack is hosted on a local HTTP server embedded in the
 plugin; if that is not reachable it falls back to uploading the pack to
@@ -25,6 +26,10 @@ combined pack without you having to host or stitch anything together by hand.
   backend's Bedrock pack over HTTP and serves it to Bedrock players network-wide.
 - **Custom mixer input** — drop additional `.zip` packs into the `mixer/` folder
   to have them merged in alongside plugin packs.
+- **Per-integration exclusion** — disable an automatically discovered plugin
+  pack without affecting manually managed mixer inputs.
+- **Verified universal updates** — update candidates are checked as complete
+  universal jars before being staged for a backend, proxy, or Geyser restart.
 - **Operator diagnostics** — `/rspm status` dumps pack state, hosting mode,
   resolved external host, and integration presence in one shot.
 - **Data compliance** — `/rspm data_compliance_request` packages all data the
@@ -36,17 +41,52 @@ This is a multi-module Maven project (parent artifact `ResourcePackManager-paren
 
 | Module | Purpose |
 | --- | --- |
-| `resourcepackmanager-bukkit` | The universal deployable jar: Bukkit/Paper backend entrypoint plus shaded shared code and proxy adapters. Shades MagmaCore. |
+| `resourcepackmanager-bukkit` | Bukkit/Paper entrypoint and final assembly module. Produces the one universal deployable jar and shades MagmaCore plus the internal modules below. |
+| `resourcepackmanager-bridge-common` | Platform-neutral inspection, version validation, and durable publication of the universal jar. |
 | `resourcepackmanager-bedrock` | Java → Bedrock resource pack conversion pipeline. |
-| `resourcepackmanager-mixer` | Pack merging / conflict-resolution logic. |
+| `resourcepackmanager-mixer` | Platform-neutral Java/Bedrock pack merging, conflict resolution, deterministic proxy merging, and exact-texture optimization. |
+| `resourcepackmanager-geyser-bridge` | Internal Geyser extension entrypoint included in the universal jar. |
 | `resourcepackmanager-http-common` | Shared HTTP server/client code used for self-hosting and proxy fetches. |
-| `resourcepackmanager-proxy-common` | Shared proxy logic (network sync, status rendering) used by both proxy platforms. |
+| `resourcepackmanager-proxy-common` | Shared proxy logic for network sync, Geyser deployment, and verified proxy updates. |
 | `resourcepackmanager-velocity` | Internal Velocity adapter included in the universal jar. |
 | `resourcepackmanager-bungee` | Internal BungeeCord/Waterfall adapter included in the universal jar. |
+| `resourcepackmanager-system-tests` | Explicit opt-in Docker and real-proxy system tests; excluded from normal builds. |
+
+### One universal artifact
+
+`ResourcePackManager.jar` contains all four platform descriptors and
+entrypoints:
+
+- `plugin.yml` for Bukkit/Paper;
+- `velocity-plugin.json` for Velocity;
+- `bungee.yml` for BungeeCord/Waterfall; and
+- `extension.yml` for Geyser.
+
+The internal Maven modules remain separate source and test boundaries, but they
+are not separate public downloads. The final jar contains no nested adapter
+jars. Installation and update code validates the descriptors, entrypoints,
+version, size, and SHA-256 before publishing executable bytes. Proxy updates
+stage the exact same candidate for the proxy root and Geyser instead of
+building or downloading a secondary bridge artifact.
+
+### Merge guarantees
+
+- The configured priority order remains authoritative. When complete input
+  archives are byte-identical, RSPM keeps the first/highest-priority copy and
+  skips only the redundant extraction and collision work.
+- Bedrock converter interchange files stay in the merged staging tree for
+  conversion but are omitted from the Java-client download.
+- Exact duplicate Bedrock textures may share one file only after structural
+  JSON references are rewritten. Ambiguous, embedded, malformed, or opaque
+  references keep their original alias.
+- Resource-pack rerouting copies the already completed Java archive rather than
+  recompressing a second, potentially different archive.
 
 ## Requirements
 
-- Java 17 (compiler `source`/`target` 17).
+- JDK 21 is the supported build/test default and the normal runtime for current
+  Minecraft 1.21.4+ servers. Maven still emits Java 17-compatible plugin
+  bytecode.
 - A Bukkit/Paper server. `plugin.yml` declares `api-version: 1.21.4`.
 - MagmaCore (shaded into the Bukkit jar; no separate install).
 - For Bedrock support: **GeyserMC** on the backend (`Geyser-Spigot`) and
@@ -69,7 +109,16 @@ RealisticSurvival, and others listed in `plugin.yml`).
    proxy's `plugins/` folder. It detects Velocity vs BungeeCord/Waterfall from
    the platform loader. The proxy generates its own `config.yml` on first start.
 
-A single (non-networked) backend server needs only the Bukkit jar.
+A single (non-networked) backend server needs only that same jar. Do not install
+or distribute a separate RSPM Geyser bridge; RSPM installs/stages its universal
+artifact for Geyser when required.
+
+On network upgrades, an authenticated proxy can fetch the public universal
+artifact offered by an updated backend, verify its version, size, and SHA-256
+against Nightbreak, and apply that exact jar to both the proxy plugin and
+Geyser's extension update queue during shutdown. Geyser removes any legacy
+`ResourcePackManager-GeyserBridge.jar` with the same extension ID before loading
+the universal replacement on the next start.
 
 ## Configuration
 
@@ -94,15 +143,36 @@ Backend config lives at `plugins/ResourcePackManager/config.yml`. Selected keys
 | `selfHostForce` | `false` | Force self-hosting, bypassing all other delivery paths (testing). |
 | `preferSelfHost` | `true` | Try self-host first and fall back to remote upload only if reachability checks fail. |
 
+### Excluding a plugin's resource pack
+
+Every automatically discovered compatible plugin has its own file under
+`plugins/ResourcePackManager/compatible_plugins/`. To exclude that plugin's
+entire resource pack, set `isEnabled: false` in its file and then run
+`/rspm reload` or restart the server. For example:
+
+```yaml
+# plugins/ResourcePackManager/compatible_plugins/elitemobs.yml
+isEnabled: false
+```
+
+Disabling an integration prevents its local, remote, shared, and API-registered
+pack sources from being watched, downloaded, staged, or merged. RSPM also
+removes generated mixer artifacts left by an earlier enabled run. Removing a
+plugin from `priorityOrder` does **not** exclude it; that setting only decides
+which pack wins file conflicts. For a pack you manually placed in the `mixer/`
+folder, remove or move that ZIP instead.
+
 Proxy config (`config.yml` in the proxy plugin's data folder):
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `force-resource-pack` | `false` | Force clients to accept the pack (kick on decline). |
 | `network-http-offset-v2` | `1` | Fallback offset used only before a backend endpoint announcement is available. In normal operation the backend announces the exact HTTP port it bound. |
 
 The proxy `network-key` is auto-derived from `plugins/floodgate/key.pem`; there is
-no manual key to paste.
+no manual key to paste. RSPM's proxy plugin does not control pack acceptance:
+the backend `forceResourcePack` option applies only to Java pack offers sent by
+Bukkit, while Geyser owns Bedrock acceptance through its
+`force-resource-packs` setting.
 
 ## Commands and permissions
 
@@ -118,9 +188,11 @@ Base command: `/resourcepackmanager` (alias `/rspm`). All subcommands require th
 
 ## Building from source
 
-Requires JDK 17 and Maven.
+Requires JDK 21 and Maven. Build from the repository root so the Velocity and
+Bungee adapters are rebuilt before the final jar is shaded:
 
-```sh
+```powershell
+$env:MC_DIST_DIR = 'C:/path/to/MineCraftProjects/dist'
 mvn clean package
 ```
 
@@ -130,10 +202,55 @@ This builds every module. The main backend jar is produced at:
 resourcepackmanager-bukkit/target/ResourcePackManager.jar
 ```
 
-This is the only deployable ResourcePackManager jar. The proxy adapter modules
-still build internal target jars for Maven/testbed wiring, but public
-distribution uses `ResourcePackManager.jar` for Bukkit/Paper, Velocity, and
-BungeeCord/Waterfall.
+When `MC_DIST_DIR` is set, the same artifact is mirrored as
+`dist/ResourcePackManager.jar`. This is the only deployable ResourcePackManager
+jar. Adapter modules still produce internal `target/` jars for reactor and
+test wiring, but public distribution uses the universal artifact for
+Bukkit/Paper, Velocity, BungeeCord/Waterfall, and Geyser.
+
+Before publishing, verify that `plugin.yml`, `velocity-plugin.json`,
+`bungee.yml`, and `extension.yml` all contain the parent POM version.
+
+## Testing
+
+The normal reactor is self-contained and does not start Docker, real proxies,
+Paper, or Geyser:
+
+```powershell
+mvn clean package
+```
+
+It includes MockBukkit player-login/resource-pack delivery, real loopback
+self-hosting, protected update transport, universal-jar inspection, proxy
+update coordination, merge equivalence, and Bedrock conversion tests.
+
+The resource-intensive RSPM-only labs live under
+`resourcepackmanager-system-tests/` and are never selected by the normal
+reactor or the generic TestBeds smoke harness.
+
+Run the real disposable Velocity and Bungee/Geyser lifecycle lab explicitly:
+
+```powershell
+./resourcepackmanager-system-tests/Invoke-RspmProxySystemTests.ps1
+```
+
+Run the distributed Docker-hosting lab explicitly:
+
+```powershell
+./resourcepackmanager-system-tests/Invoke-RspmSystemTests.ps1
+```
+
+The equivalent Maven command for the Docker lane is:
+
+```powershell
+mvn --no-transfer-progress -Prspm-system-tests -pl :resourcepackmanager-system-tests -am verify
+```
+
+Selecting that profile is intentional authorization to use Docker. The runner
+fails fast when the Docker CLI or daemon is unavailable rather than silently
+skipping the system test. See
+[`resourcepackmanager-system-tests/README.md`](resourcepackmanager-system-tests/README.md)
+for fixture isolation, cleanup, platform selection, and troubleshooting.
 
 ## Links
 

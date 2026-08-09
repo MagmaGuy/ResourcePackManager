@@ -4,9 +4,12 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
 import java.io.File;
+import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.*;
 
 /**
@@ -27,9 +30,15 @@ public class BedrockManifest {
      *                       version; changed contents bump Bedrock's
      *                       (uuid, version)-keyed pack cache.
      */
-    public static void write(File outputDir, String pluginVersion, String cacheBustToken) {
-        if (outputDir == null) return;
-        if (!outputDir.exists()) outputDir.mkdirs();
+    public static void write(File outputDir, String pluginVersion, String cacheBustToken)
+            throws IOException {
+        if (outputDir == null) {
+            throw new IOException("Bedrock manifest output directory is null");
+        }
+        Files.createDirectories(outputDir.toPath());
+        if (!outputDir.isDirectory()) {
+            throw new IOException("Bedrock manifest output is not a directory: " + outputDir);
+        }
 
         // MA2: content-stable UUIDs derived from the plugin version, not from
         // System.currentTimeMillis(). Pack identity stays consistent across rebuilds of
@@ -71,10 +80,8 @@ public class BedrockManifest {
         manifest.put("metadata", metadata);
 
         File manifestFile = new File(outputDir, "manifest.json");
-        try (FileWriter writer = new FileWriter(manifestFile, StandardCharsets.UTF_8)) {
+        try (Writer writer = new BufferedWriter(new FileWriter(manifestFile, StandardCharsets.UTF_8), 1 << 16)) {
             GSON.toJson(manifest, writer);
-        } catch (IOException e) {
-            com.magmaguy.resourcepackmanager.bedrock.BedrockLog.warn("Failed to write Bedrock manifest.json: " + e.getMessage());
         }
     }
 

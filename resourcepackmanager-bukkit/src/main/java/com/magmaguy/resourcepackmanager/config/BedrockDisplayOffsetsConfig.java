@@ -2,6 +2,7 @@ package com.magmaguy.resourcepackmanager.config;
 
 import com.magmaguy.magmacore.config.ConfigurationEngine;
 import com.magmaguy.magmacore.config.ConfigurationFile;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockDisplayOffsets;
 import lombok.Getter;
 
 import java.util.List;
@@ -57,6 +58,8 @@ public class BedrockDisplayOffsetsConfig extends ConfigurationFile {
 
     @Override
     public void initializeValues() {
+        BedrockDisplayOffsets.Snapshot defaults = BedrockDisplayOffsets.Snapshot.defaults();
+
         // ─────────────────────────────────────────────────────────────
         // First-person (right hand)
         // ─────────────────────────────────────────────────────────────
@@ -68,48 +71,48 @@ public class BedrockDisplayOffsetsConfig extends ConfigurationFile {
         // Bedrock renders this through a dedicated attachable bone with its
         // own rest pose; the values below are added to the algorithmic
         // conversion result before it's written to the Bedrock animation
-        // JSON. Defaults match the inherited Rainbow formula behaviour.
+        // JSON. Defaults use the community-validated FMM held-item tuning.
         // ─────────────────────────────────────────────────────────────
 
         firstPersonBaseRotationX = ConfigurationEngine.setDouble(
                 List.of("First-person base rotation around the X axis, in degrees.",
                         "X axis in Bedrock first-person space is roughly 'pitch' (tipping the model nose-up/nose-down toward the camera).",
-                        "Default -90 cancels the parent bone's built-in rotation so the Java pose is preserved.",
+                        "Default -60 uses the community-tuned FMM held-item pose.",
                         "If the item appears tilted away from or into the camera, nudge this value."),
-                fileConfiguration, "firstPersonBaseRotationX", -90.0);
+                fileConfiguration, "firstPersonBaseRotationX", defaults.firstPersonBaseRotationX());
 
         firstPersonBaseRotationY = ConfigurationEngine.setDouble(
                 List.of("First-person base rotation around the Y axis, in degrees.",
                         "Y axis is 'yaw' (spinning the model left/right around its vertical line).",
-                        "Default 0; raise/lower if the item looks twisted relative to the player's forward direction."),
-                fileConfiguration, "firstPersonBaseRotationY", 0.0);
+                        "Default 123; raise/lower if the item looks twisted relative to the player's forward direction."),
+                fileConfiguration, "firstPersonBaseRotationY", defaults.firstPersonBaseRotationY());
 
         firstPersonBaseRotationZ = ConfigurationEngine.setDouble(
                 List.of("First-person base rotation around the Z axis, in degrees.",
                         "Z axis is 'roll' (rotating the model around the axis pointing forward from the camera).",
-                        "Default 0; adjust if the item is held with the wrong edge up."),
-                fileConfiguration, "firstPersonBaseRotationZ", 0.0);
+                        "Default 170; adjust if the item is held with the wrong edge up."),
+                fileConfiguration, "firstPersonBaseRotationZ", defaults.firstPersonBaseRotationZ());
 
         firstPersonBasePositionX = ConfigurationEngine.setDouble(
                 List.of("First-person base position offset on the X axis, in pixels (1 = 1/16 of a block).",
                         "X axis in first-person Bedrock space is roughly vertical from the player's perspective (up/down on screen).",
                         "Positive values push the model up the screen; negative pushes it down.",
-                        "Default 0."),
-                fileConfiguration, "firstPersonBasePositionX", 0.0);
+                        "Default -8."),
+                fileConfiguration, "firstPersonBasePositionX", defaults.firstPersonBasePositionX());
 
         firstPersonBasePositionY = ConfigurationEngine.setDouble(
                 List.of("First-person base position offset on the Y axis, in pixels (1 = 1/16 of a block).",
                         "Y axis in first-person Bedrock space is depth (toward/away from the camera).",
                         "Positive values push the model away from the camera; negative pulls it closer.",
-                        "Default 12.5 — this is the inherited offset that compensates for the parent bone's rest position. Lowering it makes the item sit closer to the screen; raising it pushes it further into the scene."),
-                fileConfiguration, "firstPersonBasePositionY", 12.5);
+                        "Default 7.5. Lowering it makes the item sit closer to the screen; raising it pushes it further into the scene."),
+                fileConfiguration, "firstPersonBasePositionY", defaults.firstPersonBasePositionY());
 
         firstPersonBasePositionZ = ConfigurationEngine.setDouble(
                 List.of("First-person base position offset on the Z axis, in pixels (1 = 1/16 of a block).",
                         "Z axis in first-person Bedrock space is roughly horizontal (left/right on screen).",
                         "Positive values push the model right; negative pushes it left.",
-                        "Default 0."),
-                fileConfiguration, "firstPersonBasePositionZ", 0.0);
+                        "Default -5."),
+                fileConfiguration, "firstPersonBasePositionZ", defaults.firstPersonBasePositionZ());
 
         // ─────────────────────────────────────────────────────────────
         // Third-person (right hand)
@@ -125,41 +128,41 @@ public class BedrockDisplayOffsetsConfig extends ConfigurationFile {
         thirdPersonBaseRotationX = ConfigurationEngine.setDouble(
                 List.of("Third-person base rotation around the X axis, in degrees.",
                         "X axis in Bedrock third-person space is 'pitch' (tipping the held item forward/backward as observers see it).",
-                        "Default +90; the opposite sign of first-person because the third-person parent bone rests rotated the other way.",
+                        "Default +90 compensates for the third-person parent bone's rest pose.",
                         "Adjust if the item points the wrong direction when other players look at it."),
-                fileConfiguration, "thirdPersonBaseRotationX", 90.0);
+                fileConfiguration, "thirdPersonBaseRotationX", defaults.thirdPersonBaseRotationX());
 
         thirdPersonBaseRotationY = ConfigurationEngine.setDouble(
                 List.of("Third-person base rotation around the Y axis, in degrees.",
                         "Y axis is 'yaw' (spinning the item left/right around its vertical line as observers see it).",
                         "Default 0."),
-                fileConfiguration, "thirdPersonBaseRotationY", 0.0);
+                fileConfiguration, "thirdPersonBaseRotationY", defaults.thirdPersonBaseRotationY());
 
         thirdPersonBaseRotationZ = ConfigurationEngine.setDouble(
                 List.of("Third-person base rotation around the Z axis, in degrees.",
                         "Z axis is 'roll' (rotating the item around its long axis as observers see it).",
                         "Default 0."),
-                fileConfiguration, "thirdPersonBaseRotationZ", 0.0);
+                fileConfiguration, "thirdPersonBaseRotationZ", defaults.thirdPersonBaseRotationZ());
 
         thirdPersonBasePositionX = ConfigurationEngine.setDouble(
                 List.of("Third-person base position offset on the X axis, in pixels (1 = 1/16 of a block).",
                         "X axis is roughly horizontal in third-person Bedrock space (across the holder's body).",
                         "Positive values push the model outward from the body; negative pulls it inward.",
                         "Default 0."),
-                fileConfiguration, "thirdPersonBasePositionX", 0.0);
+                fileConfiguration, "thirdPersonBasePositionX", defaults.thirdPersonBasePositionX());
 
         thirdPersonBasePositionY = ConfigurationEngine.setDouble(
                 List.of("Third-person base position offset on the Y axis, in pixels (1 = 1/16 of a block).",
                         "Y axis is vertical in third-person Bedrock space.",
                         "Positive values raise the model relative to the hand; negative lowers it.",
-                        "Default 12.5 — inherited offset compensating for the parent bone's rest position. If the item floats above or sinks below where it should grip, this is the knob."),
-                fileConfiguration, "thirdPersonBasePositionY", 12.5);
+                        "Default 6. If the item floats above or sinks below where it should grip, this is the knob."),
+                fileConfiguration, "thirdPersonBasePositionY", defaults.thirdPersonBasePositionY());
 
         thirdPersonBasePositionZ = ConfigurationEngine.setDouble(
                 List.of("Third-person base position offset on the Z axis, in pixels (1 = 1/16 of a block).",
                         "Z axis is depth in third-person Bedrock space (forward/back relative to the holder).",
                         "Positive values push the model forward of the hand; negative pulls it backward.",
-                        "Default 0."),
-                fileConfiguration, "thirdPersonBasePositionZ", 0.0);
+                        "Default -10."),
+                fileConfiguration, "thirdPersonBasePositionZ", defaults.thirdPersonBasePositionZ());
     }
 }

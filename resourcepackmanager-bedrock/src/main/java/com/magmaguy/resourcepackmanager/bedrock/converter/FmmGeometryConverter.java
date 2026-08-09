@@ -5,8 +5,10 @@ import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 import com.magmaguy.resourcepackmanager.bedrock.model.SpriteInfo;
 
 import java.io.File;
+import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Map;
@@ -146,7 +148,7 @@ public class FmmGeometryConverter {
         File geoFile = new File(bedrockPackDir, "models/entity/" + outputModelPath + ".geo.json");
         try {
             Files.createDirectories(geoFile.getParentFile().toPath());
-            try (FileWriter writer = new FileWriter(geoFile, StandardCharsets.UTF_8)) {
+            try (Writer writer = new BufferedWriter(new FileWriter(geoFile, StandardCharsets.UTF_8), 1 << 16)) {
                 GSON.toJson(root, writer);
             }
             return geometryId;

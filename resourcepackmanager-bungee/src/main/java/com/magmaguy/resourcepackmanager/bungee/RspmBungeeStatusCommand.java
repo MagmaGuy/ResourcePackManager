@@ -82,39 +82,9 @@ final class RspmBungeeStatusCommand extends Command {
      * at runtime. State resets on proxy restart.
      */
     private static void handleDebugSubcommand(CommandSender sender, String[] args) {
-        // args[0] = "debug"; expect args[1] = "bedrock"; args[2] = optional on/off
-        if (args.length < 2 || !"bedrock".equalsIgnoreCase(args[1])) {
-            sender.sendMessage(TextComponent.fromLegacyText(
-                    "Usage: /rspm debug bedrock [on|off] — currently only the 'bedrock' subsystem is supported."));
-            return;
-        }
-        if (args.length < 3) {
-            boolean cur = com.magmaguy.resourcepackmanager.proxy
-                    .BedrockDeliveryDebugLog.isEnabled();
-            sender.sendMessage(TextComponent.fromLegacyText(
-                    "[RSPM] Bedrock delivery debug logging is currently "
-                            + (cur ? "ON" : "OFF")
-                            + ". Use /rspm debug bedrock on|off to change."));
-            return;
-        }
-        boolean target;
-        switch (args[2].toLowerCase()) {
-            case "on", "true", "enable", "enabled" -> target = true;
-            case "off", "false", "disable", "disabled" -> target = false;
-            default -> {
-                sender.sendMessage(TextComponent.fromLegacyText(
-                        "Unknown state '" + args[2] + "'. Expected 'on' or 'off'."));
-                return;
-            }
-        }
-        com.magmaguy.resourcepackmanager.proxy.BedrockDeliveryDebugLog.setEnabled(target);
         sender.sendMessage(TextComponent.fromLegacyText(
-                "[RSPM] Bedrock delivery debug logging is now "
-                        + (target ? "ON" : "OFF")
-                        + ". Log lines prefixed with [RSPM-BedrockDebug]. "
-                        + (target
-                            ? "Reproduce the issue then turn this OFF."
-                            : "")));
+                com.magmaguy.resourcepackmanager.proxy.BedrockDeliveryDebugLog
+                        .handleToggleCommand(args)));
     }
 
     /**
