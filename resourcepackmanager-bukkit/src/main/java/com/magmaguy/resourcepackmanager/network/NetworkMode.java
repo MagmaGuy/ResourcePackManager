@@ -1,12 +1,12 @@
 package com.magmaguy.resourcepackmanager.network;
 
+import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.config.DataConfig;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 import java.io.File;
-import java.util.UUID;
 
 /**
  * Detects whether RPM is running behind a proxy (Velocity / BungeeCord / Waterfall).
@@ -51,6 +51,29 @@ public final class NetworkMode {
      * like {@link #cached}, /reload re-initializes the static.
      */
     private static volatile String cachedNetworkKey;
+
+    /**
+     * Set once resolution has run, so an unkeyed backend does not re-resolve — and
+     * re-warn — on every caller. Provisioning updates the key directly instead.
+     */
+    private static boolean resolvedOnce;
+
+    private static volatile KeySource keySource = KeySource.NONE;
+
+    /** Filename the proxy stores its key in; referenced in operator guidance. */
+    private static final String NETWORK_KEY_FILENAME = "network-key";
+
+    /** Where this backend's key came from. */
+    public enum KeySource {
+        /** Loaded from data.yml — every boot after the first. */
+        PERSISTED,
+        /** Adopted once from Floodgate's key, on backends that happen to run Floodgate. */
+        SEEDED_FROM_FLOODGATE,
+        /** Granted by the proxy. The normal path for a backend without Floodgate. */
+        PROVISIONED,
+        /** No key yet. In proxy topology this means the backend is not linked. */
+        NONE
+    }
 
     private NetworkMode() {}
 
@@ -97,51 +120,138 @@ public final class NetworkMode {
     }
 
     /**
-     * Resolves the network key that links this backend with the proxy plugin and any
-     * other backends in the same network. Resolution order (no admin override path —
-     * the manual-paste workflow was retired because typos in the pasted key silently
-     * broke the proxy↔backend link; see DefaultConfig comment for why):
+     * Resolves the network key that links this backend with its proxy. The proxy owns
+     * the key; a backend either already has it, seeds it once, or is given it.
      * <ol>
-     *     <li>Derive from {@code plugins/floodgate/key.pem} —
-     *         {@link com.magmaguy.resourcepackmanager.http.NetworkKeyResolver#deriveFromFloodgateKey}.
-     *         Floodgate REQUIRES this file to be the same on every backend and on the
-     *         proxy for Bedrock players to connect at all, so the derived key matches
-     *         everywhere automatically. Zero admin config.</li>
-     *     <li>{@link DataConfig#getNetworkKey()} — value persisted from a previous boot.
-     *         Only reached when Floodgate isn't installed; lets a backend continue to
-     *         report a stable identity in network mode even though the proxy can't
-     *         match it.</li>
-     *     <li>Auto-generate a fresh {@link UUID}, persist it to {@code data.yml}, return it.
-     *         Reached only when Floodgate is missing AND there's no prior persisted key.
-     *         In this state the proxy and backend WILL NOT link — operator must install
-     *         Floodgate on both sides. The plugin still boots and runs in standalone-pack
-     *         mode so the operator can fix Floodgate and reload.</li>
+     *     <li>{@link DataConfig#getNetworkKey()} — persisted from a previous boot or
+     *         from provisioning. The steady state.</li>
+     *     <li>A one-time seed from {@code plugins/floodgate/key.pem}, when this backend
+     *         happens to run Floodgate. Keeps networks that already work on the identity
+     *         they already use.</li>
+     *     <li>Nothing — return {@code null} and say so. The proxy grants a key on the
+     *         first player join.</li>
      * </ol>
+     *
+     * <p>Earlier versions derived from {@code key.pem} first and, failing that, generated
+     * a random UUID silently. That was built on the false premise that Floodgate needs its
+     * key on every backend; it does not, so on the topology Floodgate itself documents —
+     * Floodgate on the proxy only — every backend invented a key that could never match
+     * the proxy, and nothing reported it.</p>
+     *
+     * @return the key, or {@code null} when this backend has not been provisioned yet
      */
     public static String getNetworkKey() {
         String cachedKey = cachedNetworkKey;
         if (cachedKey != null) return cachedKey;
-        String resolved = resolveNetworkKey();
-        cachedNetworkKey = resolved;
-        return resolved;
+        synchronized (NetworkMode.class) {
+            if (cachedNetworkKey != null) return cachedNetworkKey;
+            if (resolvedOnce) return null;
+            resolvedOnce = true;
+            cachedNetworkKey = resolveNetworkKey();
+            return cachedNetworkKey;
+        }
+    }
+
+    /** Where the current key came from. Surfaced by {@code /rspm status}. */
+    public static KeySource getKeySource() {
+        getNetworkKey();
+        return keySource;
+    }
+
+    /**
+     * Accepts a key granted by the proxy, persisting it so provisioning happens
+     * exactly once per backend.
+     *
+     * <p>Ignored when this backend already holds a key. A grant must never be able
+     * to silently re-point an established backend at a different network; changing
+     * an existing key is an operator action, not something a message can do.</p>
+     *
+     * @return {@code true} when the key was adopted
+     */
+    public static synchronized boolean acceptProvisionedKey(String grantedKey) {
+        if (grantedKey == null || grantedKey.isBlank()) return false;
+        resolvedOnce = true;
+        if (cachedNetworkKey != null) {
+            if (!cachedNetworkKey.equals(grantedKey)) {
+                Logger.warn("A proxy offered a network key that differs from the one this backend already uses. "
+                        + "Keeping the existing key. If two proxies front this backend they must share one key; "
+                        + "copy " + NETWORK_KEY_FILENAME + " from the primary proxy to the other.");
+            }
+            return false;
+        }
+        DataConfig.setNetworkKey(grantedKey);
+        cachedNetworkKey = grantedKey;
+        keySource = KeySource.PROVISIONED;
+        Logger.info("Network key received from the proxy; this backend is now linked.");
+        return true;
     }
 
     private static String resolveNetworkKey() {
-        // 1. Derive from Floodgate key.pem — the canonical path.
-        //    plugins/floodgate/key.pem (same on every backend AND proxy that talks
-        //    to the same network — Floodgate requires this for Bedrock auth).
+        // 1. Persisted key — the steady state. Covers keys provisioned by the proxy
+        //    and keys seeded on a previous boot.
+        String persisted = DataConfig.getNetworkKey();
+        if (persisted != null && !persisted.isBlank()) {
+            keySource = KeySource.PERSISTED;
+            return persisted;
+        }
+
+        // 2. One-time seed from Floodgate's key.pem, matching how proxies adopt their
+        //    identity on upgrade. Only reached on backends that actually run Floodgate;
+        //    it is optional there, which is exactly why this can no longer be the
+        //    primary path. See NetworkKeyAuthority for the full reasoning.
         java.nio.file.Path keyPem = ResourcePackManager.plugin.getDataFolder()
                 .getParentFile().toPath()  // plugins/
                 .resolve("floodgate")
                 .resolve("key.pem");
-        String derived = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver.deriveFromFloodgateKey(keyPem);
-        if (derived != null) return derived;
+        String seeded = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver.deriveFromFloodgateKey(keyPem);
+        if (seeded != null) {
+            DataConfig.setNetworkKey(seeded);
+            keySource = KeySource.SEEDED_FROM_FLOODGATE;
+            return seeded;
+        }
 
-        // 2. Fallback: persisted UUID, auto-generated on first call.
-        String persisted = DataConfig.getNetworkKey();
-        if (persisted != null && !persisted.isBlank()) return persisted;
-        String generated = UUID.randomUUID().toString();
-        DataConfig.setNetworkKey(generated);
-        return generated;
+        // 3a. Standalone: this server is its own network, so it owns its key exactly as a
+        //     proxy owns one. Minting is safe here because there is no proxy to match, and
+        //     it preserves the identity standalone servers have always had — without this,
+        //     they would silently stop uploading Bedrock artifacts to the relay.
+        if (!isActive()) {
+            String minted = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver.mint();
+            DataConfig.setNetworkKey(minted);
+            keySource = KeySource.PERSISTED;
+            return minted;
+        }
+
+        // 3b. Behind a proxy with nothing to use. Previously this invented a random UUID and
+        //     returned it, which looked like a working key, could never match the proxy, and
+        //     said nothing about it — the backend simply never linked. Report and wait to be
+        //     provisioned instead.
+        keySource = KeySource.NONE;
+        Logger.warn("This backend is behind a proxy but has no network key yet, so it is not linked to the proxy.");
+        Logger.warn("The proxy sends one automatically the first time a player connects to this server.");
+        Logger.warn("If it never arrives, the proxy is missing ResourcePackManager or is an unsupported proxy;");
+        Logger.warn("compare '/rspm status' on both sides — the network key fingerprints must match.");
+        stageProxyInstallAssist();
+        // When a Bedrock stack is present here, escalate to the dedicated,
+        // Bedrock-specific banner — the plain lines above under-sell that
+        // Bedrock players are the ones who break.
+        if (ProxyLinkWarning.bedrockProxyLinkMissing()) {
+            ProxyLinkWarning.warnConsole();
+        }
+        return null;
+    }
+
+    /**
+     * Stages a byte-identical copy of this running jar for the proxy and says
+     * exactly where to put it. Runs only on the unkeyed branch: once a grant
+     * has been adopted the proxy plainly already has the plugin.
+     */
+    private static void stageProxyInstallAssist() {
+        if (!(ResourcePackManager.plugin instanceof ResourcePackManager rspm)) return;
+        File staged = ProxyInstallAssistant.stageProxyJar(rspm, rspm.pluginJarFile());
+        if (staged == null) return;
+        Logger.warn("A copy of this exact plugin jar has been staged for the proxy at:");
+        Logger.warn("  " + staged.getAbsolutePath());
+        Logger.warn("Copy that one file into the proxy's plugins folder (Velocity, BungeeCord, and Waterfall");
+        Logger.warn("all use the same jar) and restart the proxy; the network key is then exchanged automatically.");
     }
 }

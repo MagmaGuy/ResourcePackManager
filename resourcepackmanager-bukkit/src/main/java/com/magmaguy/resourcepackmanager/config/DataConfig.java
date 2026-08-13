@@ -82,6 +82,28 @@ public class DataConfig extends ConfigurationFile {
     }
 
     /**
+     * True once a Bedrock player has been observed connecting while this
+     * backend was proxied but unkeyed — the proxy-only-Floodgate case, where
+     * nothing on the backend's filesystem reveals that Bedrock is in play.
+     * Persisted so the boot warning fires on later restarts too, before any
+     * Bedrock player has reconnected. Self-clears: the warning is gated on the
+     * unkeyed state, so a successful link silences it regardless of this flag.
+     */
+    public static boolean getBedrockSeenBehindUnlinkedProxy() {
+        return instance.getFileConfiguration().getBoolean("bedrockSeenBehindUnlinkedProxy", false);
+    }
+
+    public static void setBedrockSeenBehindUnlinkedProxy(boolean seen) {
+        if (getBedrockSeenBehindUnlinkedProxy() == seen) return;
+        instance.getFileConfiguration().set("bedrockSeenBehindUnlinkedProxy", seen);
+        try {
+            instance.getFileConfiguration().save(instance.file);
+        } catch (Exception e) {
+            Logger.warn("Failed to save Bedrock-behind-proxy observation!");
+        }
+    }
+
+    /**
      * Clears invalid UUID from config file
      */
     private void clearInvalidUUID() {

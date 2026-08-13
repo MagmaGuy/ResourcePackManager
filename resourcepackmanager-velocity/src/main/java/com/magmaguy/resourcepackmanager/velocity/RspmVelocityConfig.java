@@ -12,13 +12,19 @@ import java.util.Map;
 final class RspmVelocityConfig {
 
     private final int networkHttpOffset;
+    private final boolean geyserExtensionAutoInstall;
 
-    private RspmVelocityConfig(int networkHttpOffset) {
+    private RspmVelocityConfig(int networkHttpOffset, boolean geyserExtensionAutoInstall) {
         this.networkHttpOffset = networkHttpOffset;
+        this.geyserExtensionAutoInstall = geyserExtensionAutoInstall;
     }
 
     int networkHttpOffset() {
         return networkHttpOffset;
+    }
+
+    boolean geyserExtensionAutoInstall() {
+        return geyserExtensionAutoInstall;
     }
 
     static RspmVelocityConfig loadOrCreate(Path dataDir) throws IOException {
@@ -49,7 +55,9 @@ final class RspmVelocityConfig {
             if (data.containsKey("network-http-offset-v2")) {
                 offset = ((Number) data.get("network-http-offset-v2")).intValue();
             }
-            return new RspmVelocityConfig(offset);
+            boolean extensionAutoInstall = !"false".equalsIgnoreCase(
+                    String.valueOf(data.getOrDefault("geyser-extension-auto-install", true)).trim());
+            return new RspmVelocityConfig(offset, extensionAutoInstall);
         }
     }
 
@@ -82,6 +90,12 @@ final class RspmVelocityConfig {
                 # Note: if a backend has rcon enabled on MC port + 1, choose 2 or 3 to
                 # avoid a port collision.
                 network-http-offset-v2: 1
+
+                # Installs and updates this universal ResourcePackManager.jar in Geyser's
+                # extensions folder for custom Bedrock entity models. Set false to prevent
+                # future installation/staging; remove existing extension JARs while Geyser
+                # is stopped if the bridge must remain disabled.
+                geyser-extension-auto-install: true
                 """;
         Files.writeString(configFile, yaml);
     }

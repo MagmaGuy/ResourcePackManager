@@ -133,6 +133,7 @@ Backend config lives at `plugins/ResourcePackManager/config.yml`. Selected keys
 | `resourcePackPrompt` | text | Prompt shown to clients. |
 | `resourcePackRerouting` | `""` | Optional: copy the merged pack to a custom directory (e.g. to host with another plugin). |
 | `bedrockConversionEnabled` | `true` | Convert the merged Java pack to Bedrock for Geyser. |
+| `geyserExtensionAutoInstall` | `true` | Install/update the universal RSPM jar as a Geyser extension for custom Bedrock entity models. Set `false` to prevent future staging; remove existing extension jars while Geyser is stopped. |
 | `bedrockAutoDeployToGeyser` | `true` | Auto-deploy the Bedrock pack to the Geyser packs folder. |
 | `bedrockGeyserFolder` | `""` | Path to the Geyser packs folder; empty = auto-detect. |
 | `bedrockConverterDebug` | `false` | Verbose per-item conversion logging. |
@@ -142,6 +143,36 @@ Backend config lives at `plugins/ResourcePackManager/config.yml`. Selected keys
 | `selfHostExternalHost` | `""` | Public host/IP clients use to reach the self-host server; empty = auto-detect. |
 | `selfHostForce` | `false` | Force self-hosting, bypassing all other delivery paths (testing). |
 | `preferSelfHost` | `true` | Try self-host first and fall back to remote upload only if reachability checks fail. |
+
+### Adding and troubleshooting a manual pack
+
+1. Confirm the pack works by itself on the same Minecraft client version. If it
+   relies on client features such as OptiFine CEM/CIT or equivalent client mods,
+   every player still needs that support; RSPM merges and distributes pack files
+   but does not add client-side rendering features.
+2. Put the original `.zip` in `plugins/ResourcePackManager/mixer/`. The archive
+   must be a normal resource-pack ZIP: `pack.mcmeta`, `pack.png` (if present),
+   and `assets/` belong at the archive root, not inside an extra wrapper folder.
+3. Add the exact ZIP filename, including `.zip`, to `priorityOrder` in
+   `plugins/ResourcePackManager/config.yml`. The first entry has the highest
+   priority. Manual ZIPs omitted from the list are still merged, at the lowest
+   priority (ties use a stable filename order).
+4. Run `/rspm reload`, then inspect
+   `plugins/ResourcePackManager/output/ResourcePackManager_RSP.zip` and
+   `plugins/ResourcePackManager/collision_log.txt` (created when collisions occur).
+
+For ordinary files and non-mergeable JSON (models, blockstates, equipment, and
+similar fixed structures), the higher-priority pack's complete file wins.
+RSPM only combines JSON formats that can be merged safely, such as language,
+sound, font, atlas, and supported item-definition files. Two packs that replace
+the same entity model or texture therefore need the intended winner above the
+other pack, or a compatibility pack authored for those two packs.
+
+For diagnosis, set `verboseLogging: true`, run `/rspm reload`, and include the
+two input ZIPs, `config.yml`, `collision_log.txt`, and the generated
+`ResourcePackManager_RSP.zip` with a report. A server log can establish the RSPM
+version and whether the mix completed, but it cannot by itself identify a
+file-level content conflict.
 
 ### Excluding a plugin's resource pack
 
@@ -162,11 +193,20 @@ plugin from `priorityOrder` does **not** exclude it; that setting only decides
 which pack wins file conflicts. For a pack you manually placed in the `mixer/`
 folder, remove or move that ZIP instead.
 
+RSPM does not currently support keeping one source pack in the Java merge while
+excluding only that source from Bedrock conversion. The converter consumes the
+complete merged Java pack, after source packs have already been combined. This
+is the same on a single server and in network mode; proxy configuration does not
+change source-pack exclusion. To maintain different Java and Bedrock contents,
+disable RSPM's Bedrock conversion and install a separately maintained Bedrock
+pack through Geyser.
+
 Proxy config (`config.yml` in the proxy plugin's data folder):
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `network-http-offset-v2` | `1` | Fallback offset used only before a backend endpoint announcement is available. In normal operation the backend announces the exact HTTP port it bound. |
+| `geyser-extension-auto-install` | `true` | Install/update the universal RSPM jar as a Geyser extension. Set `false` to prevent both startup installation and update staging. |
 
 The proxy `network-key` is auto-derived from `plugins/floodgate/key.pem`; there is
 no manual key to paste. RSPM's proxy plugin does not control pack acceptance:

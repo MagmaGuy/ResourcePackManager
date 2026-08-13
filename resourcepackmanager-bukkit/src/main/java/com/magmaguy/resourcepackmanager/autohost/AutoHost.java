@@ -501,8 +501,14 @@ public class AutoHost {
                     return;
                 }
 
-                if (rspUUID != null && done) {
+                if (done) {
                     counter = 0;
+                    // Remote hosting needs a periodic keep-alive. Self-hosting does not: the
+                    // PackHttpServer remains live for this lifecycle and serves the current file
+                    // directly. Falling through here when rspUUID is null used to re-run
+                    // commitSelfHost() every 30 seconds, which re-sent the pack to every online
+                    // Java player and left clients stuck in an endless resource-pack reload loop.
+                    if (rspUUID == null) return;
                     if (System.nanoTime() < nextStillAliveNanos) return;
                     try {
                         sendStillAlive(run);

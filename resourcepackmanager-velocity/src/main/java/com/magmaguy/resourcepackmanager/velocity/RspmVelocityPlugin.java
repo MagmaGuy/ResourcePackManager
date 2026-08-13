@@ -7,6 +7,7 @@ import com.magmaguy.resourcepackmanager.proxy.GeyserBridgeExtensionInstaller;
 import com.magmaguy.resourcepackmanager.proxy.GeyserMappingsDeployer;
 import com.magmaguy.resourcepackmanager.proxy.MergedPack;
 import com.magmaguy.resourcepackmanager.proxy.MergedOutputPublication;
+import com.magmaguy.resourcepackmanager.proxy.NetworkKeyAuthority;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
 import com.magmaguy.resourcepackmanager.proxy.ProxyPluginUpdateCoordinator;
 import com.velocitypowered.api.event.Subscribe;
@@ -47,6 +48,7 @@ public final class RspmVelocityPlugin {
     private ProxyPluginUpdateCoordinator pluginUpdateCoordinator;
     private GeyserBinder bedrock;
     private VelocityGeyserBridgeLifecycleRelay bridgeLifecycleRelay;
+    private VelocityNetworkKeyGrantListener keyGrantListener;
 
     @Inject
     public RspmVelocityPlugin(ProxyServer proxy, Logger slf4j, @DataDirectory Path dataDir) {
@@ -65,25 +67,38 @@ public final class RspmVelocityPlugin {
             return;
         }
 
-        // Network key is derived SOLELY from plugins/floodgate/key.pem on this proxy.
-        // There is no config-pasted override path — that was retired pre-release after
-        // typo'd pastes silently broke the proxy↔backend link. Floodgate already
-        // requires this file to be the same on every backend AND on the proxy for
-        // Bedrock players to authenticate, so the derived value matches every
-        // backend's automatically. The only setup step is: install Floodgate.
+        // This proxy owns the network key and hands it to its backends. Floodgate is
+        // only ever read once, to adopt an existing network's identity on upgrade —
+        // it is not required, because Floodgate itself does not require its key on
+        // backends (see NetworkKeyAuthority). A missing key.pem is a supported state.
         Path keyPem = dataDir.getParent()   // plugins/
                 .resolve("floodgate")
                 .resolve("key.pem");
-        String effectiveKey = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver
-                .deriveFromFloodgateKey(keyPem);
-        if (effectiveKey == null || effectiveKey.isBlank()) {
-            slf4j.warn("[RSPM] Floodgate key.pem missing from plugins/floodgate/key.pem on this proxy.");
-            slf4j.warn("[RSPM] RSPM cannot link to any backend without it. Install Floodgate on this");
-            slf4j.warn("[RSPM] proxy (it's required for Bedrock players to connect anyway), then");
-            slf4j.warn("[RSPM] restart. Plugin idle.");
-            return;
+        NetworkKeyAuthority.Resolution keyResolution = NetworkKeyAuthority.resolve(dataDir, keyPem);
+        String effectiveKey = keyResolution.key();
+        switch (keyResolution.source()) {
+            case PERSISTED -> slf4j.info("[RSPM] Network key loaded ✓");
+            case SEEDED_FROM_FLOODGATE -> slf4j.info(
+                    "[RSPM] Network key adopted from Floodgate key.pem and saved to "
+                            + NetworkKeyAuthority.KEY_FILENAME + "; this network keeps its existing identity ✓");
+            case MINTED -> slf4j.info(
+                    "[RSPM] New network key generated and saved to " + NetworkKeyAuthority.KEY_FILENAME
+                            + "; backends are provisioned automatically on first join ✓");
         }
-        slf4j.info("[RSPM] Network-key auto-derived from Floodgate key.pem ✓");
+        if (!keyResolution.persisted()) {
+            // Not fatal this boot, but the next restart mints a different key and
+            // silently unlinks every backend already provisioned with this one.
+            slf4j.error("[RSPM] Could not save the network key to {}: {}",
+                    dataDir.resolve(NetworkKeyAuthority.KEY_FILENAME), keyResolution.persistenceError());
+            slf4j.error("[RSPM] Fix the permissions on that folder — until then the key changes on every restart.");
+        }
+
+        // Hands the key to backends that ask for it. Registered before anything else
+        // starts so a backend joining early is answered rather than ignored.
+        // Velocity keeps its forwarding secret next to velocity.toml, i.e. the proxy root.
+        keyGrantListener = new VelocityNetworkKeyGrantListener(
+                proxy, slf4j, effectiveKey, Path.of("forwarding.secret"));
+        keyGrantListener.register();
 
         MixerLogger mixerLogger = new MixerLogger() {
             @Override
@@ -110,7 +125,12 @@ public final class RspmVelocityPlugin {
         File proxyPluginsDir = dataDir.getParent().toFile();
         File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(
                 proxyPluginsDir, "Geyser-Velocity");
-        GeyserBridgeExtensionInstaller.install(geyserPluginDir, logger);
+        if (config.geyserExtensionAutoInstall()) {
+            GeyserBridgeExtensionInstaller.install(geyserPluginDir, logger);
+        } else {
+            logger.info("Automatic Geyser extension installation is disabled by "
+                    + "geyser-extension-auto-install. Existing extension JARs are not removed automatically.");
+        }
 
         // Boot-time pre-deploy of previous run's Geyser mappings. Geyser's custom-item
         // registry is boot-frozen; if we wait until after the first merge it's already
@@ -122,7 +142,8 @@ public final class RspmVelocityPlugin {
         try {
             this.pluginUpdateCoordinator = ProxyPluginUpdateCoordinator.production(
                     workingDir.toPath(),
-                    geyserPluginDir == null ? null : geyserPluginDir.toPath(),
+                    !config.geyserExtensionAutoInstall() || geyserPluginDir == null
+                            ? null : geyserPluginDir.toPath(),
                     logger,
                     RspmVelocityPlugin.class);
         } catch (Exception exception) {
@@ -245,6 +266,19 @@ public final class RspmVelocityPlugin {
         // /rspm status surfaces the same information on demand and the
         // Network-key auto-derived ✓ line above already confirms the
         // critical handshake is good.
+    }
+
+    /**
+     * Keys each backend the moment a player lands on it.
+     *
+     * <p>Backends cannot ask for the key: their only route to the proxy is a clientbound
+     * plugin message, which Velocity drops for any channel the player's client has not
+     * registered. Pushing avoids that gate entirely.</p>
+     */
+    @Subscribe
+    public void onServerPostConnect(com.velocitypowered.api.event.player.ServerPostConnectEvent event) {
+        if (keyGrantListener == null) return;
+        event.getPlayer().getCurrentServer().ifPresent(keyGrantListener::provision);
     }
 
     @Subscribe

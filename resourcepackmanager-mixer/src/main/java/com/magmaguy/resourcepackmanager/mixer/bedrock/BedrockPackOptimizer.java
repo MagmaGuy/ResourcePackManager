@@ -93,7 +93,6 @@ public final class BedrockPackOptimizer {
             AliasMatcher aliasMatcher = new AliasMatcher(replacements);
 
             Set<Path> protectedDuplicates = new LinkedHashSet<>();
-            Map<Path, JsonElement> rewrittenJson = new LinkedHashMap<>();
             List<Path> packFiles;
             try (Stream<Path> stream = Files.walk(normalizedRoot)) {
                 packFiles = stream
@@ -102,23 +101,19 @@ public final class BedrockPackOptimizer {
                         .toList();
             }
 
+            int jsonFilesRewritten = 0;
             for (Path file : packFiles) {
                 if (isCancelled(cancellationRequested)) return;
                 if (duplicateSizes.containsKey(file)) continue;
                 String lower = file.getFileName().toString().toLowerCase(Locale.ROOT);
                 if (lower.endsWith(".json")) {
-                    inspectJson(file, replacements, aliasMatcher,
-                            protectedDuplicates, rewrittenJson);
+                    if (inspectAndRewriteJson(file, replacements, aliasMatcher,
+                            protectedDuplicates)) {
+                        jsonFilesRewritten++;
+                    }
                 } else if (!isImage(file)) {
                     protectAliasesFoundInOpaqueFile(file, aliasMatcher, protectedDuplicates);
                 }
-            }
-
-            int jsonFilesRewritten = 0;
-            for (Map.Entry<Path, JsonElement> entry : rewrittenJson.entrySet()) {
-                if (isCancelled(cancellationRequested)) return;
-                writeJsonAtomically(entry.getKey(), entry.getValue());
-                jsonFilesRewritten++;
             }
 
             int removed = 0;
@@ -152,23 +147,24 @@ public final class BedrockPackOptimizer {
         return Cancellation.isCancelled(cancellationRequested);
     }
 
-    private static void inspectJson(Path file,
-                                    Map<String, Replacement> replacements,
-                                    AliasMatcher aliasMatcher,
-                                    Set<Path> protectedDuplicates,
-                                    Map<Path, JsonElement> rewrittenJson) throws IOException {
+    private static boolean inspectAndRewriteJson(Path file,
+                                                 Map<String, Replacement> replacements,
+                                                 AliasMatcher aliasMatcher,
+                                                 Set<Path> protectedDuplicates) throws IOException {
         String original = Files.readString(file, StandardCharsets.UTF_8);
-        if (!aliasMatcher.containsMatch(original)) return;
+        if (!aliasMatcher.containsMatch(original)) return false;
         JsonElement parsed;
         try {
             parsed = JsonParser.parseString(original);
         } catch (Exception malformed) {
             aliasMatcher.protectMatches(original, protectedDuplicates);
-            return;
+            return false;
         }
 
         Rewrite rewrite = rewriteJson(parsed, replacements, aliasMatcher, protectedDuplicates);
-        if (rewrite.changed()) rewrittenJson.put(file, rewrite.element());
+        if (!rewrite.changed()) return false;
+        writeJsonAtomically(file, rewrite.element());
+        return true;
     }
 
     private static Rewrite rewriteJson(JsonElement element,

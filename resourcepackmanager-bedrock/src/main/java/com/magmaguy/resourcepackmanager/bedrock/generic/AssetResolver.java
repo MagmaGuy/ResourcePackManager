@@ -9,7 +9,6 @@ import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 import java.io.File;
 import java.io.FileReader;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -30,6 +29,8 @@ import java.util.Set;
 public final class AssetResolver {
 
     private static final int MAX_PARENT_DEPTH = 10;
+    private static final int MAX_MODEL_CACHE_ENTRIES = 64;
+    private static final int MAX_EQUIPMENT_CACHE_ENTRIES = 32;
     private static final Set<String> FLAT_BUILTIN_ROOTS = Set.of(
             "minecraft:item/generated",
             "minecraft:builtin/generated"
@@ -41,9 +42,16 @@ public final class AssetResolver {
     );
 
     private final File mergedJavaPack;
-    private final Map<String, Optional<JsonObject>> rawModelCache = new HashMap<>();
-    private final Map<String, Optional<ResolvedModel>> resolvedModelCache = new HashMap<>();
-    private final Map<String, Optional<JsonObject>> equipmentCache = new HashMap<>();
+    // A large merged pack can contain thousands of complex Blockbench models.
+    // Keeping every parsed source and merged parent tree alive until the end of
+    // conversion can exhaust a modest server heap. These access-ordered caches
+    // retain hot parent/model reuse without making memory scale with pack size.
+    private final Map<String, Optional<JsonObject>> rawModelCache =
+            boundedCache(MAX_MODEL_CACHE_ENTRIES);
+    private final Map<String, Optional<ResolvedModel>> resolvedModelCache =
+            boundedCache(MAX_MODEL_CACHE_ENTRIES);
+    private final Map<String, Optional<JsonObject>> equipmentCache =
+            boundedCache(MAX_EQUIPMENT_CACHE_ENTRIES);
     // Lazily built on first model resolution (lazy so a pack with no convertible
     // models never pays the pack-walk cost). Maps atlas sprite names back to real
     // texture resources — see AtlasSpriteIndex.
@@ -51,6 +59,15 @@ public final class AssetResolver {
 
     public AssetResolver(File mergedJavaPack) {
         this.mergedJavaPack = mergedJavaPack;
+    }
+
+    private static <K, V> Map<K, V> boundedCache(int maximumEntries) {
+        return new LinkedHashMap<>(maximumEntries + 1, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+                return size() > maximumEntries;
+            }
+        };
     }
 
     private AtlasSpriteIndex atlasSprites() {

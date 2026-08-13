@@ -8,26 +8,53 @@ import java.security.NoSuchAlgorithmException;
 import java.util.UUID;
 
 /**
- * Derives the RPM network-key from a shared secret already established across
- * the network: Floodgate's {@code key.pem}. Same {@code key.pem} on every
- * component → same network-key on every component, zero admin config.
+ * Produces the RSPM network-key: the value that links a proxy with its backends
+ * and namespaces the network's storage on the relay.
  *
- * <p>Separate Floodgate networks have different {@code key.pem} files, which
- * yield different network-keys automatically — cross-network isolation falls
- * out for free.</p>
+ * <p><b>The proxy owns this value.</b> It mints one with {@link #mint()} and
+ * hands it to backends. Floodgate is no longer consulted at runtime.</p>
  *
- * <p>The output is formatted as a UUID (using the first 128 bits of the SHA-256)
- * for symmetry with the previous auto-generated UUID network-keys.</p>
+ * <p>{@link #deriveFromFloodgateKey(Path)} survives only as a one-time
+ * <em>migration seed</em>. Earlier versions derived the key by hashing
+ * Floodgate's {@code key.pem}, on the incorrect premise that Floodgate requires
+ * that file on every backend. It does not — <a
+ * href="https://geysermc.org/wiki/floodgate/setup/">Floodgate's own setup
+ * guide</a> states you only need Floodgate on the proxy unless you want its API
+ * on backends. On that documented default topology the old scheme could never
+ * link, because backends silently generated a random key instead.</p>
+ *
+ * <p>Seeding from {@code key.pem} on first boot keeps every already-working
+ * network on the identity it currently uses, so a proxy that upgrades before its
+ * backends stays linked to them mid-rollout. Once a component has persisted a
+ * key, this method is never called again, and the seed branch can be deleted
+ * outright in a later version.</p>
+ *
+ * <p>Both forms are UUID-shaped so persisted keys from any era remain valid.</p>
  */
 public final class NetworkKeyResolver {
 
     private NetworkKeyResolver() {}
 
     /**
-     * Try to derive a network-key by hashing the given Floodgate {@code key.pem}.
-     * Returns {@code null} when the file doesn't exist or can't be read; caller
-     * is expected to fall back to an alternative resolution path (admin override,
-     * persisted UUID, etc.).
+     * Mints a fresh network-key.
+     *
+     * <p>Called once per proxy, on the first boot that finds no persisted key and
+     * no Floodgate file to seed from. A random UUID is a stronger credential than
+     * the old derived value: because the relay treats the key itself as the
+     * credential, deriving it from {@code key.pem} meant leaking that file also
+     * handed over the network's relay tenancy. Minting decouples the two.</p>
+     */
+    public static String mint() {
+        return UUID.randomUUID().toString();
+    }
+
+    /**
+     * Derives a network-key by hashing the given Floodgate {@code key.pem}.
+     *
+     * <p><b>Migration seed only</b> — see the class docs. Returns {@code null}
+     * when the file is absent or unreadable, which is a normal, supported state
+     * and means the caller should mint (proxy) or request provisioning
+     * (backend), never silently invent a key.</p>
      */
     public static String deriveFromFloodgateKey(Path keyPemPath) {
         if (keyPemPath == null || !Files.isRegularFile(keyPemPath)) return null;

@@ -3,11 +3,14 @@ package com.magmaguy.resourcepackmanager.config;
 import com.magmaguy.magmacore.config.ConfigurationEngine;
 import com.magmaguy.magmacore.config.ConfigurationFile;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginUpdater;
+import com.magmaguy.magmacore.util.Logger;
 import lombok.Getter;
 
 import java.util.List;
 
 public class DefaultConfig extends ConfigurationFile {
+
+    private static DefaultConfig instance;
 
     @Getter
     private static List<String> priorityOrder;
@@ -22,13 +25,15 @@ public class DefaultConfig extends ConfigurationFile {
     @Getter
     private static boolean bedrockConversionEnabled = true;
     @Getter
+    private static boolean geyserExtensionAutoInstall = true;
+    @Getter
     private static boolean bedrockAutoDeployToGeyser = true;
     @Getter
     private static String bedrockGeyserFolder = "";
     @Getter
     private static boolean bedrockConverterDebug = false;
     @Getter
-    private static boolean verboseLogging = false;
+    private static volatile boolean verboseLogging = false;
     @Getter
     private static boolean selfHostEnabled = true;
     @Getter
@@ -45,6 +50,36 @@ public class DefaultConfig extends ConfigurationFile {
 
     public DefaultConfig() {
         super("config.yml");
+        instance = this;
+    }
+
+    /**
+     * Applies verbose logging immediately and persists the choice across
+     * restarts. The in-memory flag is changed only after the config save
+     * succeeds, so a disk error cannot make runtime state disagree with the
+     * value operators see in config.yml.
+     *
+     * @return true when the value was saved and applied
+     */
+    public static boolean setVerboseLogging(boolean enabled) {
+        if (instance == null) {
+            Logger.warn("Could not change verbose logging before the RSPM config was initialized.");
+            return false;
+        }
+
+        boolean previousConfigValue = instance.fileConfiguration.getBoolean(
+                "verboseLogging", verboseLogging);
+        instance.fileConfiguration.set("verboseLogging", enabled);
+        try {
+            instance.fileConfiguration.save(instance.file);
+            verboseLogging = enabled;
+            return true;
+        } catch (Exception exception) {
+            instance.fileConfiguration.set("verboseLogging", previousConfigValue);
+            Logger.warn("Failed to save verboseLogging to RSPM's config.yml: "
+                    + exception.getMessage());
+            return false;
+        }
     }
 
     @Override
@@ -95,6 +130,11 @@ public class DefaultConfig extends ConfigurationFile {
         bedrockConversionEnabled = ConfigurationEngine.setBoolean(
                 List.of("Enables automatic conversion of the merged Java resource pack to a Bedrock resource pack for GeyserMC."),
                 fileConfiguration, "bedrockConversionEnabled", true);
+        geyserExtensionAutoInstall = ConfigurationEngine.setBoolean(
+                List.of(
+                        "Automatically installs and updates the universal ResourcePackManager.jar as a Geyser extension for custom Bedrock entity models.",
+                        "Set false to prevent future extension installation and update staging. Existing extension JARs must be removed while Geyser is stopped."),
+                fileConfiguration, "geyserExtensionAutoInstall", true);
         bedrockAutoDeployToGeyser = ConfigurationEngine.setBoolean(
                 List.of("Automatically deploy the converted Bedrock resource pack to the Geyser packs folder."),
                 fileConfiguration, "bedrockAutoDeployToGeyser", true);

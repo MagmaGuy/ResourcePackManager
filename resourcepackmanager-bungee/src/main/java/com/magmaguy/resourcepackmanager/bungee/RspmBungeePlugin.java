@@ -35,25 +35,37 @@ public final class RspmBungeePlugin extends Plugin {
             return;
         }
 
-        // Network key is derived SOLELY from plugins/floodgate/key.pem on this proxy.
-        // There is no config-pasted override path — that was retired pre-release after
-        // typo'd pastes silently broke the proxy↔backend link. Floodgate already
-        // requires this file to be the same on every backend AND on the proxy for
-        // Bedrock players to authenticate, so the derived value matches every
-        // backend's automatically. The only setup step is: install Floodgate.
+        // This proxy owns the network key and hands it to its backends. Floodgate is
+        // only ever read once, to adopt an existing network's identity on upgrade —
+        // it is not required, because Floodgate itself does not require its key on
+        // backends (see NetworkKeyAuthority). A missing key.pem is a supported state.
         java.nio.file.Path keyPem = getDataFolder().getParentFile().toPath()   // plugins/
                 .resolve("floodgate")
                 .resolve("key.pem");
-        String effectiveKey = com.magmaguy.resourcepackmanager.http.NetworkKeyResolver
-                .deriveFromFloodgateKey(keyPem);
-        if (effectiveKey == null || effectiveKey.isBlank()) {
-            getLogger().warning("[RSPM] Floodgate key.pem missing from plugins/floodgate/key.pem on this proxy.");
-            getLogger().warning("[RSPM] RSPM cannot link to any backend without it. Install Floodgate on this");
-            getLogger().warning("[RSPM] proxy (it's required for Bedrock players to connect anyway), then");
-            getLogger().warning("[RSPM] restart. Plugin idle.");
-            return;
+        com.magmaguy.resourcepackmanager.proxy.NetworkKeyAuthority.Resolution keyResolution =
+                com.magmaguy.resourcepackmanager.proxy.NetworkKeyAuthority.resolve(
+                        getDataFolder().toPath(), keyPem);
+        String effectiveKey = keyResolution.key();
+        switch (keyResolution.source()) {
+            case PERSISTED -> getLogger().info("[RSPM] Network key loaded ✓");
+            case SEEDED_FROM_FLOODGATE -> getLogger().info(
+                    "[RSPM] Network key adopted from Floodgate key.pem and saved to network-key;"
+                            + " this network keeps its existing identity ✓");
+            case MINTED -> getLogger().info(
+                    "[RSPM] New network key generated and saved to network-key;"
+                            + " backends are provisioned automatically on first join ✓");
         }
-        getLogger().info("[RSPM] Network-key auto-derived from Floodgate key.pem ✓");
+        if (!keyResolution.persisted()) {
+            // Not fatal this boot, but the next restart mints a different key and
+            // silently unlinks every backend already provisioned with this one.
+            getLogger().severe("[RSPM] Could not save the network key: " + keyResolution.persistenceError());
+            getLogger().severe("[RSPM] Fix the permissions on the plugin folder — until then the key"
+                    + " changes on every restart.");
+        }
+
+        // Hands the key to backends that ask for it. Registered before anything else
+        // starts so a backend joining early is answered rather than ignored.
+        new BungeeNetworkKeyGrantListener(this, getLogger(), effectiveKey).register();
 
         MixerLogger mixerLogger = new MixerLogger() {
             @Override
@@ -80,7 +92,12 @@ public final class RspmBungeePlugin extends Plugin {
         File proxyPluginsDir = getDataFolder().getParentFile();
         File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(
                 proxyPluginsDir, "Geyser-BungeeCord");
-        GeyserBridgeExtensionInstaller.install(geyserPluginDir, logger);
+        if (config.geyserExtensionAutoInstall()) {
+            GeyserBridgeExtensionInstaller.install(geyserPluginDir, logger);
+        } else {
+            logger.info("Automatic Geyser extension installation is disabled by "
+                    + "geyser-extension-auto-install. Existing extension JARs are not removed automatically.");
+        }
 
         // Boot-time pre-deploy of the previous run's Geyser mappings — Geyser's
         // custom-item registry is boot-frozen, so anything we generate AFTER its
@@ -89,7 +106,8 @@ public final class RspmBungeePlugin extends Plugin {
         try {
             this.pluginUpdateCoordinator = ProxyPluginUpdateCoordinator.production(
                     workingDir.toPath(),
-                    geyserPluginDir == null ? null : geyserPluginDir.toPath(),
+                    !config.geyserExtensionAutoInstall() || geyserPluginDir == null
+                            ? null : geyserPluginDir.toPath(),
                     logger,
                     RspmBungeePlugin.class);
         } catch (Exception exception) {

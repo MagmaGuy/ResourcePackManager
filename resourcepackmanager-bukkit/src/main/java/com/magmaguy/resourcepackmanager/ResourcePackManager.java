@@ -19,6 +19,7 @@ import com.magmaguy.resourcepackmanager.bedrock.bridge.GeyserBridgeInstaller;
 import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
 import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
 import com.magmaguy.resourcepackmanager.commands.StatusCommand;
+import com.magmaguy.resourcepackmanager.commands.VerboseLoggingCommand;
 import com.magmaguy.resourcepackmanager.config.BedrockDisplayOffsetsConfig;
 import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderCommand;
@@ -49,6 +50,25 @@ public class ResourcePackManager extends JavaPlugin {
 
     public static JavaPlugin plugin;
     private NightbreakPluginUpdater.ListenerRegistration pluginUpdateListener;
+
+    /**
+     * The jar this plugin is running from; JavaPlugin#getFile() is protected,
+     * and the proxy install assist needs it to stage a byte-identical copy.
+     */
+    public java.io.File pluginJarFile() {
+        return getFile();
+    }
+
+    /**
+     * Covers the /reload case: ops already online get no fresh join event, so
+     * re-surface the proxy-missing-RSPM banner to any online op directly.
+     */
+    private void warnOnlineOpsIfProxyLinkMissing() {
+        if (!com.magmaguy.resourcepackmanager.network.ProxyLinkWarning.bedrockProxyLinkMissing()) return;
+        getServer().getOnlinePlayers().stream()
+                .filter(org.bukkit.entity.Player::isOp)
+                .forEach(com.magmaguy.resourcepackmanager.network.ProxyLinkWarning::warnPlayer);
+    }
 
     @Override
     public void onEnable() {
@@ -126,6 +146,7 @@ public class ResourcePackManager extends JavaPlugin {
         ThirdPartyResourcePack.shutdown();
         AutoHost.shutdown();
         GeyserBridgeInstaller.unregister();
+        com.magmaguy.resourcepackmanager.network.NetworkKeyProvisioning.unregister();
         GeyserPackProvider.unregister();
         HandlerList.unregisterAll(this);
         MagmaCore.shutdown(this);
@@ -165,9 +186,18 @@ public class ResourcePackManager extends JavaPlugin {
             Bukkit.getPluginManager().registerEvents(new PlayerManager(), this);
         }
         Bukkit.getPluginManager().registerEvents(new ItemsAdderWarningListener(), this);
+        // Self-gates on the proxy-missing-RSPM + Bedrock condition, so it is
+        // cheap to register unconditionally and stays silent otherwise.
+        Bukkit.getPluginManager().registerEvents(
+                new com.magmaguy.resourcepackmanager.network.ProxyLinkWarningListener(), this);
+        warnOnlineOpsIfProxyLinkMissing();
 
         initializationContext.step("Geyser Bridge");
         GeyserBridgeInstaller.register();
+
+        // Behind a proxy this asks for the network key on the first player join. It is
+        // a no-op on standalone servers and on backends that already hold a key.
+        com.magmaguy.resourcepackmanager.network.NetworkKeyProvisioning.register();
 
         initializationContext.step("Geyser Pack Provider");
         GeyserPackProvider.register();
@@ -180,6 +210,7 @@ public class ResourcePackManager extends JavaPlugin {
                 player -> NightbreakSetupControls.openPluginSetupShell(this, player, NIGHTBREAK_PLUGIN_SPEC),
                 sender -> ReloadCommand.reloadPlugin(sender));
         commandManager.registerCommand(new ReloadCommand());
+        commandManager.registerCommand(new VerboseLoggingCommand());
         commandManager.registerCommand(new DataComplianceRequestCommand());
         commandManager.registerCommand(new ItemsAdderCommand());
         commandManager.registerCommand(new StatusCommand());

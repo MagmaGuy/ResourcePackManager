@@ -22,10 +22,12 @@ import java.util.TreeMap;
 
 /**
  * Produces the final Geyser custom-item v2 mappings file from the generic pipeline's
- * {@link MappedItemRegistry} (one entry list per base item).
+ * {@link MappedItemRegistry} (one entry list per base item). Both modern
+ * {@code definition} mappings and pre-1.21.4 {@code legacy} mappings are emitted.
  *
- * <p>Field order per entry mirrors {@code GeyserBaseDefinition.MAP_CODEC}:
+ * <p>Modern-entry field order mirrors {@code GeyserBaseDefinition.MAP_CODEC}:
  * {@code type, bedrock_identifier, display_name, predicate, bedrock_options, components, model}.
+ * Legacy entries place the required {@code custom_model_data} directly after {@code type}.
  *
  * <p>Within each {@code items.<base>} array, entries are sorted by
  * (predicate count asc, bedrock_identifier asc) so unconditional defaults appear LAST
@@ -126,14 +128,17 @@ public final class GenericGeyserMappingBuilder {
 
     private static JsonObject buildGenericEntry(GeyserDefinitionEntry entry, String baseItem) {
         JsonObject def = new JsonObject();
-        def.addProperty("type", "definition");
+        def.addProperty("type", entry.isLegacy() ? "legacy" : "definition");
+        if (entry.isLegacy()) {
+            def.addProperty("custom_model_data", entry.legacyCustomModelData());
+        }
         def.addProperty("bedrock_identifier", entry.bedrockIdentifier());
         // No display_name on generic entries by default — the Java item itself carries a
         // display name via NBT at runtime; the Geyser mapping shouldn't pin one.
 
         // Predicate (omit if empty; emit as array even for a single entry — Rainbow uses
         // the array form consistently).
-        if (entry.predicates() != null && !entry.predicates().isEmpty()) {
+        if (!entry.isLegacy() && !entry.predicates().isEmpty()) {
             JsonArray preds = new JsonArray();
             for (PredicateRecord p : entry.predicates()) preds.add(p.toGeyserJson());
             def.add("predicate", preds);
@@ -160,7 +165,7 @@ public final class GenericGeyserMappingBuilder {
         }
 
         // model last (Rainbow order).
-        if (entry.javaItemModel() != null && !entry.javaItemModel().isEmpty()) {
+        if (!entry.isLegacy()) {
             def.addProperty("model", entry.javaItemModel());
         }
         return def;

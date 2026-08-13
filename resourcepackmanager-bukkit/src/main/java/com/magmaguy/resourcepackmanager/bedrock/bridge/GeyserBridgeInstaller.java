@@ -4,6 +4,7 @@ import com.magmaguy.easyminecraftgoals.customentity.BedrockCustomEntityBridgeReg
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.bridge.BridgeChannels;
 import com.magmaguy.resourcepackmanager.bridge.UniversalPluginJarInstaller;
+import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 
@@ -92,6 +93,14 @@ public final class GeyserBridgeInstaller {
     }
 
     private static void installBundledExtension() {
+        if (!DefaultConfig.isGeyserExtensionAutoInstall()) {
+            ResourcePackManager.plugin.getLogger().info(
+                    "Automatic Geyser extension installation is disabled by geyserExtensionAutoInstall. "
+                            + "Existing ResourcePackManager extension JARs are not removed automatically; "
+                            + "remove them while Geyser is stopped if the bridge must remain disabled.");
+            return;
+        }
+
         Plugin geyser = Bukkit.getPluginManager().getPlugin("Geyser-Spigot");
         if (geyser != null) {
             installIntoLocalGeyser(geyser);
@@ -145,6 +154,13 @@ public final class GeyserBridgeInstaller {
      * restart after Bukkit has already consumed its own update folder.
      */
     public static void stageDownloadedUpdate(Path updateJar) {
+        if (!DefaultConfig.isGeyserExtensionAutoInstall()) {
+            ResourcePackManager.plugin.getLogger().info(
+                    "Skipped staging the ResourcePackManager update for Geyser because "
+                            + "geyserExtensionAutoInstall is disabled.");
+            return;
+        }
+
         Plugin geyser = Bukkit.getPluginManager().getPlugin("Geyser-Spigot");
         if (geyser == null || updateJar == null) return;
         try {

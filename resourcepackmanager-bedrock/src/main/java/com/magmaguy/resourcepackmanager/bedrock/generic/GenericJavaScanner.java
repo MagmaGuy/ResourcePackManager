@@ -75,17 +75,9 @@ public final class GenericJavaScanner {
                 + legacyCount + " legacy overrides) across "
                 + namespaceDirs.length + " namespace(s).");
 
-        // Surface legacy / unsupported pack formats on the console (not just debug). These are
-        // the #1 cause of "my models are invisible on Bedrock" support tickets: RSPM can only
-        // convert the 1.21.4+ custom item system, and old (e.g. ItemsAdder) packs predating that
-        // either use legacy custom_model_data overrides or a layout RSPM can't read at all.
-        if (legacyCount > 0) {
-            //Kept short on purpose. The full explanation used to run to five lines of console, which
-            //made a "your models may not show up on Bedrock" note read like a crash report.
-            BedrockLog.warn("[BedrockConverter] " + legacyCount + " item(s) use the pre-1.21.4 model format; "
-                    + "these often do not render on Bedrock. Re-export in the 1.21.4+ item-definition "
-                    + "format if Bedrock models are missing.");
-        }
+        // Surface unsupported pack layouts on the console (not just debug). Legacy
+        // custom_model_data overrides are supported above; this warning is reserved for
+        // packs where neither modern definitions nor convertible legacy overrides exist.
         if (result.isEmpty() && looksLikeCustomPack(assetsDir, namespaceDirs)) {
             BedrockLog.warn("[BedrockConverter] This resource pack contains custom models/textures but NO "
                     + "convertible item definitions were found. It is almost certainly in a legacy/unsupported "
@@ -125,7 +117,8 @@ public final class GenericJavaScanner {
      * ItemsAdder and older packs can still expose custom items through legacy
      * {@code assets/minecraft/models/item/<base>.json} overrides. Those files declare
      * both the Java base item and the custom model data threshold, so synthesize a
-     * modern range_dispatch-shaped definition and let the normal converter handle it.
+     * range_dispatch-shaped tree for the normal asset converter while preserving the
+     * original value for Geyser's required {@code type=legacy} mapping.
      */
     private static void scanLegacyCustomModelOverrides(File assetsDir,
                                                        List<ItemsDefinition> out,
@@ -207,7 +200,8 @@ public final class GenericJavaScanner {
 
         JsonObject root = new JsonObject();
         root.add("model", dispatch);
-        return new ItemsDefinition(namespace, itemsRelPath, file, root, List.of(baseItem));
+        return ItemsDefinition.legacyCustomModelData(namespace, itemsRelPath, file, root,
+                baseItem, customModelData.getAsBigDecimal());
     }
 
     /**

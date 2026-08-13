@@ -10,6 +10,7 @@ import com.magmaguy.resourcepackmanager.bedrock.generic.GeyserDefinitionEntry;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ItemModelTreeWalker;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ItemsDefinition;
 import com.magmaguy.resourcepackmanager.bedrock.generic.MappedItemRegistry;
+import com.magmaguy.resourcepackmanager.bedrock.generic.PredicateRecord;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ResolvedLeaf;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ResolvedModel;
 import com.magmaguy.resourcepackmanager.bedrock.model.BedrockManifest;
@@ -527,15 +528,14 @@ public class BedrockConversion {
                             }
                         }
                         String itemsStem = def.itemsRelPath();
-                        String javaItemModel = def.itemIdentifier();
                         for (String base : baseItems) {
                             if (ctx.isCancellationRequested()) return;
                             String mappingHash = BedrockShortName.forBaseMapping(
                                     leaf.modelRef(), base, MappedItemRegistry.predicateShape(leaf.predicates()));
                             String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
-                            registry.addMapping(base, new GeyserDefinitionEntry(
+                            registry.addMapping(base, geyserEntry(
+                                    def,
                                     tierBedrockId,
-                                    javaItemModel,
                                     leaf.predicates(),
                                     iconKey,
                                     resolved.isHandheldVariant()
@@ -549,7 +549,7 @@ public class BedrockConversion {
                         flatEmitted++;
                     } else {
                         if (!emitGenericThreeD(leaf, resolved, modelHash, iconKey,
-                                def.itemIdentifier(),
+                                def,
                                 baseItems, registry, modelAssetsCache,
                                 mergedJavaPack, bedrockDir, iconTextureMap, exactAtlasCache,
                                 ctx::isCancellationRequested)) {
@@ -574,7 +574,7 @@ public class BedrockConversion {
                                              ResolvedModel resolved,
                                              String modelHash,
                                              String iconKey,
-                                             String javaItemModel,
+                                             ItemsDefinition definition,
                                              List<String> baseItems,
                                              MappedItemRegistry registry,
                                              Map<String, SharedModelAssets> modelAssetsCache,
@@ -659,7 +659,10 @@ public class BedrockConversion {
             }
             iconTextureMap.put(iconKey, iconRel);
 
-            shared = new SharedModelAssets(stitch, resultGeoId, animIds);
+            shared = new SharedModelAssets(
+                    stitch.bedrockTexturePath(),
+                    resultGeoId,
+                    animIds);
             modelAssetsCache.put(leaf.modelRef(), shared);
         } else {
             shared = modelAssetsCache.get(leaf.modelRef());
@@ -676,13 +679,13 @@ public class BedrockConversion {
 
             String result = FmmAttachableGenerator.writeAttachable(
                     tierBedrockId, attachableOutPath,
-                    shared.geometryId(), shared.stitch().bedrockTexturePath(),
+                    shared.geometryId(), shared.bedrockTexturePath(),
                     shared.animIds(), bedrockDir);
             if (result == null) continue;
 
-            registry.addMapping(base, new GeyserDefinitionEntry(
+            registry.addMapping(base, geyserEntry(
+                    definition,
                     tierBedrockId,
-                    javaItemModel,
                     leaf.predicates(),
                     iconKey,
                     resolved.isHandheldVariant()
@@ -692,8 +695,29 @@ public class BedrockConversion {
         return anyEmitted;
     }
 
+    private static GeyserDefinitionEntry geyserEntry(ItemsDefinition definition,
+                                                     String bedrockIdentifier,
+                                                     List<PredicateRecord> predicates,
+                                                     String iconKey,
+                                                     boolean handheld) {
+        if (definition.isLegacyCustomModelData()) {
+            return GeyserDefinitionEntry.legacy(
+                    bedrockIdentifier,
+                    definition.legacyCustomModelData(),
+                    predicates,
+                    iconKey,
+                    handheld);
+        }
+        return GeyserDefinitionEntry.definition(
+                bedrockIdentifier,
+                definition.itemIdentifier(),
+                predicates,
+                iconKey,
+                handheld);
+    }
+
     private record SharedModelAssets(
-            TextureStitcher.StitchResult stitch,
+            String bedrockTexturePath,
             String geometryId,
             FmmAnimationGenerator.AnimationIds animIds) {
     }

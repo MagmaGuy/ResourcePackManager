@@ -59,18 +59,29 @@ public class StatusCommand extends AdvancedCommand {
     public void execute(CommandData commandData) {
         CommandSender sender = commandData.getCommandSender();
 
+        // Top-of-report banner: the single most actionable misconfiguration a
+        // Bedrock operator can hit — proxy present, RSPM absent from it — where
+        // nothing else on this backend visibly breaks.
+        if (com.magmaguy.resourcepackmanager.network.ProxyLinkWarning.bedrockProxyLinkMissing()) {
+            Logger.sendMessage(sender, "&c&l⚠ Proxy is missing ResourcePackManager — Bedrock players get no pack.");
+            Logger.sendMessage(sender, "&c  Install RSPM on the proxy (staged under plugins/ResourcePackManager/");
+            Logger.sendMessage(sender, "&c  proxy-extension/) and restart it; details below.");
+            Logger.sendMessage(sender, "");
+        }
+
         // ---------- Plugin meta ----------
         Logger.sendMessage(sender, "&8&m----- &6&lRSPM Status &8&m-----");
         Logger.sendMessage(sender, "&7Version: &f" + ResourcePackManager.plugin.getDescription().getVersion());
         Logger.sendMessage(sender, "&7Deploy mode: &f" + (NetworkMode.isActive() ? "network-backend" : "standalone"));
         if (NetworkMode.isActive()) {
-            // Auto-derived from plugins/floodgate/key.pem; never a manual config field.
-            // Showing a non-secret hash prefix so operators can confirm proxy and
-            // backend derive the same key without exposing the access-token secret.
+            // A non-secret hash prefix, so an operator can compare this backend with the
+            // proxy without either side ever printing the key itself. Comparing these two
+            // lines is the fastest way to tell a broken link from a working one.
             String key = NetworkMode.getNetworkKey();
             Logger.sendMessage(sender, "&7Network key fingerprint: &f" + (key == null || key.isBlank()
-                    ? "&c(not derived — install Floodgate on this backend)"
+                    ? "&c(none yet — not linked to the proxy)"
                     : "&a" + networkKeyFingerprint(key)));
+            Logger.sendMessage(sender, "&7Network key source: &f" + describeKeySource(NetworkMode.getKeySource()));
         }
         Logger.sendMessage(sender, "");
 
@@ -247,6 +258,19 @@ public class StatusCommand extends AdvancedCommand {
         if (bytes < 1024 * 1024) return String.format("%.1f KiB", bytes / 1024.0);
         if (bytes < 1024L * 1024 * 1024) return String.format("%.2f MiB", bytes / (1024.0 * 1024));
         return String.format("%.2f GiB", bytes / (1024.0 * 1024 * 1024));
+    }
+
+    /**
+     * Explains where the key came from, so "not linked" carries its own next step
+     * instead of sending the operator to the wiki.
+     */
+    private static String describeKeySource(NetworkMode.KeySource source) {
+        return switch (source) {
+            case PROVISIONED -> "&aprovided by the proxy";
+            case PERSISTED -> "&asaved on this server";
+            case SEEDED_FROM_FLOODGATE -> "&aadopted from Floodgate's key";
+            case NONE -> "&cnot set — the proxy sends one when a player next connects here";
+        };
     }
 
     /** Stable, non-secret comparison value for proxy/backend diagnostics. */
