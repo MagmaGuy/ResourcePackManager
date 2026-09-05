@@ -4,51 +4,42 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.magmaguy.resourcepackmanager.bridge.UniversalPluginJarInspector;
-import com.magmaguy.resourcepackmanager.http.NetworkAccessToken;
 import com.magmaguy.resourcepackmanager.http.PackHttpServer;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.lifecycle.Startables;
-import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.utility.MountableFile;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Docker-only coverage for the real proxy HTTP/poll/merge/deploy/update path. */
-class NetworkSyncDockerSystemTest {
-    private static final DockerImageName IMAGE = DockerImageName.parse("nginx:1.27.4-alpine");
-    private static final int HTTP_PORT = 8080;
+/** Production HTTP/poll/merge/deploy/update behavior; no proxy or Geyser process is simulated. */
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
+class NetworkSyncFeatureTest {
     private static final int OFFSET = 1;
-    private static final String NETWORK_KEY = "rspm-docker-system-network-key";
+    private static final String NETWORK_KEY = "rspm-local-sync-test-key";
 
     @Test
     @Timeout(value = 3, unit = TimeUnit.MINUTES)
-    void mergesTwoIsolatedBackendsAndStagesProtectedExecutableUpdate(
+    void mergesTwoBackendsAndStagesProtectedExecutableUpdate(
             @TempDir Path tempDir) throws Exception {
-        Path nginxConfig = writeNginxConfig(tempDir);
         Fixture a = writeFixture(tempDir.resolve("backend-a"), "backend_a");
         Fixture b = writeFixture(tempDir.resolve("backend-b"), "backend_b");
         Path offeredUpdate = makeUniversal(
@@ -58,12 +49,10 @@ class NetworkSyncDockerSystemTest {
                 tempDir.resolve("proxy-root/plugins/ResourcePackManager.jar"),
                 "2.2.9", "proxy-old");
 
-        try (GenericContainer<?> backendA = backend(nginxConfig, a, offeredUpdate);
-             GenericContainer<?> backendB = backend(nginxConfig, b, null)) {
-            Startables.deepStart(Stream.of(backendA, backendB)).join();
-            assertEquals(List.of(HTTP_PORT), backendA.getExposedPorts());
-            assertEquals(List.of(HTTP_PORT), backendB.getExposedPorts());
-            assertNotEquals(backendA.getMappedPort(HTTP_PORT), backendB.getMappedPort(HTTP_PORT));
+        String previousRelay = System.setProperty("rspm.test.disableRemoteRelay", "true");
+        try (PackHttpServer backendA = backend(a, offeredUpdate);
+             PackHttpServer backendB = backend(b, null)) {
+            assertNotEquals(backendA.port(), backendB.port());
             assertUpdateRouteRejectsMissingToken(backendA);
 
             BackendListProvider backends = () -> List.of(
@@ -72,108 +61,93 @@ class NetworkSyncDockerSystemTest {
             Path geyser = tempDir.resolve("proxy-plugins/Geyser-Velocity");
             Files.createDirectories(geyser);
             AtomicReference<MergedPack> published = new AtomicReference<>();
+            List<String> diagnostics = new ArrayList<>();
             ProxyPluginUpdateCoordinator coordinator = new ProxyPluginUpdateCoordinator(
                     tempDir.resolve("proxy-root/update-work"),
                     running,
                     geyser,
-                    logger());
+                    logger(diagnostics));
             NetworkSync sync = new NetworkSync(
-                    logger(), noScheduler(), backends, work.toFile(), OFFSET,
-                    mixerLogger(), geyser.toFile(), NETWORK_KEY, published::set,
+                    logger(diagnostics), noScheduler(), backends, work.toFile(), OFFSET,
+                    mixerLogger(diagnostics), geyser.toFile(), NETWORK_KEY, published::set,
                     coordinator::accept);
 
-            sync.pollOnce();
-            assertNull(published.get(), "first poll only establishes the stability baseline");
-            assertTrue(Files.isRegularFile(coordinator.pendingJar()));
-            assertTrue(Files.isRegularFile(coordinator.pendingManifest()));
-            assertArrayEquals(Files.readAllBytes(offeredUpdate),
-                    Files.readAllBytes(coordinator.pendingJar()));
-            assertArrayEquals("proxy-old".getBytes(StandardCharsets.UTF_8), marker(running));
-            assertFalse(Files.exists(
-                    geyser.resolve("extensions/update/ResourcePackManager.jar")));
-            sync.pollOnce();
+            try {
+                sync.pollOnce();
+                diagnostics.add("First poll: " + sync.snapshot().fetchOutcomes());
+                assertNull(published.get(), "first poll only establishes the stability baseline");
+                assertTrue(Files.isRegularFile(coordinator.pendingJar()));
+                assertTrue(Files.isRegularFile(coordinator.pendingManifest()));
+                assertArrayEquals(Files.readAllBytes(offeredUpdate),
+                        Files.readAllBytes(coordinator.pendingJar()));
+                assertArrayEquals("proxy-old".getBytes(StandardCharsets.UTF_8), marker(running));
+                assertFalse(Files.exists(
+                        geyser.resolve("extensions/update/ResourcePackManager.jar")));
+                sync.pollOnce();
 
-            MergedPack merged = published.get();
-            assertNotNull(merged);
-            assertTrue(merged.packFile().isFile());
-            assertPackContains(merged.packFile().toPath(), a, b);
+                MergedPack merged = published.get();
+                assertNotNull(merged, () -> String.join("\n", diagnostics) + "\nSecond poll: " + sync.snapshot().fetchOutcomes());
+                assertTrue(merged.packFile().isFile());
+                assertPackContains(merged.packFile().toPath(), a, b);
 
-            Path mappings = work.resolve("merged/rspm_geyser_mappings.json");
-            Path deployed = geyser.resolve("custom_mappings/rspm_geyser_mappings.json");
-            assertMappingsContain(mappings, a, b);
-            assertTrue(Files.isRegularFile(deployed));
-            assertEquals(-1L, Files.mismatch(mappings, deployed));
+                Path mappings = work.resolve("merged/rspm_geyser_mappings.json");
+                Path deployed = geyser.resolve("custom_mappings/rspm_geyser_mappings.json");
+                assertMappingsContain(mappings, a, b);
+                assertTrue(Files.isRegularFile(deployed));
+                assertEquals(-1L, Files.mismatch(mappings, deployed));
+            } finally {
+                sync.stop();
+            }
+        } finally {
+            if (previousRelay == null) System.clearProperty("rspm.test.disableRemoteRelay");
+            else System.setProperty("rspm.test.disableRemoteRelay", previousRelay);
         }
     }
 
-    private static GenericContainer<?> backend(
-            Path nginxConfig, Fixture fixture, Path executableUpdate) {
-        GenericContainer<?> container = new GenericContainer<>(IMAGE)
-                .withExposedPorts(HTTP_PORT)
-                .withCopyFileToContainer(MountableFile.forHostPath(nginxConfig.toAbsolutePath().toString()),
-                        "/etc/nginx/conf.d/default.conf")
-                .withCopyFileToContainer(MountableFile.forHostPath(fixture.pack().toAbsolutePath().toString()),
-                        "/usr/share/nginx/html/bedrock.zip")
-                .withCopyFileToContainer(MountableFile.forHostPath(fixture.mappings().toAbsolutePath().toString()),
-                        "/usr/share/nginx/html/mappings.json")
-                .waitingFor(Wait.forHttp("/bedrock.zip").forPort(HTTP_PORT).forStatusCode(200)
-                        .withStartupTimeout(Duration.ofSeconds(45)));
-        if (executableUpdate != null) {
-            container.withCopyFileToContainer(
-                    MountableFile.forHostPath(executableUpdate.toAbsolutePath().toString()),
-                    "/usr/share/nginx/html/rspm-update.jar");
+    private static PackHttpServer backend(Fixture fixture, Path executableUpdate) throws IOException {
+        PackHttpServer server = PackHttpServer.start(fixture.pack().toFile(), 0, PackHttpServer.BEDROCK_PACK_PATH);
+        try {
+            server.registerFileRoute(PackHttpServer.GEYSER_MAPPINGS_PATH, fixture.mappings().toFile(), "application/json");
+            if (executableUpdate != null)
+                server.registerProtectedExecutableRoute(PackHttpServer.EXECUTABLE_UPDATE_PATH,
+                        executableUpdate::toFile, () -> NETWORK_KEY);
+            return server;
+        } catch (RuntimeException | Error failure) {
+            server.close();
+            throw failure;
         }
-        return container;
     }
 
-    private static BackendListProvider.Backend descriptor(String name, GenericContainer<?> container) {
-        int mappedHttpPort = container.getMappedPort(HTTP_PORT);
-        return new BackendListProvider.Backend(name, container.getHost(), mappedHttpPort - OFFSET);
+    private static BackendListProvider.Backend descriptor(String name, PackHttpServer server) {
+        return new BackendListProvider.Backend(name, "127.0.0.1", server.port() - OFFSET);
     }
 
-    private static Path writeNginxConfig(Path tempDir) throws IOException {
-        Path config = tempDir.resolve("rspm-nginx.conf");
-        Files.writeString(config, """
-                server {
-                    listen 8080;
-                    server_name _;
-                    root /usr/share/nginx/html;
-                    location = /rspm-update.jar {
-                        if ($http_authorization != "%s") { return 401; }
-                        add_header Cache-Control "no-store" always;
-                        add_header X-Content-Type-Options "nosniff" always;
-                        try_files $uri =404;
-                    }
-                    location / { try_files $uri =404; }
-                }
-                """.formatted(NetworkAccessToken.authorizationValue(
-                        PackHttpServer.EXECUTABLE_UPDATE_TOKEN_DOMAIN, NETWORK_KEY)),
-                StandardCharsets.UTF_8);
-        return config;
-    }
-
-    private static void assertUpdateRouteRejectsMissingToken(
-            GenericContainer<?> backend) throws Exception {
-        String host = backend.getHost();
-        if (host.indexOf(':') >= 0 && !host.startsWith("[")) {
-            host = "[" + host + "]";
+    private static void assertUpdateRouteRejectsMissingToken(PackHttpServer backend) throws Exception {
+        URI updateUri = URI.create("http://127.0.0.1:" + backend.port() + PackHttpServer.EXECUTABLE_UPDATE_PATH);
+        HttpURLConnection connection = (HttpURLConnection) updateUri.toURL().openConnection();
+        connection.setConnectTimeout(2000);
+        connection.setReadTimeout(2000);
+        try {
+            assertEquals(401, connection.getResponseCode());
+        } finally {
+            connection.disconnect();
         }
-        URI updateUri = URI.create("http://" + host + ":"
-                + backend.getMappedPort(HTTP_PORT)
-                + PackHttpServer.EXECUTABLE_UPDATE_PATH);
-        HttpResponse<Void> response = HttpClient.newHttpClient().send(
-                HttpRequest.newBuilder(updateUri).GET().build(),
-                HttpResponse.BodyHandlers.discarding());
-        assertEquals(401, response.statusCode());
     }
 
     private static Fixture writeFixture(Path directory, String marker)
-            throws IOException {
+            throws Exception {
         Files.createDirectories(directory);
         Path pack = directory.resolve("bedrock.zip");
         String texture = "textures/items/" + marker + ".png";
         UUID header = UUID.nameUUIDFromBytes((marker + ":header").getBytes(StandardCharsets.UTF_8));
         UUID module = UUID.nameUUIDFromBytes((marker + ":module").getBytes(StandardCharsets.UTF_8));
+        String identifier = "rspm:" + marker;
+        Path mappings = directory.resolve("mappings.json");
+        Files.writeString(mappings, """
+                {"format_version":2,"items":{"minecraft:leather_horse_armor":[{
+                "type":"definition","bedrock_identifier":"%s",
+                "bedrock_options":{"icon":"%s_item"},"model":"%s"}]}}
+                """.formatted(identifier, marker, identifier), StandardCharsets.UTF_8);
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(pack.toFile()))) {
             entry(zip, "manifest.json", """
                     {"format_version":2,"header":{"name":"%s","description":"system test",
@@ -185,14 +159,13 @@ class NetworkSyncDockerSystemTest {
                     "%s_item":{"textures":"textures/items/%s"}}}
                     """.formatted(marker, marker, marker));
             entry(zip, texture, marker);
+            byte[] mappingBytes = Files.readAllBytes(mappings);
+            entry(zip, "rspm_artifact_set.json", """
+                    {"formatVersion":1,"generationId":"%s","mappingsPresent":true,
+                    "mappingsSha1":"%s","mappingsSize":%d}
+                    """.formatted(header, java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-1").digest(mappingBytes)), mappingBytes.length));
         }
-        String identifier = "rspm:" + marker;
-        Path mappings = directory.resolve("mappings.json");
-        Files.writeString(mappings, """
-                {"format_version":2,"items":{"minecraft:leather_horse_armor":[{
-                "type":"definition","bedrock_identifier":"%s",
-                "bedrock_options":{"icon":"%s_item"},"model":"%s"}]}}
-                """.formatted(identifier, marker, identifier), StandardCharsets.UTF_8);
         return new Fixture(pack, mappings, texture, marker, identifier);
     }
 
@@ -261,19 +234,19 @@ class NetworkSyncDockerSystemTest {
         }
     }
 
-    private static ProxyLogger logger() {
+    private static ProxyLogger logger(List<String> diagnostics) {
         return new ProxyLogger() {
-            public void info(String message) { }
-            public void warn(String message) { }
-            public void warn(String message, Throwable throwable) { }
+            public void info(String message) { diagnostics.add(message); }
+            public void warn(String message) { diagnostics.add(message); }
+            public void warn(String message, Throwable throwable) { diagnostics.add(message + ": " + throwable); }
         };
     }
 
-    private static MixerLogger mixerLogger() {
+    private static MixerLogger mixerLogger(List<String> diagnostics) {
         return new MixerLogger() {
-            public void info(String message) { }
-            public void warn(String message) { }
-            public void collision(String message) { }
+            public void info(String message) { diagnostics.add(message); }
+            public void warn(String message) { diagnostics.add(message); }
+            public void collision(String message) { diagnostics.add(message); }
         };
     }
 

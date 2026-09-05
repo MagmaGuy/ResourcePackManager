@@ -120,8 +120,6 @@
                 <version>${bungeecord.version}</version>
                 <scope>provided</scope>
             </dependency>
-            <!-- Kept for the opt-in resourcepackmanager-system-tests module
-                 (activated via -Prspm-system-tests), which inherits these. -->
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>
@@ -164,20 +162,6 @@
             </plugins>
         </pluginManagement>
     </build>
-
-    <!--
-      Deliberately inactive. The system-test module starts Docker containers and
-      must never become part of the normal build, package, or release lifecycle.
-      Run it explicitly with -Prspm-system-tests.
-    -->
-    <profiles>
-        <profile>
-            <id>rspm-system-tests</id>
-            <modules>
-                <module>resourcepackmanager-system-tests</module>
-            </modules>
-        </profile>
-    </profiles>
 
     <distributionManagement>
         <snapshotRepository>

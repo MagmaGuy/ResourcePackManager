@@ -50,7 +50,7 @@ This is a multi-module Maven project (parent artifact `ResourcePackManager-paren
 | `resourcepackmanager-proxy-common` | Shared proxy logic for network sync, Geyser deployment, and verified proxy updates. |
 | `resourcepackmanager-velocity` | Internal Velocity adapter included in the universal jar. |
 | `resourcepackmanager-bungee` | Internal BungeeCord/Waterfall adapter included in the universal jar. |
-| `resourcepackmanager-system-tests` | Explicit opt-in Docker and real-proxy system tests; excluded from normal builds. |
+| `resourcepackmanager-system-tests` | Real-proxy system-test procedures and fixtures; not a Maven module. |
 
 ### One universal artifact
 
@@ -274,23 +274,15 @@ Run the real disposable Velocity and Bungee/Geyser lifecycle lab explicitly:
 ./resourcepackmanager-system-tests/Invoke-RspmProxySystemTests.ps1
 ```
 
-Run the distributed Docker-hosting lab explicitly:
+The native network-sync check uses two production HTTP servers, temporary
+packs and mappings, and the real updater. No Docker or Minecraft runtime is needed:
 
 ```powershell
-./resourcepackmanager-system-tests/Invoke-RspmSystemTests.ps1
+mvn --no-transfer-progress -pl resourcepackmanager-proxy-common -am test -Dtest=NetworkSyncFeatureTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-The equivalent Maven command for the Docker lane is:
-
-```powershell
-mvn --no-transfer-progress -Prspm-system-tests -pl :resourcepackmanager-system-tests -am verify
-```
-
-Selecting that profile is intentional authorization to use Docker. The runner
-fails fast when the Docker CLI or daemon is unavailable rather than silently
-skipping the system test. See
-[`resourcepackmanager-system-tests/README.md`](resourcepackmanager-system-tests/README.md)
-for fixture isolation, cleanup, platform selection, and troubleshooting.
+See [the system-test boundaries](resourcepackmanager-system-tests/README.md)
+for what still requires the real proxy/Geyser lifecycle.
 
 ## Links
 
