@@ -221,6 +221,10 @@ public class StatusCommand extends AdvancedCommand {
         if (externalHostCfg != null && !externalHostCfg.isBlank()) {
             Logger.sendMessage(sender, "&7selfHostExternalHost (config): &f" + externalHostCfg);
         }
+        String externalUrlCfg = DefaultConfig.getSelfHostExternalUrl();
+        if (externalUrlCfg != null && !externalUrlCfg.isBlank()) {
+            Logger.sendMessage(sender, "&7selfHostExternalUrl (config): &f" + externalUrlCfg);
+        }
         int selfPort = DefaultConfig.getSelfHostPort();
         Logger.sendMessage(sender, "&7selfHostPort: &f"
                 + (selfPort < 0 ? "auto (MC port + " + DefaultConfig.getNetworkHttpOffset() + ")" : String.valueOf(selfPort)));

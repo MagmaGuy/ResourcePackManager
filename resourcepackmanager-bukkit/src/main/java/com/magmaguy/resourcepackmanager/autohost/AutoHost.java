@@ -651,7 +651,14 @@ public class AutoHost {
         if (!run.active() || Mix.getFinalResourcePack() == null) return false;
 
         // Layer 1: heuristic check on resolved external host.
-        String host = resolveExternalHost(run);
+        String host;
+        try {
+            java.net.URI externalUrl = SelfHostPublicUrl.parse(DefaultConfig.getSelfHostExternalUrl());
+            host = externalUrl == null ? resolveExternalHost(run) : externalUrl.getHost();
+        } catch (IllegalArgumentException exception) {
+            Logger.warn(exception.getMessage());
+            return false;
+        }
         if (!run.active()) return false;
         if (host == null || isNonRoutableHost(host)) {
             RSPLogger.detail("Self-host check: local pack link is not public"
@@ -1367,14 +1374,21 @@ public class AutoHost {
         if (!DefaultConfig.isSelfHostEnabled() && !DefaultConfig.isSelfHostForce()) return false;
         File pack = Mix.getFinalResourcePack();
         if (pack == null) return false;
+        java.net.URI externalUrl;
+        try {
+            externalUrl = SelfHostPublicUrl.parse(DefaultConfig.getSelfHostExternalUrl());
+        } catch (IllegalArgumentException exception) {
+            Logger.warn(exception.getMessage());
+            return false;
+        }
         // In network mode the server may already be running (started by
         // startBackendHttpServerIfNeeded for the Bedrock-output routes). Reuse it.
         if (selfHostServer != null) {
             if (!run.active()) return false;
             if (selfHostedUrl == null) {
-                String host = resolveExternalHost(run);
-                if (!run.active() || host == null) return false;
-                selfHostedUrl = selfHostServer.urlOn(host);
+                String url = selfHostUrl(run, selfHostServer, externalUrl);
+                if (!run.active() || url == null) return false;
+                selfHostedUrl = url;
             }
             return true;
         }
@@ -1386,17 +1400,23 @@ public class AutoHost {
                 return false;
             }
             selfHostServer = server;
-            String host = resolveExternalHost(run);
-            if (!run.active() || host == null) {
+            String url = selfHostUrl(run, server, externalUrl);
+            if (!run.active() || url == null) {
                 server.close();
                 return false;
             }
-            selfHostedUrl = server.urlOn(host);
+            selfHostedUrl = url;
             return true;
         } catch (IOException e) {
             Logger.warn("Self-host fallback failed: " + e.getMessage());
             return false;
         }
+    }
+
+    private static String selfHostUrl(LifecycleRun run, PackHttpServer server, java.net.URI externalUrl) {
+        if (externalUrl != null) return externalUrl.toASCIIString();
+        String host = resolveExternalHost(run);
+        return host == null ? null : server.urlOn(host);
     }
 
     /**
@@ -1603,6 +1623,12 @@ public class AutoHost {
      * that case), so calling this from a command thread is safe and cheap.
      */
     public static String currentResolvedHost() {
+        try {
+            java.net.URI externalUrl = SelfHostPublicUrl.parse(DefaultConfig.getSelfHostExternalUrl());
+            if (externalUrl != null) return externalUrl.getHost();
+        } catch (IllegalArgumentException exception) {
+            return "(invalid selfHostExternalUrl)";
+        }
         return resolveExternalHost(false);
     }
 

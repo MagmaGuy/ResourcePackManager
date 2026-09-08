@@ -43,6 +43,8 @@ public class DefaultConfig extends ConfigurationFile {
     @Getter
     private static String selfHostExternalHost = "";
     @Getter
+    private static String selfHostExternalUrl = "";
+    @Getter
     private static boolean selfHostForce = false;
     @Getter
     private static boolean preferSelfHost = true;
@@ -229,6 +231,19 @@ public class DefaultConfig extends ConfigurationFile {
                         "and the plugin will switch to remote hosting. Set this explicitly to your public",
                         "hostname (e.g. play.example.com) for the most reliable self-host setup."),
                 fileConfiguration, "selfHostExternalHost", "");
+
+        selfHostExternalUrl = ConfigurationEngine.setString(
+                List.of(
+                        "Optional complete URL players use to download the self-hosted Java resource pack.",
+                        "Example: https://packs.example.com/rspm.zip (HTTPS defaults to external port 443).",
+                        "Leave empty to keep the existing host detection and selfHostExternalHost/selfHostPort behavior.",
+                        "When set, this exact URL is used for player delivery and the external reachability probe.",
+                        "Include the public pack path; no /rspm.zip suffix is added automatically.",
+                        "selfHostPort still controls the internal HTTP listener. Backend/proxy polling is unchanged.",
+                        "Your reverse proxy must route this URL to the internal /rspm.zip endpoint and handle TLS.",
+                        "Only HTTP/HTTPS URLs without embedded credentials or fragments are accepted.",
+                        "An invalid value prevents self-hosting; normal remote-hosting fallback remains available."),
+                fileConfiguration, "selfHostExternalUrl", "");
 
         selfHostForce = ConfigurationEngine.setBoolean(
                 List.of(
