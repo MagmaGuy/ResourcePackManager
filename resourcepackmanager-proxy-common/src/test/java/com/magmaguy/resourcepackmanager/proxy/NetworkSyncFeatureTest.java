@@ -23,6 +23,11 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -35,6 +40,76 @@ import static org.junit.jupiter.api.Assertions.*;
 class NetworkSyncFeatureTest {
     private static final int OFFSET = 1;
     private static final String NETWORK_KEY = "rspm-local-sync-test-key";
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void overlappingPollsDoNotRepeatMergeOrAccumulateScratch(@TempDir Path tempDir) throws Exception {
+        Fixture fixture = writeFixture(tempDir.resolve("backend"), "single_backend");
+        List<String> diagnostics = new CopyOnWriteArrayList<>();
+        AtomicInteger merges = new AtomicInteger();
+        AtomicInteger publications = new AtomicInteger();
+        CountDownLatch mergeEntered = new CountDownLatch(1);
+        CountDownLatch finishMerge = new CountDownLatch(1);
+        ProxyLogger blockingLogger = new ProxyLogger() {
+            public void info(String message) {
+                diagnostics.add(message);
+                if (!message.startsWith("NetworkSync: inbox stabilized")) return;
+                if (merges.incrementAndGet() != 1) return;
+                mergeEntered.countDown();
+                try {
+                    if (!finishMerge.await(10, TimeUnit.SECONDS))
+                        throw new AssertionError("merge was never released");
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(exception);
+                }
+            }
+            public void warn(String message) { diagnostics.add(message); }
+            public void warn(String message, Throwable failure) { diagnostics.add(message + ": " + failure); }
+        };
+        String previousRelay = System.setProperty("rspm.test.disableRemoteRelay", "true");
+        var workers = Executors.newFixedThreadPool(4);
+        NetworkSync sync = null;
+        try (PackHttpServer backend = backend(fixture, null)) {
+            Path work = tempDir.resolve("work");
+            Path geyser = tempDir.resolve("Geyser-Velocity");
+            Files.createDirectories(geyser);
+            sync = new NetworkSync(blockingLogger, noScheduler(),
+                    () -> List.of(descriptor("single", backend)), work.toFile(), OFFSET,
+                    mixerLogger(diagnostics), geyser.toFile(), NETWORK_KEY,
+                    pack -> publications.incrementAndGet(), ignored -> false);
+            sync.pollOnce(); // Establish stable input hashes.
+            NetworkSync active = sync;
+            Future<?> firstMerge = workers.submit(active::pollOnce);
+            assertTrue(mergeEntered.await(5, TimeUnit.SECONDS), () -> String.join("\n", diagnostics));
+            List<Future<?>> overlapping = new ArrayList<>();
+            for (int i = 0; i < 12; i++) overlapping.add(workers.submit(active::pollOnce));
+            for (Future<?> poll : overlapping) poll.get(3, TimeUnit.SECONDS);
+            assertEquals(1, merges.get(), "overlapping scheduler dispatch must not start another merge");
+            assertEquals(0, publications.get());
+            assertTrue(diagnostics.stream().anyMatch(line -> line.contains("skipping overlapping poll")));
+            finishMerge.countDown();
+            firstMerge.get(10, TimeUnit.SECONDS);
+            assertEquals(1, publications.get(), () -> String.join("\n", diagnostics));
+            assertPackContains(active.current().packFile().toPath(), fixture);
+            assertMappingsContain(work.resolve("merged/rspm_geyser_mappings.json"), fixture);
+            for (int i = 0; i < 20; i++) active.pollOnce();
+            assertEquals(1, merges.get(), "unchanged inputs must not repeatedly merge");
+            assertEquals(1, publications.get());
+            try (var paths = Files.walk(work)) {
+                assertEquals(List.of(), paths.filter(path -> path.getFileName().toString()
+                        .startsWith("_bedrock_merge_scratch_") || path.getFileName().toString()
+                        .startsWith(".rspm-network-merge-")).toList(), "completed merges must clean staging");
+            }
+        } finally {
+            finishMerge.countDown();
+            workers.shutdownNow();
+            assertTrue(workers.awaitTermination(5, TimeUnit.SECONDS));
+            if (sync != null) sync.stop();
+            if (previousRelay == null) System.clearProperty("rspm.test.disableRemoteRelay");
+            else System.setProperty("rspm.test.disableRemoteRelay", previousRelay);
+        }
+    }
 
     @Test
     @Timeout(value = 3, unit = TimeUnit.MINUTES)
