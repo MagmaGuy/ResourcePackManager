@@ -7,6 +7,7 @@ import com.magmaguy.resourcepackmanager.proxy.GeyserMappingsDeployer;
 import com.magmaguy.resourcepackmanager.proxy.MergedPack;
 import com.magmaguy.resourcepackmanager.proxy.MergedOutputPublication;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
+import com.magmaguy.resourcepackmanager.proxy.RspmProxyConfig;
 import com.magmaguy.resourcepackmanager.proxy.ProxyPluginUpdateCoordinator;
 import net.md_5.bungee.api.ChatColor;
 import net.md_5.bungee.api.chat.BaseComponent;
@@ -19,7 +20,7 @@ import java.io.File;
 public final class RspmBungeePlugin extends Plugin {
 
     private BungeeProxyLogger logger;
-    private RspmBungeeConfig config;
+    private RspmProxyConfig config;
     private NetworkSync sync;
     private ProxyPluginUpdateCoordinator pluginUpdateCoordinator;
     private GeyserBinder bedrock;
@@ -29,7 +30,7 @@ public final class RspmBungeePlugin extends Plugin {
         this.logger = new BungeeProxyLogger(getLogger());
 
         try {
-            this.config = RspmBungeeConfig.loadOrCreate(getDataFolder().toPath());
+            this.config = RspmProxyConfig.loadOrCreate(getDataFolder().toPath());
         } catch (Exception e) {
             getLogger().severe("Failed to load config; plugin will not start.");
             return;

@@ -532,23 +532,48 @@ public class AutoHost {
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, HOST_RETRY_PERIOD_TICKS);
     }
 
+    /** How the Java pack reaches players this lifecycle. */
+    enum JavaHostingRoute {FORCED_SELF_HOST, SELF_HOST_FIRST, REMOTE}
+
+    /** Selects Java delivery from hosting preferences; network topology owns HTTP lifetime separately. */
+    static JavaHostingRoute resolveJavaHostingRoute(boolean selfHostForce,
+                                                    boolean preferSelfHost,
+                                                    boolean selfHostEnabled) {
+        if (selfHostForce) return JavaHostingRoute.FORCED_SELF_HOST;
+        if (preferSelfHost && selfHostEnabled) return JavaHostingRoute.SELF_HOST_FIRST;
+        return JavaHostingRoute.REMOTE;
+    }
+
+    /**
+     * Whether {@link #tearDownSelfHost()} may close the HTTP server. Standalone
+     * it must (release the port); in network mode it must not — the same server
+     * is the proxy-facing backend endpoint for {@code /bedrock.zip} and
+     * {@code /mappings.json}, and a failed Java probe must not sever that.
+     */
+    static boolean shouldCloseServerOnTeardown(boolean networkModeActive) {
+        return !networkModeActive;
+    }
+
     private static void checkFileExistence(LifecycleRun run) {
         if (!run.active()) return;
+        JavaHostingRoute route = resolveJavaHostingRoute(
+                DefaultConfig.isSelfHostForce(),
+                DefaultConfig.isPreferSelfHost(),
+                DefaultConfig.isSelfHostEnabled());
+
         // selfHostForce short-circuits everything — straight to self-host, no probe, no remote.
-        if (DefaultConfig.isSelfHostForce()) {
+        if (route == JavaHostingRoute.FORCED_SELF_HOST) {
             fallbackToSelfHost(run);
             return;
         }
 
-        // preferSelfHost (new default true): try self-host first, run a HYBRID sanity check
-        // (RFC1918 heuristic on resolved host + localhost self-probe of the HTTP server),
-        // fall back to remote upload only if either check fails. See DefaultConfig#preferSelfHost
-        // javadoc for the limitations of this no-external-probe approach.
-        if (DefaultConfig.isPreferSelfHost()
-                && DefaultConfig.isSelfHostEnabled()
-                && !NetworkMode.isActive()) {
+        // Self-host-first (the preferSelfHost default): commit only after the
+        // three-layer reachability check in trySelfHostFirst passes, falling back
+        // to remote upload when any layer fails. See resolveJavaHostingRoute for
+        // why proxy topology deliberately plays no part in this decision.
+        if (route == JavaHostingRoute.SELF_HOST_FIRST) {
             if (trySelfHostFirst(run)) {
-                return; // Self-host passed both checks — we're done.
+                return; // Self-host passed the reachability checks — we're done.
             }
             // Either the host looked non-routable, or the local HTTP server didn't
             // respond correctly to a localhost probe. Fall through to remote.
@@ -813,20 +838,26 @@ public class AutoHost {
      * reach.
      *
      * <p>Resets {@link #selfHostedUrl} + {@link #done} so the caller's
-     * remote-upload path can re-enter cleanly. The server itself is closed
-     * (and its port released) — we'll re-create it on demand if a later
-     * upload-failure path calls {@link #fallbackToSelfHost()} again.</p>
+     * remote-upload path can re-enter cleanly. Standalone, the server itself is
+     * also closed (and its port released) — we'll re-create it on demand if a
+     * later upload-failure path calls {@link #fallbackToSelfHost} again. In
+     * network mode the server MUST survive: it doubles as the always-on backend
+     * server the proxy pulls {@code /bedrock.zip} and {@code /mappings.json}
+     * from, so a failed <em>Java</em> reachability probe only stops the Java
+     * URL from being announced.</p>
      */
     private static void tearDownSelfHost() {
-        PackHttpServer server = selfHostServer;
-        if (server != null) {
-            try {
-                server.close();
-            } catch (Exception ignored) {
-                // expected during teardown
+        if (shouldCloseServerOnTeardown(NetworkMode.isActive())) {
+            PackHttpServer server = selfHostServer;
+            if (server != null) {
+                try {
+                    server.close();
+                } catch (Exception ignored) {
+                    // expected during teardown
+                }
             }
+            selfHostServer = null;
         }
-        selfHostServer = null;
         selfHostedUrl = null;
         done = false;
     }

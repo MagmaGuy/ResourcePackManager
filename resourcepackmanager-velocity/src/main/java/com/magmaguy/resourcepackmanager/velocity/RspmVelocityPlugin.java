@@ -9,6 +9,7 @@ import com.magmaguy.resourcepackmanager.proxy.MergedPack;
 import com.magmaguy.resourcepackmanager.proxy.MergedOutputPublication;
 import com.magmaguy.resourcepackmanager.proxy.NetworkKeyAuthority;
 import com.magmaguy.resourcepackmanager.proxy.NetworkSync;
+import com.magmaguy.resourcepackmanager.proxy.RspmProxyConfig;
 import com.magmaguy.resourcepackmanager.proxy.ProxyPluginUpdateCoordinator;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
@@ -43,7 +44,7 @@ public final class RspmVelocityPlugin {
     private final Path dataDir;
 
     private VelocityProxyLogger logger;
-    private RspmVelocityConfig config;
+    private RspmProxyConfig config;
     private NetworkSync sync;
     private ProxyPluginUpdateCoordinator pluginUpdateCoordinator;
     private GeyserBinder bedrock;
@@ -61,7 +62,7 @@ public final class RspmVelocityPlugin {
     public void onProxyInitialize(ProxyInitializeEvent event) {
         this.logger = new VelocityProxyLogger(slf4j);
         try {
-            this.config = RspmVelocityConfig.loadOrCreate(dataDir);
+            this.config = RspmProxyConfig.loadOrCreate(dataDir);
         } catch (Exception e) {
             slf4j.error("Failed to load config; plugin will not start.", e);
             return;

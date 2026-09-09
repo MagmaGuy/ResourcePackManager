@@ -1,4 +1,4 @@
-package com.magmaguy.resourcepackmanager.velocity;
+package com.magmaguy.resourcepackmanager.proxy;
 
 import org.yaml.snakeyaml.Yaml;
 
@@ -9,25 +9,25 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-final class RspmVelocityConfig {
+public final class RspmProxyConfig {
 
     private final int networkHttpOffset;
     private final boolean geyserExtensionAutoInstall;
 
-    private RspmVelocityConfig(int networkHttpOffset, boolean geyserExtensionAutoInstall) {
+    private RspmProxyConfig(int networkHttpOffset, boolean geyserExtensionAutoInstall) {
         this.networkHttpOffset = networkHttpOffset;
         this.geyserExtensionAutoInstall = geyserExtensionAutoInstall;
     }
 
-    int networkHttpOffset() {
+    public int networkHttpOffset() {
         return networkHttpOffset;
     }
 
-    boolean geyserExtensionAutoInstall() {
+    public boolean geyserExtensionAutoInstall() {
         return geyserExtensionAutoInstall;
     }
 
-    static RspmVelocityConfig loadOrCreate(Path dataDir) throws IOException {
+    public static RspmProxyConfig loadOrCreate(Path dataDir) throws IOException {
         Files.createDirectories(dataDir);
         Path configFile = dataDir.resolve("config.yml");
         if (!Files.exists(configFile)) {
@@ -39,10 +39,12 @@ final class RspmVelocityConfig {
             if (data == null) data = new LinkedHashMap<>();
             // network-key was removed as a config option in pre-release. It used to be
             // a manual paste from the backend log, but typos in the pasted value
-            // silently broke the proxy↔backend link. The key is now derived solely
-            // from plugins/floodgate/key.pem on this proxy — Floodgate already
-            // requires that file to be the same across the whole network for Bedrock
-            // auth, so the derived value matches every backend automatically.
+            // silently broke the proxy↔backend link. This proxy now owns the key
+            // outright: NetworkKeyAuthority resolves it from the persisted
+            // `network-key` file, seeding once from plugins/floodgate/key.pem only
+            // when that file happens to exist and minting a fresh key otherwise,
+            // then hands it to each backend over the rspm:network plugin channel.
+            // Floodgate is not required for that link.
 
             // Versioned offset key. The v1 key was `network-http-offset` with default
             // 100; that default failed on shared/managed hosting where each container
@@ -57,24 +59,33 @@ final class RspmVelocityConfig {
             }
             boolean extensionAutoInstall = !"false".equalsIgnoreCase(
                     String.valueOf(data.getOrDefault("geyser-extension-auto-install", true)).trim());
-            return new RspmVelocityConfig(offset, extensionAutoInstall);
+            return new RspmProxyConfig(offset, extensionAutoInstall);
         }
     }
 
     private static void writeDefaults(Path configFile) throws IOException {
-        // No `network-key` entry by default. The key is auto-derived from
-        // `plugins/floodgate/key.pem` on this proxy at boot — that's the same
-        // key.pem every backend uses (Floodgate REQUIRES it to be shared for
-        // Bedrock players to connect), so the resulting network-key matches
-        // every backend's automatically. Operators who set a `network-key:` line
-        // manually in this YAML were a common source of misconfiguration —
-        // typos in the pasted key silently broke the link between proxy and backend.
+        // No `network-key` entry by default, and none is ever read from this YAML.
+        // The proxy owns the key: it establishes one at boot (persisted `network-key`
+        // file → one-time Floodgate seed → freshly minted) and provisions every
+        // backend with it over the rspm:network channel, so there is nothing to paste
+        // and nothing to keep in sync by hand. Operators who used to set a
+        // `network-key:` line manually in this YAML were a common source of
+        // misconfiguration — typos in the pasted key silently broke the link
+        // between proxy and backend.
         String yaml = """
                 # ResourcePackManager proxy config.
-                # The network-key is auto-derived from plugins/floodgate/key.pem on this
-                # proxy — make sure Floodgate is installed (it must be, for Bedrock
-                # players to reach the proxy) and that the same key.pem is shared with
-                # every backend (Floodgate requires this anyway). No manual setup needed.
+                # There is no network key to set here. This proxy establishes its own
+                # network key at boot and pushes it to each backend over the
+                # rspm:network plugin channel the first time a player connects there,
+                # so proxy and backends link themselves with no manual setup.
+                # The key is kept in the `network-key` file next to this config. If
+                # Floodgate happens to be installed on this proxy the first time
+                # ResourcePackManager boots, the key is seeded once from
+                # plugins/floodgate/key.pem so an existing network keeps its identity
+                # across the upgrade — after that, key.pem is never read again.
+                # Floodgate is NOT required for the proxy↔backend link (a Java-only
+                # network needs none); it is only needed for Bedrock players to
+                # authenticate.
 
                 # Fallback offset added to each backend's Minecraft port to derive the
                 # HTTP port this proxy will hit for /bedrock.zip and /mappings.json
