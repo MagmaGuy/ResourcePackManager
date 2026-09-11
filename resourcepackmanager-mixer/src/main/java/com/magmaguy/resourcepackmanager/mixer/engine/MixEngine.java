@@ -134,26 +134,26 @@ public final class MixEngine {
                     continue;
                 }
                 File[] subFiles = sortedChildren(packDir);
+                warnOnLikelyNestedRoot(packDir, subFiles);
                 for (File subFile : subFiles) {
                     checkCancelled();
                     recursivelyCopyDirectory(subFile, mergedDir, merge, wrapped);
                 }
             }
 
-            // Atlas-overlay reconciliation must happen AFTER all packs have merged into mergedDir,
-            // because it reads pack.mcmeta (which itself was JSON-merged from every input).
+            // Validate overlay directory metadata before any code resolves those directories on
+            // disk. This also normalizes the final, fully assembled pack.mcmeta.
             checkCancelled();
-            merge.mergeBaseAtlasSourcesIntoOverlays(mergedDir);
-            checkCancelled();
-            merge.sanitizeMergedModels(mergedDir);
+            merge.normalizeAndValidateOverlayMetadata(mergedDir);
             checkCancelled();
 
-            // Final validation pass over the merged pack.mcmeta. WARN ONLY — we do not rewrite
-            // user content. Any overlay entry whose range dips below the old/new pack-format
-            // boundary but lacks a valid `formats` field will be rejected by MC 1.21.9+ clients;
-            // warn loudly (naming the entry) so admins get an actionable message instead of a
-            // silent client-side rejection.
-            merge.warnOnInvalidOverlayMetadata(mergedDir);
+            // Atlas-overlay reconciliation must happen AFTER all packs have merged into mergedDir,
+            // because it reads pack.mcmeta (which itself was JSON-merged from every input).
+            merge.mergeBaseAtlasSourcesIntoOverlays(mergedDir);
+            checkCancelled();
+            new BlocksAtlasSanitizer(wrapped).sanitize(mergedDir);
+            checkCancelled();
+            merge.sanitizeMergedModels(mergedDir);
             checkCancelled();
 
             // 4. Zip.
@@ -409,6 +409,23 @@ public final class MixEngine {
     private void deleteDirectoryOffCriticalPath(File directory) {
         if (directory == null || !directory.exists()) return;
         AsyncDirectoryCleaner.delete(directory);
+    }
+
+    /**
+     * A zip whose contents are wrapped in a single top-level folder
+     * ("Pack Name/assets/...") merges nothing usable and used to do so silently
+     * — pack.mcmeta and assets/ must sit at the archive root.
+     */
+    private void warnOnLikelyNestedRoot(File packDir, File[] children) {
+        if (children.length != 1 || !children[0].isDirectory()) return;
+        File wrapper = children[0];
+        String wrapperName = wrapper.getName();
+        if (wrapperName.equals("assets") || wrapperName.equals("overlays")) return;
+        if (new File(wrapper, "pack.mcmeta").exists() || new File(wrapper, "assets").isDirectory()) {
+            logger.warn("Resource pack '" + packDir.getName() + "' wraps its contents in a top-level folder ('"
+                    + wrapperName + "/'), so it will contribute nothing to the merge. pack.mcmeta and assets/ "
+                    + "must be at the root of the zip - re-zip it from inside the '" + wrapperName + "' folder.");
+        }
     }
 
     private static File[] sortedChildren(File directory) {

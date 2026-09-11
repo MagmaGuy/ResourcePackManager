@@ -88,7 +88,7 @@ public final class RspmBungeePlugin extends Plugin {
         BungeeScheduler scheduler = new BungeeScheduler(this);
 
         // Auto-detect the proxy's Geyser plugin folder (Geyser-BungeeCord on
-        // BungeeCord/Waterfall). NetworkSync deploys merged mappings here after
+        // BungeeCord). NetworkSync deploys merged mappings here after
         // each merge; we also pre-deploy the previous run's mappings below.
         File proxyPluginsDir = getDataFolder().getParentFile();
         File geyserPluginDir = GeyserMappingsDeployer.detectGeyserPluginDir(
@@ -240,7 +240,9 @@ public final class RspmBungeePlugin extends Plugin {
                 .append(" (Cause: " + reason + ")").color(ChatColor.GRAY)
                 .create();
         getProxy().getConsole().sendMessage(msg);
-        getProxy().getPlayers().forEach(p -> p.sendMessage(msg));
+        getProxy().getPlayers().stream()
+                .filter(p -> p.hasPermission("resourcepackmanager.*"))
+                .forEach(p -> p.sendMessage(msg));
     }
 
     /**
@@ -259,6 +261,8 @@ public final class RspmBungeePlugin extends Plugin {
                 .append(". Bedrock players who connected before this should disconnect and reconnect to receive custom models.").color(ChatColor.WHITE)
                 .create();
         getProxy().getConsole().sendMessage(msg);
-        getProxy().getPlayers().forEach(p -> p.sendMessage(msg));
+        getProxy().getPlayers().stream()
+                .filter(p -> p.hasPermission("resourcepackmanager.*"))
+                .forEach(p -> p.sendMessage(msg));
     }
 }

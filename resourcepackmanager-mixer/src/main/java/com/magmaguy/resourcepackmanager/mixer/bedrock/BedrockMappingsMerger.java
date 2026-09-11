@@ -21,8 +21,10 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Merges N {@code rspm_geyser_mappings.json} files (one per backend) into a single
@@ -186,7 +188,82 @@ public final class BedrockMappingsMerger {
             return null;
         }
 
+        deduplicateGeyserConflicts(byBase);
+
         return writeMerged(output, formatVersionFromFirst, byBase);
+    }
+
+    /**
+     * Collapses definitions that share one {@link GeyserMappingIdentity Geyser conflict
+     * identity} (same item + same {@code model} + same parsed predicates) but carry
+     * different bedrock identifiers. The identifier dedup above cannot catch these:
+     * RSPM's identifier hash includes the resolved source model, so two backends whose
+     * packs resolve the same custom_model_data (or other matcher) to different models
+     * produce distinct identifiers for what is one matcher to Geyser — which then rejects
+     * all but the first at boot with "both entries have the same predicates".
+     *
+     * <p>Winner per identity: a modern {@code type=definition} entry beats a
+     * {@code type=legacy} one; between entries of the same type the later one wins,
+     * consistent with the merger's last-writer-wins identifier policy. Emits a single
+     * summary line naming every collapsed pair.
+     */
+    private void deduplicateGeyserConflicts(Map<String, List<JsonObject>> byBase) {
+        List<String> dedupNotes = new ArrayList<>();
+        for (Map.Entry<String, List<JsonObject>> e : byBase.entrySet()) {
+            String baseItem = e.getKey();
+            List<JsonObject> bucket = e.getValue();
+            if (bucket.size() < 2) continue;
+
+            // identity -> index of the entry currently winning that identity.
+            Map<String, Integer> winnerByIdentity = new LinkedHashMap<>();
+            Set<Integer> dropped = new LinkedHashSet<>();
+            for (int i = 0; i < bucket.size(); i++) {
+                JsonObject def = bucket.get(i);
+                String identity = GeyserMappingIdentity.of(baseItem, def);
+                // Entries whose identity cannot be computed are never deduplicated —
+                // guessing here could silently drop a valid mapping.
+                if (identity == null) continue;
+                Integer previous = winnerByIdentity.get(identity);
+                if (previous == null) {
+                    winnerByIdentity.put(identity, i);
+                    continue;
+                }
+                boolean keepPrevious = isDefinitionType(bucket.get(previous)) && !isDefinitionType(def);
+                int winner = keepPrevious ? previous : i;
+                int loser = keepPrevious ? i : previous;
+                winnerByIdentity.put(identity, winner);
+                dropped.add(loser);
+                dedupNotes.add("'" + baseItem + "' ("
+                        + GeyserMappingIdentity.describeMatcher(baseItem, bucket.get(winner))
+                        + "): kept " + bedrockIdentifierOf(bucket.get(winner))
+                        + ", dropped " + bedrockIdentifierOf(bucket.get(loser)));
+            }
+            if (dropped.isEmpty()) continue;
+
+            List<JsonObject> survivors = new ArrayList<>(bucket.size() - dropped.size());
+            for (int i = 0; i < bucket.size(); i++) {
+                if (!dropped.contains(i)) survivors.add(bucket.get(i));
+            }
+            bucket.clear();
+            bucket.addAll(survivors);
+        }
+
+        if (!dedupNotes.isEmpty()) {
+            logger.info("[BedrockMappingsMerger] Deduplicated " + dedupNotes.size()
+                    + " definition(s) whose (item, predicate) matcher was already claimed"
+                    + " (Geyser registers only one definition per matcher): "
+                    + GeyserMappingIdentity.summarizeNotes(dedupNotes, 8));
+        }
+    }
+
+    private static boolean isDefinitionType(JsonObject def) {
+        return def.has("type") && def.get("type").isJsonPrimitive()
+                && "definition".equals(def.get("type").getAsString());
+    }
+
+    private static String bedrockIdentifierOf(JsonObject def) {
+        return def.has("bedrock_identifier") && def.get("bedrock_identifier").isJsonPrimitive()
+                ? def.get("bedrock_identifier").getAsString() : "<no identifier>";
     }
 
     /**

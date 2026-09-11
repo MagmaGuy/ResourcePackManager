@@ -132,7 +132,7 @@ public final class GeyserMappingsDeployer {
     /**
      * Look for any {@code Geyser-*} subdirectory under {@code proxyPluginsDir}.
      * Geyser ships separate jars for each proxy platform (Geyser-Velocity,
-     * Geyser-BungeeCord, Geyser-Waterfall uses Geyser-BungeeCord) — they all
+     * Geyser-BungeeCord) — they all
      * create a same-named plugin folder. First match wins; in practice there's
      * only ever one Geyser plugin loaded per proxy.
      *

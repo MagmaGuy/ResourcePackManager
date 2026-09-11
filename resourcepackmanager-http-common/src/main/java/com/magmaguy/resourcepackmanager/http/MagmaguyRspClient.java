@@ -37,7 +37,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
@@ -265,10 +264,19 @@ public final class MagmaguyRspClient implements AutoCloseable {
      *         or a parsed {@link RspError} on failure (also logged).
      */
     public UploadResult upload(String uuid, File pack) throws IOException {
-        return doUpload(uuid, pack);
+        return doUpload(uuid, pack, null);
     }
 
-    private UploadResult doUpload(String uuid, File pack) throws IOException {
+    /**
+     * Uploads a pack while asking the hoster to verify that the received bytes
+     * match the SHA1 that triggered publication. The hoster keeps this field
+     * optional so older clients remain wire-compatible.
+     */
+    public UploadResult upload(String uuid, File pack, String expectedSha1) throws IOException {
+        return doUpload(uuid, pack, expectedSha1);
+    }
+
+    private UploadResult doUpload(String uuid, File pack, String expectedSha1) throws IOException {
         CloseableHttpClient uploadClient = buildClient(uploadSocketTimeoutSeconds);
         track(uploadClient);
         try {
@@ -276,6 +284,12 @@ public final class MagmaguyRspClient implements AutoCloseable {
 
             MultipartEntityBuilder builder = MultipartEntityBuilder.create();
             builder.addTextBody("uuid", uuid, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+            if (expectedSha1 != null && !expectedSha1.isBlank()) {
+                builder.addTextBody(
+                        "sha1",
+                        expectedSha1,
+                        ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+            }
             builder.addBinaryBody("file", pack, ContentType.APPLICATION_OCTET_STREAM, pack.getName());
 
             uploadRequest.setEntity(builder.build());
@@ -541,61 +555,73 @@ public final class MagmaguyRspClient implements AutoCloseable {
      * Best-effort parse of a JSON error envelope of the shape
      * {@code {"error": {"code": "...", "type": "...", "message": "..."}}}.
      * Returns the parsed error on success (and logs it in the same format
-     * AutoHost previously did), or {@code null} when the payload is not
-     * recognizable — in which case a single fallback line is logged.
+     * AutoHost previously did). Non-JSON proxy responses are converted to a
+     * structured HTTP error without logging an HTML body or parser stack trace.
      */
     private RspError logErrorResponse(String responseString, int statusCode, String operation) {
         try {
             Gson gson = new Gson();
-            JsonObject errorResponse = gson.fromJson(responseString, JsonObject.class);
+            JsonElement parsed = gson.fromJson(responseString, JsonElement.class);
 
-            if (errorResponse != null && errorResponse.has("error")) {
-                JsonObject error = errorResponse.getAsJsonObject("error");
-                String errorCode = error.has("code") ? error.get("code").getAsString() : null;
-                String errorMessage = error.has("message") ? error.get("message").getAsString() : null;
-                String errorType = error.has("type") ? error.get("type").getAsString() : null;
+            if (parsed != null && parsed.isJsonObject()) {
+                JsonElement errorElement = parsed.getAsJsonObject().get("error");
+                if (errorElement != null && errorElement.isJsonObject()) {
+                    JsonObject error = errorElement.getAsJsonObject();
+                    String errorCode = jsonString(error, "code");
+                    String errorMessage = jsonString(error, "message");
+                    String errorType = jsonString(error, "type");
 
-                log.warning("=== Resource Pack " + operation.toUpperCase() + " ERROR ===");
-                log.warning("Error Code: " + errorCode);
-                log.warning("Error Type: " + errorType);
-                log.warning("Message: " + errorMessage);
-                log.warning("HTTP Status: " + statusCode);
-                log.warning("=====================================");
+                    log.warning("=== Resource Pack " + operation.toUpperCase() + " ERROR ===");
+                    log.warning("Error Code: " + errorCode);
+                    log.warning("Error Type: " + errorType);
+                    log.warning("Message: " + errorMessage);
+                    log.warning("HTTP Status: " + statusCode);
+                    log.warning("=====================================");
 
-                // Mirror the human-readable hints AutoHost previously emitted.
-                if (errorCode != null) {
-                    switch (errorCode) {
-                        case "MISSING_REQUIRED_FILES":
-                            log.warning("Your resource pack structure is incorrect!");
-                            log.warning("Make sure pack.png and pack.mcmeta are in the root of your zip file.");
-                            break;
-                        case "FILE_TOO_LARGE":
-                            log.warning("Your resource pack is too large! Please reduce the file size.");
-                            break;
-                        case "INVALID_FILE_FORMAT":
-                            log.warning("Your resource pack file is corrupted or not a valid zip file.");
-                            break;
-                        case "SESSION_NOT_FOUND":
-                            log.warning("Server session expired. Will attempt to reinitialize...");
-                            break;
-                        case "SERVER_UNAVAILABLE":
-                            log.warning("Remote server is temporarily unavailable. Will retry later.");
-                            break;
-                        default:
-                            break;
+                    // Mirror the human-readable hints AutoHost previously emitted.
+                    if (errorCode != null) {
+                        switch (errorCode) {
+                            case "MISSING_REQUIRED_FILES":
+                                log.warning("Your resource pack structure is incorrect!");
+                                log.warning("Make sure pack.png and pack.mcmeta are in the root of your zip file.");
+                                break;
+                            case "FILE_TOO_LARGE":
+                                log.warning("Your resource pack is too large! Please reduce the file size.");
+                                break;
+                            case "INVALID_FILE_FORMAT":
+                                log.warning("Your resource pack file is corrupted or not a valid zip file.");
+                                break;
+                            case "SESSION_NOT_FOUND":
+                                log.warning("Server session expired. Will attempt to reinitialize...");
+                                break;
+                            case "SERVER_UNAVAILABLE":
+                                log.warning("Remote server is temporarily unavailable. Will retry later.");
+                                break;
+                            default:
+                                break;
+                        }
                     }
-                }
 
-                return new RspError(errorCode, errorType, errorMessage, statusCode);
-            } else {
-                log.warning("Server error during " + operation + " (HTTP " + statusCode + "): " + responseString);
-                return null;
+                    return new RspError(errorCode, errorType, errorMessage, statusCode);
+                }
             }
-        } catch (Exception e) {
-            log.log(Level.WARNING,
-                    "Server error during " + operation + " (HTTP " + statusCode + "): " + responseString, e);
-            return null;
+        } catch (RuntimeException ignored) {
+            // Apache and other proxies commonly return HTML/plain text. Fall
+            // through to the bounded structured error below.
         }
+
+        boolean serverUnavailable = statusCode >= 500 && statusCode <= 599;
+        String code = serverUnavailable ? "SERVER_UNAVAILABLE" : "HTTP_ERROR";
+        String type = serverUnavailable ? "SERVER_ERROR" : "HTTP_ERROR";
+        String message = "Remote server returned HTTP " + statusCode;
+        log.warning("Server error during " + operation + " (HTTP " + statusCode
+                + "; code " + code + ").");
+        return new RspError(code, type, message, statusCode);
+    }
+
+    private static String jsonString(JsonObject object, String key) {
+        JsonElement value = object.get(key);
+        return value != null && value.isJsonPrimitive() ? value.getAsString() : null;
     }
 
     // ------------------------------------------------------------------

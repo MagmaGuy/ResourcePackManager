@@ -18,7 +18,7 @@ import java.security.MessageDigest;
  *
  * <p>The secret itself is never transmitted; only an HMAC over the granted key.</p>
  *
- * <p>Signing is best-effort by necessity — BungeeCord and Waterfall have no equivalent
+ * <p>Signing is best-effort by necessity — BungeeCord has no equivalent
  * secret ({@code ip_forward} is a plain boolean), and Velocity's legacy forwarding mode
  * doesn't use one either. The downgrade is closed at the <em>verifying</em> end instead:
  * a backend that holds a secret demands a valid signature, so an attacker cannot strip
@@ -68,7 +68,7 @@ public final class NetworkKeyGrantSignature {
      * Reads Velocity's forwarding secret from the proxy's secret file.
      *
      * @return the secret, or {@code null} when the file is absent or empty — a normal
-     *         state on legacy forwarding and on Bungee/Waterfall
+     *         state on legacy forwarding and on BungeeCord
      */
     public static String readProxyForwardingSecret(Path secretFile) {
         if (secretFile == null) return null;

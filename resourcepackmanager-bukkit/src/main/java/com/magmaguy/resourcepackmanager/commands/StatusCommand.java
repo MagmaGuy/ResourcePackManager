@@ -233,7 +233,7 @@ public class StatusCommand extends AdvancedCommand {
         // ---------- Proxy deployment ----------
         Logger.sendMessage(sender, "&8&m----- &6Proxy deployment &8&m-----");
         Logger.sendMessage(sender, "&7Network proxy jar: &fResourcePackManager.jar");
-        Logger.sendMessage(sender, "&7Use the same jar on Bukkit/Paper, Velocity, and BungeeCord/Waterfall.");
+        Logger.sendMessage(sender, "&7Use the same jar on Bukkit/Paper, Velocity, and BungeeCord.");
         Logger.sendMessage(sender, "&7If running a network, copy ResourcePackManager.jar to the proxy's plugins/ folder.");
         Logger.sendMessage(sender, "");
 

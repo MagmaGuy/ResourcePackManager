@@ -16,8 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Grant signing is the only cryptographic step in provisioning, and its
  * failure modes are exactly the attacks: a stripped signature must not verify
  * on a backend that holds a secret, and a signature under the wrong secret
- * must never pass. The no-secret cases are equally load-bearing — Bungee and
- * Waterfall have nothing to sign with, and that must degrade to "unsigned",
+ * must never pass. The no-secret cases are equally load-bearing — BungeeCord
+ * has nothing to sign with, and that must degrade to "unsigned",
  * never to an exception or a bogus signature.
  */
 class NetworkKeyGrantSignatureTest {

@@ -71,7 +71,7 @@ public final class NetworkKeyProvisioning implements Listener, PluginMessageList
      * <p>When this backend is configured for Velocity modern forwarding it already holds
      * the forwarding secret, so it <em>requires</em> the grant to be signed with it. That
      * is what stops an attacker simply omitting the signature to dodge the check. Networks
-     * without a secret — legacy forwarding, Bungee, Waterfall — accept an unsigned grant,
+     * without a secret — legacy forwarding and BungeeCord — accept an unsigned grant,
      * because no shared secret exists there to do better with.</p>
      */
     @Override
@@ -93,9 +93,9 @@ public final class NetworkKeyProvisioning implements Listener, PluginMessageList
             if (presentedSignature == null || presentedSignature.isBlank()) {
                 Logger.warn("Rejected an unsigned network key from the proxy. This server has a Velocity "
                         + "forwarding secret set, so it requires signed keys, but the proxy sent none.");
-                Logger.warn("On Velocity, switch player-info-forwarding-mode to modern. On BungeeCord or "
-                        + "Waterfall, clear proxies.velocity.secret in paper-global.yml — those proxies "
-                        + "have no forwarding secret and cannot sign.");
+                Logger.warn("On Velocity, switch player-info-forwarding-mode to modern. On BungeeCord, "
+                        + "clear proxies.velocity.secret in paper-global.yml — that proxy "
+                        + "has no forwarding secret and cannot sign.");
             } else {
                 Logger.warn("Rejected a network key from the proxy: it was signed with a different "
                         + "forwarding secret than this server uses. Make the proxy's forwarding secret and "

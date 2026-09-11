@@ -18,6 +18,7 @@ import com.magmaguy.resourcepackmanager.bedrock.util.BedrockShortName;
 import com.magmaguy.resourcepackmanager.bedrock.util.BedrockZip;
 import com.magmaguy.resourcepackmanager.bedrock.util.ExactTextureFileCache;
 import com.magmaguy.resourcepackmanager.mixer.bedrock.BedrockPackOptimizer;
+import com.magmaguy.resourcepackmanager.mixer.bedrock.GeyserMappingIdentity;
 import com.magmaguy.resourcepackmanager.mixer.engine.internal.AsyncDirectoryCleaner;
 import com.magmaguy.resourcepackmanager.mixer.engine.internal.Cancellation;
 import com.magmaguy.resourcepackmanager.mixer.engine.internal.PackFileIndex;
@@ -161,6 +162,16 @@ public class BedrockConversion {
             MappedItemRegistry registry = new MappedItemRegistry();
             runGenericPipeline(mergedJavaPack, bedrockDir, iconTextureMap, registry, ctx);
             if (ctx.isCancellationRequested()) return false;
+            // One-line dedup summary. Each of these pairs shares one Geyser conflict
+            // identity (same item + same model + same predicates); emitting both would
+            // make Geyser reject one at boot with "both entries have the same
+            // predicates", so only the winner was kept.
+            if (!registry.dedupNotes().isEmpty()) {
+                BedrockLog.info("[BedrockConverter] Deduplicated " + registry.dedupNotes().size()
+                        + " Geyser mapping(s) whose (item, predicate) matcher was already claimed"
+                        + " (Geyser registers only one definition per matcher): "
+                        + GeyserMappingIdentity.summarizeNotes(registry.dedupNotes(), 8));
+            }
             int entityBundleFiles = BedrockEntityBundleImporter.importBundles(
                     mergedJavaPack,
                     bedrockDir,
@@ -176,8 +187,14 @@ public class BedrockConversion {
             if (registry.totalMappings() == 0 && entityBundleFiles == 0) {
                 // No convertible content this cycle. Clear out previous-run output
                 // so the backend's /bedrock.zip route 404s cleanly instead of
-                // serving last cycle's content forever. Silent — operator doesn't
-                // need to know about routine cleanup.
+                // serving last cycle's content forever. One INFO line so "Bedrock
+                // players see vanilla" is diagnosable from a default log: plain
+                // vanilla retextures are not convertible and used to end here with
+                // zero output of any kind.
+                BedrockLog.info("Bedrock conversion found no convertible content (no custom item definitions or "
+                        + "entity bundles in the merged Java pack), so no Bedrock pack was generated. "
+                        + "Vanilla texture replacements cannot be auto-converted; Bedrock clients need a "
+                        + "handmade Bedrock pack in Geyser's own packs folder for those.");
                 deleteOffCriticalPath(bedrockDir);
                 return removePublishedOutputs(outputDir, ctx);
             }

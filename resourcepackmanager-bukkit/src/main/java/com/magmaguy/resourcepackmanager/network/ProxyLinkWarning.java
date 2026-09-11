@@ -81,8 +81,8 @@ public final class ProxyLinkWarning {
         Logger.warn("⚠  No network key has arrived, which means the proxy is not running RSPM.");
         Logger.warn("⚠  Effect: Bedrock players will NOT receive the merged resource pack and");
         Logger.warn("⚠          the Bedrock proxy handshake cannot complete until this is fixed.");
-        Logger.warn("⚠  Fix: install ResourcePackManager on the proxy (Velocity, BungeeCord, and");
-        Logger.warn("⚠       Waterfall all use the same jar — a copy is staged for you under");
+        Logger.warn("⚠  Fix: install ResourcePackManager on the proxy (Velocity and BungeeCord");
+        Logger.warn("⚠       use the same jar — a copy is staged for you under");
         Logger.warn("⚠       plugins/ResourcePackManager/proxy-extension/) and restart the proxy.");
         Logger.warn("⚠  Then run '/rspm status' on both sides — the key fingerprints must match.");
         Logger.warn("=====================================================================");
@@ -102,7 +102,7 @@ public final class ProxyLinkWarning {
         player.sendMessage(ChatColorConverter.convert(
                 "&eThe proxy is not running ResourcePackManager, so Bedrock players get no pack."));
         player.sendMessage(ChatColorConverter.convert(
-                "&7Install RSPM on the proxy (same jar for Velocity/BungeeCord/Waterfall — a copy"));
+                "&7Install RSPM on the proxy (same jar for Velocity/BungeeCord — a copy"));
         player.sendMessage(ChatColorConverter.convert(
                 "&7is staged under plugins/ResourcePackManager/proxy-extension/) and restart it."));
         player.sendMessage(ChatColorConverter.convert("&7Then compare &f/rspm status&7 on both sides."));

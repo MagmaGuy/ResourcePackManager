@@ -13,7 +13,7 @@ import java.io.File;
 import java.util.function.Supplier;
 
 /**
- * {@code /rspm status} on the BungeeCord/Waterfall proxy. Same output as the
+ * {@code /rspm status} on the BungeeCord proxy. Same output as the
  * Velocity variant — see {@code RspmVelocityStatusCommand} for the rationale.
  *
  * <p>Implementation differs only in the platform adapter shape: BungeeCord

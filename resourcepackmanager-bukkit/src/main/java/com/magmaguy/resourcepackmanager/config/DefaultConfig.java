@@ -163,13 +163,17 @@ public class DefaultConfig extends ConfigurationFile {
                         "you want to see exactly which step produced the result."),
                 fileConfiguration, "verboseLogging", false);
 
-        // network-key is intentionally NOT a config option. It's auto-derived
-        // from plugins/floodgate/key.pem on every backend and on the proxy.
-        // Floodgate requires the same key.pem across the network for Bedrock
-        // players to connect at all, so the derived value matches everywhere
-        // automatically. The old "paste this key into the proxy config" flow
-        // was a major source of misconfiguration (typos silently broke the
-        // proxy↔backend link) and is removed entirely. See NetworkMode#getNetworkKey.
+        // network-key is intentionally NOT a config option. The proxy owns the
+        // network key: it establishes one at boot and pushes it to each backend
+        // over the rspm:network plugin channel when a player connects there. This
+        // backend reads its persisted key from data.yml first, seeds once from
+        // plugins/floodgate/key.pem only as a fallback when Floodgate happens to
+        // be installed here, and otherwise waits to be provisioned — Floodgate and
+        // a shared key.pem are not required for the proxy↔backend link. The old
+        // "paste this key into the proxy config" flow was a major source of
+        // misconfiguration (typos silently broke the link) and is removed
+        // entirely. See NetworkMode#getNetworkKey and, on the proxy side,
+        // NetworkKeyAuthority.
 
         selfHostEnabled = ConfigurationEngine.setBoolean(
                 List.of(

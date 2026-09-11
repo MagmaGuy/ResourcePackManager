@@ -24,7 +24,7 @@ import java.util.function.BiConsumer;
  * next session load.
  *
  * <p>This class is platform-neutral within the Geyser ecosystem — the same
- * instance works on Geyser-Velocity, Geyser-BungeeCord, Geyser-Waterfall,
+ * instance works on Geyser-Velocity, Geyser-BungeeCord,
  * Geyser-Standalone, etc. The proxy plugin instantiates it once and gives it
  * the platform-specific {@link EventRegistrar}.
  */

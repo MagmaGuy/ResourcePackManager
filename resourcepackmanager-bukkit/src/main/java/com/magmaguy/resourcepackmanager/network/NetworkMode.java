@@ -9,7 +9,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import java.io.File;
 
 /**
- * Detects whether RPM is running behind a proxy (Velocity / BungeeCord / Waterfall).
+ * Detects whether RPM is running behind a proxy (Velocity / BungeeCord).
  * In that topology the backend is NOT responsible for client-facing pack delivery —
  * the proxy plugin handles it. RPM still mixes its own plugin pack and uploads it;
  * the proxy fetches and merges as part of the network workflow.
@@ -20,7 +20,7 @@ import java.io.File;
  *       Bedrock-via-proxy case: Floodgate only makes sense if there's a Geyser
  *       somewhere, and if Geyser isn't on this backend, it's on the proxy.</li>
  *   <li><b>{@code spigot.yml}: {@code settings.bungeecord: true}</b> — the legacy
- *       BungeeCord / Waterfall IP-forwarding switch. Admin had to set it for forwarding
+ *       BungeeCord IP-forwarding switch. Admin had to set it for forwarding
  *       to work at all, so seeing it true is a definitive "yes, behind a proxy."</li>
  *   <li><b>{@code paper-global.yml}: {@code proxies.velocity.enabled: true}</b> —
  *       modern Velocity forwarding flag. Same logic as #2 for Velocity setups.</li>
@@ -89,7 +89,7 @@ public final class NetworkMode {
         boolean floodgate = Bukkit.getPluginManager().getPlugin("floodgate") != null;
         if (noGeyser && floodgate) return true;
 
-        // Signal 2: spigot.yml settings.bungeecord. Legacy BungeeCord/Waterfall forwarding.
+        // Signal 2: spigot.yml settings.bungeecord. Legacy BungeeCord forwarding.
         // Reading the file directly (not via Bukkit.spigot()) keeps this Spigot-API-clean
         // for environments where the API surface is restricted.
         if (readBooleanFromYaml(new File("spigot.yml"), "settings.bungeecord", false)) return true;
@@ -251,7 +251,7 @@ public final class NetworkMode {
         if (staged == null) return;
         Logger.warn("A copy of this exact plugin jar has been staged for the proxy at:");
         Logger.warn("  " + staged.getAbsolutePath());
-        Logger.warn("Copy that one file into the proxy's plugins folder (Velocity, BungeeCord, and Waterfall");
-        Logger.warn("all use the same jar) and restart the proxy; the network key is then exchanged automatically.");
+        Logger.warn("Copy that one file into the proxy's plugins folder (Velocity and BungeeCord");
+        Logger.warn("use the same jar) and restart the proxy; the network key is then exchanged automatically.");
     }
 }

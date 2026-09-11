@@ -1461,6 +1461,28 @@ public final class NetworkSync {
                                     now));
                     return false;
                 }
+                if (PackHttpServer.EXECUTABLE_UPDATE_PATH.equals(path) && status == 503) {
+                    // The backend's protected update route fails closed with 503 while the
+                    // backend has no network key — which is every fresh install or wipe
+                    // until a player first connects through this proxy, because key
+                    // provisioning rides plugin messages and those need a player channel.
+                    // Reuses the 401 backoff so boot-time polls don't spam warnings that
+                    // read like transport failures (a support thread chased exactly that).
+                    Duration retryDelay = recordExecutableUpdateAuthFailure(
+                            sanitizeBackendName(b.name()), now);
+                    logger.info("[RSPM] Backend " + b.name() + " is not linked to this proxy yet ("
+                            + url + " answered HTTP 503): it has no network key until a player first"
+                            + " connects to it through this proxy. This is normal right after"
+                            + " installing or resetting a backend. Plugin-update propagation from it"
+                            + " retries in " + describeDuration(retryDelay)
+                            + "; pack and mappings polling is unaffected.");
+                    lastFetchOutcomes.put(outcomeKey,
+                            new FetchOutcome(FetchOutcome.Kind.UNEXPECTED_STATUS, status,
+                                    url + " — backend not yet provisioned with a network key; "
+                                            + "retry backoff " + describeDuration(retryDelay),
+                                    now));
+                    return false;
+                }
                 clearExecutableUpdateAuthRetry(path, outcomeKey);
                 logger.warn("Backend " + b.name() + " " + url + " returned HTTP " + status);
                 lastFetchOutcomes.put(outcomeKey,

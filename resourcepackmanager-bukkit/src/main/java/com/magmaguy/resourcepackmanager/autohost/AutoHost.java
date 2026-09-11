@@ -48,8 +48,8 @@ import java.util.function.BooleanSupplier;
  * <p>In network mode this class also runs a small always-on
  * {@link PackHttpServer} that exposes the backend's Bedrock-conversion outputs
  * ({@code /bedrock.zip} and {@code /mappings.json}) for the proxy plugin's
- * {@code NetworkSync} to pull. The pack-zip route (used by Java self-host
- * fallback) 404s until {@link Mix#getFinalResourcePack()} appears; the Bedrock
+ * {@code NetworkSync} to pull. The pack-zip route (used by Java self-hosting)
+ * 404s until {@link Mix#getFinalResourcePack()} appears; the Bedrock
  * routes 404 until BedrockConversion has produced output.</p>
  */
 public class AutoHost {
@@ -85,7 +85,7 @@ public class AutoHost {
 
     // Timeout settings for HTTP requests (in seconds)
     private static final int DEFAULT_SOCKET_TIMEOUT = 60;
-    private static final int UPLOAD_SOCKET_TIMEOUT = 300; // 5 minutes for file uploads
+    private static final int UPLOAD_SOCKET_TIMEOUT = 1020; // 17 minutes; exceeds edge and hoster deadlines
 
     @Getter
     private static boolean done = false;
@@ -716,8 +716,9 @@ public class AutoHost {
         // failure mode that the previous two-layer check committed to silently.
         if (!externalReachabilityProbe(run, selfHostedUrl)) {
             if (!run.active()) return false;
-            // externalReachabilityProbe logs the specific reason. Tear down so
-            // the subsequent remote-upload path can re-bind cleanly.
+            // externalReachabilityProbe logs the specific reason; teardown stops
+            // the unreachable URL from being announced (see tearDownSelfHost for
+            // the network-mode nuance) before falling through to remote upload.
             tearDownSelfHost();
             return false;
         }
@@ -920,7 +921,7 @@ public class AutoHost {
 
         UploadResult result;
         try {
-            result = client.upload(rspUUID, Mix.getFinalResourcePack());
+            result = client.upload(rspUUID, Mix.getFinalResourcePack(), Mix.getFinalSHA1());
         } catch (IOException e) {
             if (!run.active()) return;
             Logger.warn("Failed to communicate with remote server during upload!");
@@ -1309,13 +1310,13 @@ public class AutoHost {
         Logger.warn("⚠                 No need for them to rejoin.");
         Logger.warn("=====================================================================");
 
-        // Player-facing: deferred 1 tick so the join greeting/welcome messages
-        // don't shove our warning off-screen. Bedrock-via-Floodgate players
-        // also see this (Floodgate routes them through the same PlayerJoinEvent),
-        // which is fine — for those players this signal supersedes the proxy-
-        // side Geyser modal anyway since the root cause is on the backend.
+        // Admin-facing: deferred 1 tick so the join greeting/welcome messages
+        // don't shove our warning off-screen. Regular players never see this —
+        // the pack arrives automatically either way, so the chat copy is a
+        // staff diagnostic, not a player notice.
         Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
             if (!player.isOnline()) return;
+            if (!player.isOp() && !player.hasPermission("resourcepackmanager.*")) return;
             player.sendMessage("§c§l⚠ §e§l[RSPM] §r§eResource pack still building on this server.");
             player.sendMessage("§7You'll receive it automatically in a few seconds — no need to rejoin.");
         }, 20L);

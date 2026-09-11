@@ -1,9 +1,7 @@
 package com.magmaguy.resourcepackmanager.mixer.engine.internal;
 
-import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -20,7 +18,6 @@ import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 /**
  * Platform-neutral zip/unzip helpers used by {@link com.magmaguy.resourcepackmanager.mixer.engine.MixEngine}.
@@ -42,9 +39,16 @@ public final class ZipUtil {
     public static void unzip(File zippedFile, File destinationUnzippedFile,
                              BooleanSupplier cancellationRequested) throws IOException {
         byte[] buffer = new byte[8192];
-        try (ZipInputStream zipInputStream = new ZipInputStream(new BufferedInputStream(new FileInputStream(zippedFile)))) {
-            ZipEntry zipEntry = zipInputStream.getNextEntry();
-            while (zipEntry != null) {
+        // Read through the central directory rather than streaming local headers:
+        // content-deduplicated archives (VanillaTweaks downloads, some pack build
+        // tools) point several central-directory entries at one shared local entry,
+        // and a ZipInputStream walk only ever surfaces one filename per local
+        // entry — silently dropping the rest (observed: animation .mcmeta and
+        // texture files missing from merged packs).
+        try (java.util.zip.ZipFile zipFile = new java.util.zip.ZipFile(zippedFile)) {
+            java.util.Enumeration<? extends ZipEntry> entries = zipFile.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry zipEntry = entries.nextElement();
                 checkCancelled(cancellationRequested);
                 File newFile = newFile(destinationUnzippedFile, zipEntry);
                 // Check if directory - isDirectory() only checks for trailing '/', but Windows zips may use '\'
@@ -62,9 +66,10 @@ public final class ZipUtil {
                     }
 
                     // Write file content
-                    try (FileOutputStream fileOutputStream = new FileOutputStream(newFile)) {
+                    try (java.io.InputStream inputStream = zipFile.getInputStream(zipEntry);
+                         FileOutputStream fileOutputStream = new FileOutputStream(newFile)) {
                         int len;
-                        while ((len = zipInputStream.read(buffer)) > 0) {
+                        while ((len = inputStream.read(buffer)) > 0) {
                             checkCancelled(cancellationRequested);
                             fileOutputStream.write(buffer, 0, len);
                         }
@@ -72,7 +77,6 @@ public final class ZipUtil {
                 }
                 long entryTime = zipEntry.getTime();
                 if (entryTime >= 0) newFile.setLastModified(entryTime);
-                zipEntry = zipInputStream.getNextEntry();
             }
         }
     }

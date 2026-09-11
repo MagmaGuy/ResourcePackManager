@@ -1,7 +1,7 @@
 # ResourcePackManager
 
 ResourcePackManager (RSPM) is a universal Bukkit/Paper, Velocity, and
-BungeeCord/Waterfall plugin. On backend servers it merges the resource packs of
+BungeeCord plugin. On backend servers it merges the resource packs of
 every plugin into a single pack, hosts it, and pushes it to players
 automatically. On proxies it runs the network-side pack delivery bridge for
 Bedrock players through GeyserMC. The same release jar also contains RSPM's
@@ -49,7 +49,7 @@ This is a multi-module Maven project (parent artifact `ResourcePackManager-paren
 | `resourcepackmanager-http-common` | Shared HTTP server/client code used for self-hosting and proxy fetches. |
 | `resourcepackmanager-proxy-common` | Shared proxy logic for network sync, Geyser deployment, and verified proxy updates. |
 | `resourcepackmanager-velocity` | Internal Velocity adapter included in the universal jar. |
-| `resourcepackmanager-bungee` | Internal BungeeCord/Waterfall adapter included in the universal jar. |
+| `resourcepackmanager-bungee` | Internal BungeeCord adapter included in the universal jar. |
 | `resourcepackmanager-system-tests` | Real-proxy system-test procedures and fixtures; not a Maven module. |
 
 ### One universal artifact
@@ -59,7 +59,7 @@ entrypoints:
 
 - `plugin.yml` for Bukkit/Paper;
 - `velocity-plugin.json` for Velocity;
-- `bungee.yml` for BungeeCord/Waterfall; and
+- `bungee.yml` for BungeeCord; and
 - `extension.yml` for Geyser.
 
 The internal Maven modules remain separate source and test boundaries, but they
@@ -106,7 +106,7 @@ RealisticSurvival, and others listed in `plugin.yml`).
 2. For Bedrock delivery, install Geyser on the backend (and Floodgate if you run
    a proxy network).
 3. **Network mode only** — also put the same `ResourcePackManager.jar` in the
-   proxy's `plugins/` folder. It detects Velocity vs BungeeCord/Waterfall from
+   proxy's `plugins/` folder. It detects Velocity vs BungeeCord from
    the platform loader. The proxy generates its own `config.yml` on first start.
 
 A single (non-networked) backend server needs only that same jar. Do not install
@@ -246,7 +246,7 @@ When `MC_DIST_DIR` is set, the same artifact is mirrored as
 `dist/ResourcePackManager.jar`. This is the only deployable ResourcePackManager
 jar. Adapter modules still produce internal `target/` jars for reactor and
 test wiring, but public distribution uses the universal artifact for
-Bukkit/Paper, Velocity, BungeeCord/Waterfall, and Geyser.
+Bukkit/Paper, Velocity, BungeeCord, and Geyser.
 
 Before publishing, verify that `plugin.yml`, `velocity-plugin.json`,
 `bungee.yml`, and `extension.yml` all contain the parent POM version.
@@ -260,9 +260,11 @@ Paper, or Geyser:
 mvn clean package
 ```
 
-It includes MockBukkit player-login/resource-pack delivery, real loopback
-self-hosting, protected update transport, universal-jar inspection, proxy
-update coordination, merge equivalence, and Bedrock conversion tests.
+It includes loopback pack-serving, protected update-route auth, Java
+hosting-route decision, network-key and update-signature, hoster
+error-handling, backend endpoint-resolution, and mixer fingerprint/atlas/
+overlay tests. `resourcepackmanager-system-tests/README.md` names the exact
+classes and the known coverage gaps.
 
 The resource-intensive RSPM-only labs live under
 `resourcepackmanager-system-tests/` and are never selected by the normal

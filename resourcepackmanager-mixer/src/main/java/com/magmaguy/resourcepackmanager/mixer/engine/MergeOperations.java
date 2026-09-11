@@ -18,9 +18,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 public final class MergeOperations {
     private static final int LAST_PRE_MINOR_CLIENT_PACK_FORMAT = 64;
+    private static final Pattern OVERLAY_DIRECTORY = Pattern.compile("[a-z0-9_-]+");
 
     private final MixerLogger logger;
 
@@ -439,15 +441,9 @@ public final class MergeOperations {
         }
 
         if (mergedEntries.size() > 0) {
-            // Defensive normalization: ensure overlay entries have min_format/max_format fields.
-            // Starting with resource pack format 65 (Minecraft 1.21.9+), overlay entries MUST include
-            // min_format and max_format as separate fields — the old "formats" field alone is no longer
-            // sufficient. If an overlay's format range covers 65+, the client rejects entries missing
-            // these fields with: "declares support for version newer than 64, but is missing mandatory
-            // fields min_format and max_format".
-            // This is NOT an RSPM bug — the source packs (e.g. ModelEngine) are generating overlay entries
-            // without these fields. Ideally those packs should fix their own pack.mcmeta output.
-            // We patch it here because RSPM gets the bug reports when the merged pack fails to load.
+            // Keep both overlay range representations while resolving this collision. A final pass
+            // after assembly repeats the normalization and validates every entry, including the
+            // single-input case that never reaches this method.
             normalizeOverlayEntries(mergedEntries);
 
             JsonObject overlays = new JsonObject();
@@ -625,110 +621,248 @@ public final class MergeOperations {
     }
 
     /**
-     * Patches overlay entries that are missing min_format/max_format fields.
-     * See comment at call site for full rationale — this works around third-party packs
-     * that haven't updated their pack.mcmeta to the 1.21.9+ overlay format.
+     * Migrates overlay ranges across Minecraft's 1.21.9 metadata boundary. Numeric
+     * {@code min_format}/{@code max_format} fields are always required. The removed legacy
+     * {@code formats} field is required on every entry only when at least one range still includes
+     * a pre-65 resource-pack format; otherwise the new schema forbids it.
      */
-    private void normalizeOverlayEntries(JsonArray entries) {
-        for (JsonElement element : entries) {
-            if (!element.isJsonObject()) continue;
+    private boolean normalizeOverlayEntries(JsonArray entries) throws IOException {
+        boolean changed = false;
+        boolean requiresLegacyFormats = false;
+
+        for (int index = 0; index < entries.size(); index++) {
+            JsonElement element = entries.get(index);
+            if (!element.isJsonObject()) {
+                throw new IOException("Overlay entry #" + index + " is not a JSON object");
+            }
             JsonObject entry = element.getAsJsonObject();
-            if (entry.has("min_format") && entry.has("max_format")) continue;
-            if (!entry.has("formats")) continue;
+            String directory = readOverlayDirectory(entry);
+            if (directory == null) {
+                throw new IOException("Overlay entry #" + index
+                        + " has an invalid directory; use only lowercase letters, digits, _, and -");
+            }
 
-            int[] range = parseOverlayFormatsRange(entry.get("formats"));
-            if (range == null) continue;
+            int[] formatsRange = parseOverlayFormatsRange(entry.get("formats"));
+            OverlayVersionRange numericRange = parseNumericOverlayRange(entry);
+            boolean hasMin = entry.has("min_format");
+            boolean hasMax = entry.has("max_format");
 
-            if (!entry.has("min_format")) entry.addProperty("min_format", range[0]);
-            if (!entry.has("max_format")) entry.addProperty("max_format", range[1]);
+            if (!hasMin && !hasMax && isValidOverlayRange(formatsRange)) {
+                entry.addProperty("min_format", formatsRange[0]);
+                entry.addProperty("max_format", formatsRange[1]);
+                numericRange = parseNumericOverlayRange(entry);
+                changed = true;
+            }
+
+            if (numericRange == null || !numericRange.isValid()) {
+                throw new IOException("Overlay '" + directory
+                        + "' must declare valid min_format and max_format bounds");
+            }
+            if (numericRange.min().major() <= LAST_PRE_MINOR_CLIENT_PACK_FORMAT) {
+                requiresLegacyFormats = true;
+            }
         }
+
+        for (JsonElement element : entries) {
+            JsonObject entry = element.getAsJsonObject();
+            OverlayVersionRange numericRange = parseNumericOverlayRange(entry);
+
+            if (!requiresLegacyFormats) {
+                if (entry.has("formats")) {
+                    entry.remove("formats");
+                    changed = true;
+                }
+                continue;
+            }
+
+            if (entry.has("formats")) continue;
+
+            JsonObject formats = new JsonObject();
+            formats.addProperty("min_inclusive", numericRange.min().major());
+            formats.addProperty("max_inclusive", numericRange.max().major());
+            entry.add("formats", formats);
+            changed = true;
+        }
+        return changed;
+    }
+
+    private OverlayVersionRange parseNumericOverlayRange(JsonObject entry) {
+        if (!entry.has("min_format") || !entry.has("max_format")) return null;
+        OverlayVersion min = parseOverlayVersion(entry.get("min_format"), false);
+        OverlayVersion max = parseOverlayVersion(entry.get("max_format"), true);
+        return min == null || max == null ? null : new OverlayVersionRange(min, max);
+    }
+
+    private OverlayVersion parseOverlayVersion(JsonElement element, boolean maximum) {
+        if (element == null) return null;
+
+        if (element.isJsonArray()) {
+            JsonArray values = element.getAsJsonArray();
+            if (values.size() < 1 || values.size() > 2) return null;
+            Integer major = parseInteger(values.get(0));
+            Integer minor = values.size() == 2
+                    ? parseInteger(values.get(1))
+                    : (maximum ? Integer.MAX_VALUE : 0);
+            if (major == null || minor == null || major < 0 || minor < 0) return null;
+            return new OverlayVersion(major, minor);
+        }
+
+        Integer major = parseInteger(element);
+        if (major == null || major < 0) return null;
+        return new OverlayVersion(major, maximum ? Integer.MAX_VALUE : 0);
     }
 
     /**
      * Parse an overlay entry's {@code formats} field in any of its documented shapes
      * (single int, 2-int array, or {@code {min_inclusive, max_inclusive}} object) into
      * a [min, max] pair. Returns null when the field is missing, malformed, or otherwise
-     * not a valid {@code formats} declaration. Shared by {@link #normalizeOverlayEntries}
-     * (backfill) and {@link #warnOnInvalidOverlayMetadata} (validation) so both agree on
-     * exactly what counts as a valid {@code formats} field.
+     * not a valid {@code formats} declaration. Normalization and final validation share this
+     * parser so they agree on exactly what counts as a valid {@code formats} field.
      */
     private int[] parseOverlayFormatsRange(JsonElement formats) {
         if (formats == null) return null;
         if (formats.isJsonArray()) {
             JsonArray arr = formats.getAsJsonArray();
-            if (arr.size() < 2) return null;
-            return new int[]{arr.get(0).getAsInt(), arr.get(1).getAsInt()};
+            if (arr.size() != 2) return null;
+            Integer min = parseInteger(arr.get(0));
+            Integer max = parseInteger(arr.get(1));
+            return min == null || max == null ? null : new int[]{min, max};
         }
         if (formats.isJsonObject()) {
             JsonObject obj = formats.getAsJsonObject();
             if (!obj.has("min_inclusive") || !obj.has("max_inclusive")) return null;
-            return new int[]{obj.get("min_inclusive").getAsInt(), obj.get("max_inclusive").getAsInt()};
+            Integer min = parseInteger(obj.get("min_inclusive"));
+            Integer max = parseInteger(obj.get("max_inclusive"));
+            return min == null || max == null ? null : new int[]{min, max};
         }
-        if (formats.isJsonPrimitive() && formats.getAsJsonPrimitive().isNumber()) {
-            int v = formats.getAsInt();
-            return new int[]{v, v};
-        }
+        Integer value = parseInteger(formats);
+        if (value != null) return new int[]{value, value};
         return null;
     }
 
+    private Integer parseInteger(JsonElement value) {
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) return null;
+        try {
+            return value.getAsBigDecimal().intValueExact();
+        } catch (ArithmeticException | NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private boolean isValidOverlayRange(int[] range) {
+        return range != null && range[0] >= 0 && range[0] <= range[1];
+    }
+
+    private record OverlayVersion(int major, int minor) implements Comparable<OverlayVersion> {
+        @Override
+        public int compareTo(OverlayVersion other) {
+            int majorComparison = Integer.compare(major, other.major);
+            return majorComparison != 0 ? majorComparison : Integer.compare(minor, other.minor);
+        }
+    }
+
+    private record OverlayVersionRange(OverlayVersion min, OverlayVersion max) {
+        private boolean isValid() {
+            return min.compareTo(max) <= 0;
+        }
+    }
+
     /**
-     * Validate the merged {@code pack.mcmeta} overlay entries and warn loudly about any that
-     * MC 1.21.9+ clients will reject. WARN ONLY — this never rewrites user content.
-     *
-     * <p>On pack format 65+ (Minecraft 1.21.9+), an overlay entry whose declared range dips
-     * below the old/new boundary ({@link #LAST_PRE_MINOR_CLIENT_PACK_FORMAT}) must carry a valid
-     * {@code formats} field alongside {@code min_format}/{@code max_format}. If it is missing or
-     * malformed, the client rejects the entire pack with "Overlay '...' missing required field
-     * formats". RSPM merges user packs and emits the final server-hosted pack, so an invalid
-     * overlay from a source pack would otherwise ship silently and be rejected client-side with
-     * no hint. The maintainer's decision is to NOT rewrite user content here, but to surface a
-     * clear, actionable warning naming the offending overlay so admins can fix the source pack.</p>
+     * Normalizes the merged {@code pack.mcmeta} at the final publication boundary. Minecraft's
+     * overlay schema has used both {@code formats} and numeric {@code min_format}/{@code max_format}
+     * declarations. The published pack carries both representations so mixed-version clients can
+     * interpret every entry consistently.
      */
-    public void warnOnInvalidOverlayMetadata(File resourcePackRoot) {
+    public void normalizeAndValidateOverlayMetadata(File resourcePackRoot) throws IOException {
         File packMcmeta = new File(resourcePackRoot, "pack.mcmeta");
         if (!packMcmeta.exists()) return;
 
         JsonObject mcmeta = readJsonFile(packMcmeta);
-        if (mcmeta == null || !mcmeta.has("overlays")) return;
+        if (mcmeta == null) {
+            throw new IOException("Unable to validate merged pack.mcmeta before publication");
+        }
+        if (!mcmeta.has("overlays")) return;
 
-        JsonObject overlays = mcmeta.getAsJsonObject("overlays");
-        if (!overlays.has("entries")) return;
+        JsonElement overlaysElement = mcmeta.get("overlays");
+        if (!overlaysElement.isJsonObject()) {
+            throw new IOException("Merged pack.mcmeta overlays must be a JSON object");
+        }
+        JsonObject overlays = overlaysElement.getAsJsonObject();
+        if (!overlays.has("entries")) {
+            throw new IOException("Merged pack.mcmeta overlays section is missing entries");
+        }
 
-        for (JsonElement element : overlays.getAsJsonArray("entries")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject entry = element.getAsJsonObject();
-
-            // Only entries whose declared range dips below the old/new boundary need a `formats`
-            // field for 1.21.9+ clients. Use min_format when present (that's the lower bound the
-            // client checks); fall back to formats' own lower bound so an entry with only a
-            // `formats` field is still evaluated.
-            int min = overlayDeclaredMinFormat(entry);
-            if (min > LAST_PRE_MINOR_CLIENT_PACK_FORMAT) continue;
-
-            if (entry.has("formats") && parseOverlayFormatsRange(entry.get("formats")) != null) continue;
-
-            String name = entry.has("directory") ? entry.get("directory").getAsString() : "<unnamed>";
-            logger.warn("Overlay '" + name + "' in the merged pack is missing a valid 'formats' field; "
-                    + "MC 1.21.9+ clients will reject this pack. Fix the source pack's pack.mcmeta overlay entry.");
+        JsonElement entriesElement = overlays.get("entries");
+        if (!entriesElement.isJsonArray()) {
+            throw new IOException("Merged pack.mcmeta overlay entries must be a JSON array");
+        }
+        JsonArray entries = entriesElement.getAsJsonArray();
+        boolean changed = normalizeOverlayEntries(entries);
+        validateOverlayEntries(entries);
+        if (changed) {
+            try (Writer writer = new BufferedWriter(new FileWriter(packMcmeta), 1 << 16)) {
+                new Gson().toJson(mcmeta, writer);
+            }
         }
     }
 
-    /**
-     * Determine the lower bound the client uses when deciding whether an overlay entry needs a
-     * {@code formats} field. Prefers an explicit {@code min_format}, then the lower bound of a
-     * valid {@code formats} declaration. Returns Integer.MAX_VALUE when no lower bound can be
-     * determined so the caller treats the entry as "does not dip below the boundary" and skips it.
-     */
-    private int overlayDeclaredMinFormat(JsonObject entry) {
-        if (entry.has("min_format") && entry.get("min_format").isJsonPrimitive()
-                && entry.getAsJsonPrimitive("min_format").isNumber()) {
-            return entry.get("min_format").getAsInt();
+    private void validateOverlayEntries(JsonArray entries) throws IOException {
+        boolean requiresLegacyFormats = false;
+        for (JsonElement element : entries) {
+            if (!element.isJsonObject()) continue;
+            OverlayVersionRange numericRange = parseNumericOverlayRange(element.getAsJsonObject());
+            if (numericRange != null && numericRange.isValid()
+                    && numericRange.min().major() <= LAST_PRE_MINOR_CLIENT_PACK_FORMAT) {
+                requiresLegacyFormats = true;
+            }
         }
-        if (entry.has("formats")) {
-            int[] range = parseOverlayFormatsRange(entry.get("formats"));
-            if (range != null) return range[0];
+
+        for (int index = 0; index < entries.size(); index++) {
+            JsonElement element = entries.get(index);
+            if (!element.isJsonObject()) {
+                throw new IOException("Overlay entry #" + index + " is not a JSON object");
+            }
+
+            JsonObject entry = element.getAsJsonObject();
+            String directory = readOverlayDirectory(entry);
+            if (directory == null) {
+                throw new IOException("Overlay entry #" + index + " is missing a non-empty string directory");
+            }
+
+            OverlayVersionRange numericRange = parseNumericOverlayRange(entry);
+            if (numericRange == null || !numericRange.isValid()) {
+                throw new IOException("Overlay '" + directory
+                        + "' must declare valid min_format and max_format bounds");
+            }
+
+            if (!requiresLegacyFormats) {
+                if (entry.has("formats")) {
+                    throw new IOException("Overlay '" + directory
+                            + "' retains formats even though every range starts at format 65 or newer");
+                }
+                continue;
+            }
+
+            int[] formatsRange = parseOverlayFormatsRange(entry.get("formats"));
+            if (!isValidOverlayRange(formatsRange)) {
+                throw new IOException("Overlay '" + directory
+                        + "' needs a valid formats range because this pack supports a pre-65 format");
+            }
+            if (formatsRange[0] != numericRange.min().major()
+                    || formatsRange[1] != numericRange.max().major()) {
+                throw new IOException("Overlay '" + directory + "' declares conflicting ranges: formats="
+                        + formatsRange[0] + ".." + formatsRange[1] + ", min_format/max_format="
+                        + numericRange.min().major() + ".." + numericRange.max().major());
+            }
         }
-        return Integer.MAX_VALUE;
+    }
+
+    private String readOverlayDirectory(JsonObject entry) {
+        if (!entry.has("directory")) return null;
+        JsonElement directory = entry.get("directory");
+        if (!directory.isJsonPrimitive() || !directory.getAsJsonPrimitive().isString()) return null;
+        String value = directory.getAsString();
+        return OVERLAY_DIRECTORY.matcher(value).matches() ? value : null;
     }
 
     private boolean isLegacyItemModel(File file) {

@@ -30,7 +30,7 @@ import java.nio.file.Path;
 @Plugin(
         id = "resourcepackmanager",
         name = "ResourcePackManager",
-        version = "2.3.1",
+        version = "2.4.0",
         description = "Network-side companion to ResourcePackManager. Delivers the merged pack to Bedrock clients via Geyser on this proxy.",
         authors = {"MagmaGuy"},
         dependencies = {
@@ -341,7 +341,9 @@ public final class RspmVelocityPlugin {
                 .append(Component.text(" (Cause: " + reason + ")", NamedTextColor.GRAY))
                 .build();
         proxy.getConsoleCommandSource().sendMessage(msg);
-        proxy.getAllPlayers().forEach(p -> p.sendMessage(msg));
+        proxy.getAllPlayers().stream()
+                .filter(p -> p.hasPermission("resourcepackmanager.*"))
+                .forEach(p -> p.sendMessage(msg));
     }
 
     /**
@@ -361,6 +363,8 @@ public final class RspmVelocityPlugin {
                 .append(Component.text(". Bedrock players who connected before this should disconnect and reconnect to receive custom models.", NamedTextColor.WHITE))
                 .build();
         proxy.getConsoleCommandSource().sendMessage(msg);
-        proxy.getAllPlayers().forEach(p -> p.sendMessage(msg));
+        proxy.getAllPlayers().stream()
+                .filter(p -> p.hasPermission("resourcepackmanager.*"))
+                .forEach(p -> p.sendMessage(msg));
     }
 }

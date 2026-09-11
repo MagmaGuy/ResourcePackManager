@@ -8,7 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Bungee/Waterfall adapter for {@link BackendListProvider}. Reads
+ * BungeeCord adapter for {@link BackendListProvider}. Reads
  * {@code ProxyServer#getServers()} on every poll cycle so backends added or
  * removed via Bungee's config reload pick up automatically.
  *
