@@ -2,14 +2,13 @@ package com.magmaguy.resourcepackmanager.config.compatibleplugins.premade;
 
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfigFields;
 
-import java.io.File;
 
 public class ResourcePackManager extends CompatiblePluginConfigFields {
     public ResourcePackManager() {
         super("resource_pack_manager", true);
         setPluginName("ResourcePackManager");
-        setLocalPath("ResourcePackManager" + File.separatorChar + "blueprint" + File.separatorChar + "blueprint.zip");
-        setAdditionalLocalPath("ResourcePackManager" + File.separatorChar + "resource_pack");
+        setLocalPath("ResourcePackManager/blueprint/blueprint.zip");
+        setAdditionalLocalPath("ResourcePackManager/resource_pack");
         setReloadCommand("rspm reload");
     }
 }

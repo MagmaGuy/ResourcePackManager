@@ -525,7 +525,8 @@ public class ThirdPartyResourcePack {
     }
 
     private static File getPluginRelativeFile(String localPath) {
-        return new File(ResourcePackManager.plugin.getDataFolder().getParentFile(), localPath);
+        // Integration paths are plugins-relative on every host, including configs copied from Windows.
+        return new File(ResourcePackManager.plugin.getDataFolder().getParentFile(), localPath.replace('\\', '/'));
     }
 
     private static String describeConfiguredPaths(String local, String additional) {
@@ -609,7 +610,7 @@ public class ThirdPartyResourcePack {
     }
 
     private boolean processLocal(String localPath) {
-        this.file = new File(ResourcePackManager.plugin.getDataFolder().getParentFile().toPath().toString() + File.separatorChar + localPath);
+        this.file = getPluginRelativeFile(localPath);
 
         if (!file.exists()) {
             Logger.warn("Found " + pluginName + " but could not find resource pack at location " + file.getPath() + " ! ResourcePackManager will not be able to merge the resource pack from this plugin.");

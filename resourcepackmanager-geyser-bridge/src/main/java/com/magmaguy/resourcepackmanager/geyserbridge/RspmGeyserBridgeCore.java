@@ -103,6 +103,7 @@ public class RspmGeyserBridgeCore {
     private static final AtomicInteger SCHEDULER_THREAD_ID = new AtomicInteger();
     private static final ConcurrentMap<String, BridgeEntityDefinition> DEFINITIONS = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, CustomBedrockEntityDefinition> LOADED_DEFINITIONS = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, ConcurrentMap<String, String>> REGISTERED_PROPERTY_TYPES = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, ConcurrentMap<String, GeyserEntityProperty<?>>> REGISTERED_PROPERTIES =
             new ConcurrentHashMap<>();
     private static final ConcurrentMap<GeyserConnection, ConcurrentMap<Integer, String>> CUSTOM_ENTITIES = new ConcurrentHashMap<>();
@@ -290,6 +291,8 @@ public class RspmGeyserBridgeCore {
             };
             if (handle != null) {
                 registered.put(property.identifier(), handle);
+                REGISTERED_PROPERTY_TYPES.computeIfAbsent(definition.identifier(), ignored -> new ConcurrentHashMap<>())
+                        .put(property.identifier(), propertyType(property.type()));
             }
         }
     }
@@ -523,6 +526,7 @@ public class RspmGeyserBridgeCore {
         DEFINITIONS.clear();
         LOADED_DEFINITIONS.clear();
         REGISTERED_PROPERTIES.clear();
+        REGISTERED_PROPERTY_TYPES.clear();
         geyserLoaded = false;
         entityDefinitionWindowClosed = false;
         entityPropertyWindowClosed = false;
@@ -620,9 +624,24 @@ public class RspmGeyserBridgeCore {
 
         BridgeEntityDefinition merged = mergeDefinition(DEFINITIONS.get(definition.identifier()), definition);
         DEFINITIONS.put(definition.identifier(), merged);
-        if (entityDefinitionWindowClosed || entityPropertyWindowClosed || geyserLoaded) {
+        boolean missingEntity = (entityDefinitionWindowClosed || geyserLoaded)
+                && !LOADED_DEFINITIONS.containsKey(merged.identifier());
+        Map<String, String> registeredTypes = REGISTERED_PROPERTY_TYPES.getOrDefault(merged.identifier(), new ConcurrentHashMap<>());
+        boolean changedProperties = (entityPropertyWindowClosed || geyserLoaded) && merged.properties().stream()
+                .anyMatch(property -> !java.util.Objects.equals(registeredTypes.get(property.identifier()), propertyType(property.type())));
+        if (missingEntity || changedProperties) {
             warnDeferredDefinitions();
         }
+    }
+
+    private static String propertyType(String type) {
+        if (type == null) return "";
+        return switch (type.toUpperCase(Locale.ROOT)) {
+            case "BOOL", "BOOLEAN" -> "BOOLEAN";
+            case "FLOAT", "DOUBLE" -> "FLOAT";
+            case "INT", "INTEGER" -> "INTEGER";
+            default -> type.toUpperCase(Locale.ROOT);
+        };
     }
 
     private BridgeEntityDefinition mergeDefinition(BridgeEntityDefinition existing, BridgeEntityDefinition incoming) {
