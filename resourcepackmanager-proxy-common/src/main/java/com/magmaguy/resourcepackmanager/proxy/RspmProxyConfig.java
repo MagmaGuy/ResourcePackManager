@@ -1,6 +1,8 @@
 package com.magmaguy.resourcepackmanager.proxy;
 
+import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -34,7 +36,8 @@ public final class RspmProxyConfig {
             writeDefaults(configFile);
         }
         try (Reader r = Files.newBufferedReader(configFile)) {
-            Yaml yaml = new Yaml();
+            // Explicitly reject Java object tags, including on proxies providing SnakeYAML 1.33.
+            Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
             Map<String, Object> data = yaml.load(r);
             if (data == null) data = new LinkedHashMap<>();
             // network-key was removed as a config option in pre-release. It used to be

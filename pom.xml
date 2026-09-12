@@ -28,7 +28,9 @@
         <spigot.version>26.2-R0.1-SNAPSHOT</spigot.version>
         <magmacore.version>2.2.0-SNAPSHOT</magmacore.version>
         <gson.version>2.11.0</gson.version>
-        <httpclient5.version>5.3.1</httpclient5.version>
+        <httpclient5.version>5.6.4</httpclient5.version>
+        <snakeyaml.version>2.7</snakeyaml.version>
+        <guava.version>33.7.1-jre</guava.version>
         <bstats.version>3.0.2</bstats.version>
         <geyser.version>2.11.0-SNAPSHOT</geyser.version>
         <velocity.version>3.4.0-SNAPSHOT</velocity.version>
@@ -68,6 +70,17 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- Patched compile APIs; provided dependencies remain owned by the host platform. -->
+            <dependency>
+                <groupId>org.yaml</groupId>
+                <artifactId>snakeyaml</artifactId>
+                <version>${snakeyaml.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>${guava.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.spigotmc</groupId>
                 <artifactId>spigot-api</artifactId>

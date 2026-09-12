@@ -12,11 +12,10 @@
     <artifactId>resourcepackmanager-proxy-common</artifactId>
 
     <dependencies>
-        <!-- Compile against the oldest proxy-provided YAML API; each platform keeps its own runtime. -->
+        <!-- Use the patched YAML API; each proxy supplies its own runtime. -->
         <dependency>
             <groupId>org.yaml</groupId>
             <artifactId>snakeyaml</artifactId>
-            <version>1.33</version>
             <scope>provided</scope>
         </dependency>
         <dependency>

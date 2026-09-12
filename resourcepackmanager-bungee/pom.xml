@@ -11,6 +11,19 @@
 
     <artifactId>resourcepackmanager-bungee</artifactId>
 
+    <dependencyManagement>
+        <dependencies>
+            <!-- Keep Bungee's provided Netty modules on its existing 4.1 API line. -->
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-bom</artifactId>
+                <version>4.1.137.Final</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <dependency>
             <groupId>net.md-5</groupId>
