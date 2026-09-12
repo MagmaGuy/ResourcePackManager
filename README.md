@@ -1,5 +1,7 @@
 # ResourcePackManager
 
+[Download](https://nightbreak.io/plugin/resourcepackmanager/) · [Modrinth](https://modrinth.com/plugin/resourcepackmanager) · [Documentation](https://wiki.nightbreak.io/) · [Support](https://discord.gg/nightbreak)
+
 ResourcePackManager (RSPM) is a universal Bukkit/Paper, Velocity, and
 BungeeCord plugin. On backend servers it merges the resource packs of
 every plugin into a single pack, hosts it, and pushes it to players
@@ -14,26 +16,26 @@ combined pack without you having to host or stitch anything together by hand.
 
 ## Key features
 
-- **Automatic pack merging** — collects the resource packs supplied by other
+- **Automatic pack merging**: collects the resource packs supplied by other
   installed plugins and merges them into one pack, resolving file conflicts by a
   configurable `priorityOrder`.
-- **Self-host first, remote fallback** — serves the pack from an embedded HTTP
+- **Self-host first, remote fallback**: serves the pack from an embedded HTTP
   server when reachable, otherwise uploads to magmaguy.com and pushes that URL.
-- **Bedrock conversion** — converts the merged Java pack to a Bedrock pack and
+- **Bedrock conversion**: converts the merged Java pack to a Bedrock pack and
   hands it to Geyser (`GeyserPackProvider`), optionally auto-deploying it to the
   Geyser packs folder.
-- **Network mode** — on a Velocity/BungeeCord network the proxy module pulls each
+- **Network mode**: on a Velocity/BungeeCord network the proxy module pulls each
   backend's Bedrock pack over HTTP and serves it to Bedrock players network-wide.
-- **Custom mixer input** — drop additional `.zip` packs into the `mixer/` folder
+- **Custom mixer input**: drop additional `.zip` packs into the `mixer/` folder
   to have them merged in alongside plugin packs.
-- **Per-integration exclusion** — disable an automatically discovered plugin
+- **Per-integration exclusion**: disable an automatically discovered plugin
   pack without affecting manually managed mixer inputs.
-- **Verified universal updates** — update candidates are checked as complete
+- **Verified universal updates**: update candidates are checked as complete
   universal jars before being staged for a backend, proxy, or Geyser restart.
-- **Operator diagnostics** — `/rspm status` dumps pack state, hosting mode,
+- **Operator diagnostics**: `/rspm status` dumps pack state, hosting mode,
   resolved external host, and integration presence in one shot.
-- **Data compliance** — `/rspm data_compliance_request` packages all data the
-  autohost holds for your server (see the bundled `ReadMe.md` data policy).
+- **Data compliance**: `/rspm data_compliance_request` packages all data the
+  autohost holds for your server (see the bundled `ReadMe.txt` data policy).
 
 ## Modules
 
@@ -84,17 +86,15 @@ building or downloading a secondary bridge artifact.
 
 ## Requirements
 
-- JDK 21 is the supported build/test default and the normal runtime for current
-  Minecraft 1.21.4+ servers. Maven still emits Java 17-compatible plugin
-  bytecode.
+- Build with JDK 21. Run the Java version required by your backend or proxy. The Maven build emits Java 17-compatible plugin bytecode; that does not lower the Minecraft server's own Java requirement.
 - A Bukkit/Paper server. `plugin.yml` declares `api-version: 1.21.4`.
 - MagmaCore (shaded into the Bukkit jar; no separate install).
-- For Bedrock support: **GeyserMC** on the backend (`Geyser-Spigot`) and
-  **Floodgate** for network mode — the network key is auto-derived from
+- For Bedrock support: **GeyserMC** on the backend or proxy where Bedrock players connect, and
+  **Floodgate** for network mode: the network key is auto-derived from
   `plugins/floodgate/key.pem`, so the same `key.pem` must be shared across the
   whole network (Floodgate requires this anyway).
 
-All other plugin integrations are soft dependencies — RSPM merges their packs if
+All other plugin integrations are soft dependencies: RSPM merges their packs if
 present and does nothing if absent (e.g. EliteMobs, FreeMinecraftModels,
 ModelEngine, Nova, Oraxen, ItemsAdder, Nexo, BetterHUD, ValhallaMMO,
 RealisticSurvival, and others listed in `plugin.yml`).
@@ -103,9 +103,8 @@ RealisticSurvival, and others listed in `plugin.yml`).
 
 1. Put `ResourcePackManager.jar` in the `plugins/` folder of **each backend**
    (game) server and start it once to generate `plugins/ResourcePackManager/config.yml`.
-2. For Bedrock delivery, install Geyser on the backend (and Floodgate if you run
-   a proxy network).
-3. **Network mode only** — also put the same `ResourcePackManager.jar` in the
+2. For Bedrock delivery on a single server, install Geyser on that backend. On a proxy network, install Geyser on the proxy and configure Floodgate identity/key forwarding for the network.
+3. **Network mode only**: also put the same `ResourcePackManager.jar` in the
    proxy's `plugins/` folder. It detects Velocity vs BungeeCord from
    the platform loader. The proxy generates its own `config.yml` on first start.
 
@@ -141,6 +140,7 @@ Backend config lives at `plugins/ResourcePackManager/config.yml`. Selected keys
 | `selfHostPort` | `-1` | HTTP port; `-1` = Minecraft port + `networkHttpOffset-v2`. |
 | `networkHttpOffset-v2` | `1` | Fallback offset used when `selfHostPort` is auto-derived; the backend announces its actual HTTP port to proxies automatically. |
 | `selfHostExternalHost` | `""` | Public host/IP clients use to reach the self-host server; empty = auto-detect. |
+| `selfHostExternalUrl` | `""` | Complete public HTTP(S) pack URL for self-hosting behind a reverse proxy; include the path clients must request. |
 | `selfHostForce` | `false` | Force self-hosting, bypassing all other delivery paths (testing). |
 | `preferSelfHost` | `true` | Try self-host first and fall back to remote upload only if reachability checks fail. |
 
@@ -233,7 +233,7 @@ Bungee adapters are rebuilt before the final jar is shaded:
 
 ```powershell
 $env:MC_DIST_DIR = 'C:/path/to/MineCraftProjects/dist'
-mvn clean package
+mvn -DskipTests package
 ```
 
 This builds every module. The main backend jar is produced at:
@@ -251,48 +251,18 @@ Bukkit/Paper, Velocity, BungeeCord, and Geyser.
 Before publishing, verify that `plugin.yml`, `velocity-plugin.json`,
 `bungee.yml`, and `extension.yml` all contain the parent POM version.
 
-## Testing
+## Developer integration
 
-The normal reactor is self-contained and does not start Docker, real proxies,
-Paper, or Geyser:
+The current release is `2.4.0`. Maven artifacts are available from [MagmaGuy's repository](https://repo.magmaguy.com/releases): the parent is `com.magmaguy:ResourcePackManager-parent:2.4.0`, and the universal plugin is `com.magmaguy:ResourcePackManager:2.4.0`. The eight internal modules listed above are also published at `2.4.0`. Use Maven `provided` or Gradle `compileOnly` when depending on the installed plugin.
 
-```powershell
-mvn clean package
-```
+Publish a changed MagmaCore dependency to Maven Local before rebuilding. The package command above skips tests; run `mvn test` explicitly when you want the reactor's automated checks. Unit and loopback tests do not establish real proxy, Geyser, or client behavior.
 
-It includes loopback pack-serving, protected update-route auth, Java
-hosting-route decision, network-key and update-signature, hoster
-error-handling, backend endpoint-resolution, and mixer fingerprint/atlas/
-overlay tests. `resourcepackmanager-system-tests/README.md` names the exact
-classes and the known coverage gaps.
+## Troubleshooting
 
-The resource-intensive RSPM-only labs live under
-`resourcepackmanager-system-tests/` and are never selected by the normal
-reactor or the generic TestBeds smoke harness.
+Start with `/rspm status` and the complete merge/hosting log. Verify that a player's machine can reach the actual pack URL. A locally reachable HTTP port does not establish that it is reachable through a firewall, proxy, or hosting provider.
 
-Run the real disposable Velocity and Bungee/Geyser lifecycle lab explicitly:
+For incorrect textures, collect the source packs, generated merged pack, collision log, and priority configuration. For Bedrock network problems, include backend and proxy versions, Geyser/Floodgate placement, and both sides' logs. Keep Floodgate keys, Nightbreak tokens, and other credentials private.
 
-```powershell
-./resourcepackmanager-system-tests/Invoke-RspmProxySystemTests.ps1
-```
+## Data policy and licensing
 
-The native network-sync check uses two production HTTP servers, temporary
-packs and mappings, and the real updater. No Docker or Minecraft runtime is needed:
-
-```powershell
-mvn --no-transfer-progress -pl resourcepackmanager-proxy-common -am test -Dtest=NetworkSyncFeatureTest -Dsurefire.failIfNoSpecifiedTests=false
-```
-
-See [the system-test boundaries](resourcepackmanager-system-tests/README.md)
-for what still requires the real proxy/Geyser lifecycle.
-
-## Links
-
-- Spigot: https://www.spigotmc.org/resources/resource-pack-manager.118574/
-
-## License
-
-No license file is present in this repository. ResourcePackManager is developed by
-MagmaGuy for the Nightbreak game studio; see
-`resourcepackmanager-bukkit/src/main/resources/ReadMe.md` for the autohost data
-policy and terms of service.
+The bundled [autohost data policy](resourcepackmanager-bukkit/src/main/resources/ReadMe.txt) explains hosting and data retrieval. `/rspm data_compliance_request` includes a copy in its exported data. Resource packs retain the licenses of their constituent content; merging does not grant new distribution rights. No repository-wide license file is currently included.

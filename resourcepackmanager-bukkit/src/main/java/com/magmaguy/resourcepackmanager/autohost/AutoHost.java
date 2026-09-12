@@ -985,7 +985,7 @@ public class AutoHost {
 
             File readMe = new File(ResourcePackManager.plugin.getDataFolder().getAbsolutePath()
                     + File.separatorChar + "data_compliance" + File.separatorChar + "ReadMe.md");
-            try (InputStream inputStream = ResourcePackManager.plugin.getResource("ReadMe.md")) {
+            try (InputStream inputStream = ResourcePackManager.plugin.getResource("ReadMe.txt")) {
                 if (inputStream != null) {
                     Files.copy(inputStream, readMe.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 }
