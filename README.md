@@ -253,9 +253,11 @@ Before publishing, verify that `plugin.yml`, `velocity-plugin.json`,
 
 ## Developer API
 
+[Java class and method reference](https://wiki.nightbreak.io/javadoc/resourcepackmanager/index.html).
+
 Resource-pack registration on the Bukkit backend: [ResourcePackManager developer reference](https://wiki.nightbreak.io/ResourcePackManager/api). See the [Java API index](https://wiki.nightbreak.io/developers) for dependency setup and lifecycle guidance.
 
-Maven: `com.magmaguy:ResourcePackManager:2.4.0` from [MagmaGuy's repository](https://repo.magmaguy.com/releases). Use `provided` or `compileOnly` scope for the installed plugin.
+Maven: `com.magmaguy:ResourcePackManager:2.4.0` from [MagmaGuy's repository](https://repo.magmaguy.com/#/releases). Use `provided` or `compileOnly` scope for the installed plugin.
 
 ## Troubleshooting
 
