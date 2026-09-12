@@ -43,7 +43,10 @@ public final class UniversalPluginJarInstaller {
 
     public static Result install(Path sourceJar, Path extensionsDirectory) throws IOException {
         Path source = sourceJar.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+        // Testbeds may expose the shared release through a symlink. Validate the
+        // resolved artifact; rejecting the link itself prevents the universal
+        // Geyser extension from working in the supported shared-dist layout.
+        if (!Files.isRegularFile(source)) {
             throw new IOException("running RSPM code source is not a regular JAR: " + source);
         }
         UniversalPluginJarInspector.Inspection sourceInspection =

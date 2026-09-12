@@ -75,7 +75,10 @@ public final class UniversalPluginJarInspector {
             throw new IOException("RSPM JAR path is missing");
         }
         Path jar = sourceJar.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(jar, LinkOption.NOFOLLOW_LINKS)) {
+        // Follow the testbed's shared-dist symlink. The bytes are still
+        // inspected and hashed, while the link itself is not an executable
+        // artifact that needs to be rejected.
+        if (!Files.isRegularFile(jar)) {
             throw new IOException("RSPM code source is not a regular JAR: " + jar);
         }
 
