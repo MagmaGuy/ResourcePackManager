@@ -251,11 +251,11 @@ Bukkit/Paper, Velocity, BungeeCord, and Geyser.
 Before publishing, verify that `plugin.yml`, `velocity-plugin.json`,
 `bungee.yml`, and `extension.yml` all contain the parent POM version.
 
-## Developer integration
+## Developer API
 
-The current release is `2.4.0`. Maven artifacts are available from [MagmaGuy's repository](https://repo.magmaguy.com/releases): the parent is `com.magmaguy:ResourcePackManager-parent:2.4.0`, and the universal plugin is `com.magmaguy:ResourcePackManager:2.4.0`. The eight internal modules listed above are also published at `2.4.0`. Use Maven `provided` or Gradle `compileOnly` when depending on the installed plugin.
+Resource-pack registration on the Bukkit backend: [ResourcePackManager developer reference](https://wiki.nightbreak.io/ResourcePackManager/api). See the [Java API index](https://wiki.nightbreak.io/developers) for dependency setup and lifecycle guidance.
 
-Publish a changed MagmaCore dependency to Maven Local before rebuilding. The package command above skips tests; run `mvn test` explicitly when you want the reactor's automated checks. Unit and loopback tests do not establish real proxy, Geyser, or client behavior.
+Maven: `com.magmaguy:ResourcePackManager:2.4.0` from [MagmaGuy's repository](https://repo.magmaguy.com/releases). Use `provided` or `compileOnly` scope for the installed plugin.
 
 ## Troubleshooting
 
