@@ -28,16 +28,8 @@ public final class GeyserBridgeExtensionInstaller {
             switch (result.state()) {
                 case CURRENT -> {
                 }
-                case INSTALLED_DIRECTLY_RESTART_REQUIRED ->
-                        logger.warn("Installed the exact universal "
-                                + UniversalPluginJarInstaller.UNIVERSAL_FILE_NAME + " in "
-                                + extensionsDirectory.toAbsolutePath()
-                                + ". Restart the proxy once so Geyser loads this RSPM release before Bedrock players join.");
-                case STAGED_FOR_GEYSER_RESTART ->
-                        logger.warn("Staged the exact universal "
-                                + UniversalPluginJarInstaller.UNIVERSAL_FILE_NAME + " through Geyser's "
-                                + result.staged().toAbsolutePath()
-                                + " update queue. Restart the proxy once; Geyser will replace every older RSPM extension before loading it.");
+                case INSTALLED_DIRECTLY_RESTART_REQUIRED, STAGED_FOR_GEYSER_RESTART ->
+                        logger.warn("Geyser support updated. Restart your proxy to finish the update.");
             }
         } catch (IOException exception) {
             logger.warn("Failed to install RSPM Geyser bridge extension: " + exception.getMessage(), exception);

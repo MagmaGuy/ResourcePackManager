@@ -133,14 +133,9 @@ public final class GeyserBridgeInstaller {
             switch (result.state()) {
                 case CURRENT -> {
                 }
-                case INSTALLED_DIRECTLY_RESTART_REQUIRED ->
+                case INSTALLED_DIRECTLY_RESTART_REQUIRED, STAGED_FOR_GEYSER_RESTART ->
                         ResourcePackManager.plugin.getLogger().warning(
-                                "Installed the byte-identical universal ResourcePackManager.jar in Geyser-Spigot/extensions "
-                                        + "(SHA-256 " + result.sha256() + "). Restart the server once so Geyser loads it.");
-                case STAGED_FOR_GEYSER_RESTART ->
-                        ResourcePackManager.plugin.getLogger().warning(
-                                "Staged the byte-identical universal ResourcePackManager.jar through Geyser's update queue at "
-                                        + result.staged() + ". Restart the server once; Geyser will replace every older RSPM extension before loading it.");
+                                "Geyser support updated. Restart your server to finish the update.");
             }
         } catch (IOException exception) {
             ResourcePackManager.plugin.getLogger().warning(
@@ -174,9 +169,7 @@ public final class GeyserBridgeInstaller {
                                 + result.retainedVersion() + ".");
             } else if (result.state() != UniversalPluginJarInstaller.State.CURRENT) {
                 ResourcePackManager.plugin.getLogger().warning(
-                        "Staged the downloaded ResourcePackManager " + result.sourceVersion()
-                                + " update for local Geyser using the same SHA-256 "
-                                + result.sha256() + ". One server restart will update both.");
+                        "Geyser support updated. Restart your server to finish the update.");
             }
         } catch (IOException exception) {
             ResourcePackManager.plugin.getLogger().warning(
