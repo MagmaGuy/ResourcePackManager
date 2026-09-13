@@ -3,6 +3,7 @@ package com.magmaguy.resourcepackmanager.autohost;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.ServerSocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -77,5 +78,26 @@ class AutoHostAddressAndPortTest {
         IOException derived = assertThrows(IOException.class,
                 () -> AutoHost.resolveHttpPort(-1, 65535, 1));
         assertTrue(derived.getMessage().contains("between 1 and 65535"));
+    }
+
+    @Test
+    void occupiedAutoDerivedPortFallsBackToFreePort() throws Exception {
+        try (ServerSocket occupied = new ServerSocket(0)) {
+            int occupiedPort = occupied.getLocalPort();
+            try (var server = AutoHost.startPackHttpServerWithFallback(occupiedPort, true)) {
+                assertTrue(server.port() > 0);
+                assertTrue(server.port() != occupiedPort,
+                        "Fallback must not reuse the occupied auto-derived port");
+            }
+        }
+    }
+
+    @Test
+    void occupiedExplicitPortStillFails() throws Exception {
+        try (ServerSocket occupied = new ServerSocket(0)) {
+            int occupiedPort = occupied.getLocalPort();
+            assertThrows(IOException.class,
+                    () -> AutoHost.startPackHttpServerWithFallback(occupiedPort, false));
+        }
     }
 }

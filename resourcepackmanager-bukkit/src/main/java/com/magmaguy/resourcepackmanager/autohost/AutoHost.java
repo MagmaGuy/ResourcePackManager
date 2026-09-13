@@ -1493,7 +1493,10 @@ public class AutoHost {
             return;
         }
         try {
-            PackHttpServer server = startPackHttpServer(port);
+            PackHttpServer server = startPackHttpServerWithFallback(
+                    port,
+                    DefaultConfig.getSelfHostPort() == -1,
+                    message -> Logger.warn("[WARN] " + message));
             if (!run.active()) {
                 server.close();
                 return;
@@ -1606,6 +1609,32 @@ public class AutoHost {
                 () -> javaPackRouteDescriptor,
                 port,
                 "/rspm.zip");
+    }
+
+    /**
+     * Bind the backend listener, falling back to an OS-assigned free port only
+     * when the requested port was auto-derived. An explicitly configured port
+     * remains an administrator contract and must fail loudly when occupied.
+     * The actual bound port is announced to the proxy by the caller.
+     */
+    static PackHttpServer startPackHttpServerWithFallback(
+            int preferredPort, boolean allowEphemeralFallback) throws IOException {
+        return startPackHttpServerWithFallback(preferredPort, allowEphemeralFallback, ignored -> { });
+    }
+
+    private static PackHttpServer startPackHttpServerWithFallback(
+            int preferredPort,
+            boolean allowEphemeralFallback,
+            java.util.function.Consumer<String> warningSink) throws IOException {
+        try {
+            return startPackHttpServer(preferredPort);
+        } catch (IOException bindFailure) {
+            if (!allowEphemeralFallback) throw bindFailure;
+            warningSink.accept("Auto-derived backend HTTP port " + preferredPort
+                    + " is unavailable (" + bindFailure.getMessage()
+                    + "); retrying with an OS-assigned free port.");
+            return startPackHttpServer(0);
+        }
     }
 
     private static void announceBackendEndpoint(MagmaguyRspClient relayClient, String networkKey, int httpPort) {
