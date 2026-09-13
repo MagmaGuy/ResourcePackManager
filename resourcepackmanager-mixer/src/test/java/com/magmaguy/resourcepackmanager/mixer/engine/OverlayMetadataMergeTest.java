@@ -107,6 +107,74 @@ class OverlayMetadataMergeTest {
     }
 
     @Test
+    void legacyFormatsMayCoverOnlyPreMinorClients(@TempDir Path tempDir) throws Exception {
+        Path pack = createPack(tempDir.resolve("mixed-legacy-range.zip"), """
+                {
+                  "pack": {"min_format": 42, "max_format": 87},
+                  "overlays": {"entries": [
+                    {
+                      "directory": "ia_overlay_1_21_2_plus",
+                      "formats": {"min_inclusive": 42, "max_inclusive": 64},
+                      "min_format": 42,
+                      "max_format": 87
+                    }
+                  ]}
+                }
+                """);
+
+        MixOutput output = runMix(tempDir, new RecordingLogger(), pack);
+
+        JsonObject entry = overlayEntry(readJson(output.mergedDir().toPath().resolve("pack.mcmeta")),
+                "ia_overlay_1_21_2_plus");
+        assertEquals(42, entry.getAsJsonObject("formats").get("min_inclusive").getAsInt());
+        assertEquals(64, entry.getAsJsonObject("formats").get("max_inclusive").getAsInt());
+        assertEquals(42, entry.get("min_format").getAsInt());
+        assertEquals(87, entry.get("max_format").getAsInt());
+    }
+
+    @Test
+    void wideLegacyRangeGetsClippedWhenFormatsAreSynthesized(@TempDir Path tempDir) throws Exception {
+        Path pack = createPack(tempDir.resolve("synthesized-legacy-range.zip"), """
+                {
+                  "pack": {"min_format": 42, "max_format": 87},
+                  "overlays": {"entries": [
+                    {"directory": "legacy_overlay", "min_format": 42, "max_format": 87}
+                  ]}
+                }
+                """);
+
+        MixOutput output = runMix(tempDir, new RecordingLogger(), pack);
+
+        JsonObject entry = overlayEntry(readJson(output.mergedDir().toPath().resolve("pack.mcmeta")),
+                "legacy_overlay");
+        assertEquals(42, entry.getAsJsonObject("formats").get("min_inclusive").getAsInt());
+        assertEquals(64, entry.getAsJsonObject("formats").get("max_inclusive").getAsInt());
+    }
+
+    @Test
+    void mismatchedLegacyStartStillStopsPublication(@TempDir Path tempDir) throws Exception {
+        Path pack = createPack(tempDir.resolve("mismatched-legacy-range.zip"), """
+                {
+                  "pack": {"min_format": 42, "max_format": 87},
+                  "overlays": {"entries": [
+                    {
+                      "directory": "invalid_overlay",
+                      "formats": {"min_inclusive": 43, "max_inclusive": 64},
+                      "min_format": 42,
+                      "max_format": 87
+                    }
+                  ]}
+                }
+                """);
+
+        var failure = assertThrows(java.io.IOException.class,
+                () -> runMix(tempDir, new RecordingLogger(), pack));
+
+        assertTrue(failure.getMessage().contains("conflicting ranges"), failure::getMessage);
+        assertFalse(tempDir.resolve("output/merged.zip").toFile().exists());
+    }
+
+    @Test
     void unsafeOverlayDirectoryStopsPublication(@TempDir Path tempDir) throws Exception {
         Path pack = createPack(tempDir.resolve("unsafe-directory.zip"), """
                 {

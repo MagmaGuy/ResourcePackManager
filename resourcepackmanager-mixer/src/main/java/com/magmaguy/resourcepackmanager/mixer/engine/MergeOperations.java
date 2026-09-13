@@ -679,7 +679,10 @@ public final class MergeOperations {
 
             JsonObject formats = new JsonObject();
             formats.addProperty("min_inclusive", numericRange.min().major());
-            formats.addProperty("max_inclusive", numericRange.max().major());
+            int legacyMax = numericRange.min().major() <= LAST_PRE_MINOR_CLIENT_PACK_FORMAT
+                    ? Math.min(numericRange.max().major(), LAST_PRE_MINOR_CLIENT_PACK_FORMAT)
+                    : numericRange.max().major();
+            formats.addProperty("max_inclusive", legacyMax);
             entry.add("formats", formats);
             changed = true;
         }
@@ -848,8 +851,12 @@ public final class MergeOperations {
                 throw new IOException("Overlay '" + directory
                         + "' needs a valid formats range because this pack supports a pre-65 format");
             }
-            if (formatsRange[0] != numericRange.min().major()
-                    || formatsRange[1] != numericRange.max().major()) {
+            int expectedLegacyMin = numericRange.min().major();
+            int expectedLegacyMax = numericRange.min().major() <= LAST_PRE_MINOR_CLIENT_PACK_FORMAT
+                    ? Math.min(numericRange.max().major(), LAST_PRE_MINOR_CLIENT_PACK_FORMAT)
+                    : numericRange.max().major();
+            if (formatsRange[0] != expectedLegacyMin
+                    || formatsRange[1] != expectedLegacyMax) {
                 throw new IOException("Overlay '" + directory + "' declares conflicting ranges: formats="
                         + formatsRange[0] + ".." + formatsRange[1] + ", min_format/max_format="
                         + numericRange.min().major() + ".." + numericRange.max().major());
