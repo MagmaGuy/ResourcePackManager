@@ -141,8 +141,8 @@ public final class MixEngine {
                 }
             }
 
-            // Validate overlay directory metadata before any code resolves those directories on
-            // disk. This also normalizes the final, fully assembled pack.mcmeta.
+            // Check overlay directory containment before any code resolves those directories on
+            // disk. Format metadata is intentionally preserved from the source packs.
             checkCancelled();
             merge.normalizeAndValidateOverlayMetadata(mergedDir);
             checkCancelled();

@@ -14,13 +14,27 @@ import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OverlayMetadataMergeTest {
 
     @Test
-    void mixedOverlayMetadataIsNormalizedBeforePublication(@TempDir Path tempDir) throws Exception {
+    void singlePackMetadataIsCopiedWithoutRewriting(@TempDir Path tempDir) throws Exception {
+        String metadata = "{\n  \"pack\": {\"min_format\": 42, \"max_format\": 87, \"description\": \"author supplied\"},\n"
+                + "  \"overlays\": {\"entries\": [{\"directory\": \"Overlay-Author\",\n"
+                + "    \"formats\": {\"min_inclusive\": 43, \"max_inclusive\": 64},\n"
+                + "    \"min_format\": 42, \"max_format\": 87, \"custom\": {\"keep\": true}}]}\n}\n";
+        Path pack = createPack(tempDir.resolve("single.zip"), metadata);
+
+        MixOutput output = runMix(tempDir, new RecordingLogger(), pack);
+        Path copied = output.mergedDir().toPath().resolve("pack.mcmeta");
+        assertArrayEquals(metadata.getBytes(java.nio.charset.StandardCharsets.UTF_8), Files.readAllBytes(copied));
+    }
+
+    @Test
+    void mixedOverlayMetadataPreservesEachEntry(@TempDir Path tempDir) throws Exception {
         Path higherPriorityPack = createPack(tempDir.resolve("higher.zip"), """
                 {
                   "pack": {"pack_format": 65},
@@ -40,27 +54,23 @@ class OverlayMetadataMergeTest {
                   ]}
                 }
                 """);
-        RecordingLogger logger = new RecordingLogger();
-        MixOutput output = runMix(tempDir, logger, higherPriorityPack, lowerPriorityPack);
+        MixOutput output = runMix(tempDir, new RecordingLogger(), higherPriorityPack, lowerPriorityPack);
 
         JsonObject mcmeta = readJson(output.mergedDir().toPath().resolve("pack.mcmeta"));
         JsonObject stellarityEntry = overlayEntry(mcmeta, "stellarity_assets");
-        assertTrue(stellarityEntry.has("formats"),
-                () -> "Published mixed-generation overlays without the legacy formats field; warnings="
-                        + logger.warnings);
-        JsonObject formats = stellarityEntry.getAsJsonObject("formats");
-        assertEquals(65, formats.get("min_inclusive").getAsInt());
-        assertEquals(75, formats.get("max_inclusive").getAsInt());
+        assertFalse(stellarityEntry.has("formats"));
+        assertEquals(65, stellarityEntry.get("min_format").getAsInt());
+        assertEquals(75, stellarityEntry.get("max_format").getAsInt());
 
         JsonObject legacyEntry = overlayEntry(mcmeta, "legacy_assets");
-        assertEquals(46, legacyEntry.get("min_format").getAsInt());
-        assertEquals(64, legacyEntry.get("max_format").getAsInt());
         assertEquals(46, legacyEntry.getAsJsonObject("formats").get("min_inclusive").getAsInt());
         assertEquals(64, legacyEntry.getAsJsonObject("formats").get("max_inclusive").getAsInt());
+        assertFalse(legacyEntry.has("min_format"));
+        assertFalse(legacyEntry.has("max_format"));
     }
 
     @Test
-    void newFormatOnlyOverlayDoesNotPublishRemovedFormatsField(@TempDir Path tempDir) throws Exception {
+    void suppliedFormatsFieldIsPreservedForNewFormatOverlay(@TempDir Path tempDir) throws Exception {
         Path pack = createPack(tempDir.resolve("new-format.zip"), """
                 {
                   "pack": {"min_format": 65, "max_format": 75},
@@ -78,7 +88,7 @@ class OverlayMetadataMergeTest {
         MixOutput output = runMix(tempDir, new RecordingLogger(), pack);
 
         JsonObject entry = overlayEntry(readJson(output.mergedDir().toPath().resolve("pack.mcmeta")), "new_assets");
-        assertFalse(entry.has("formats"), "Resource-pack format 65+ forbids the removed formats field");
+        assertTrue(entry.has("formats"), "The mixer must preserve an author's supplied field");
         assertEquals(65, entry.get("min_format").getAsInt());
         assertEquals(75, entry.get("max_format").getAsInt());
     }
@@ -133,7 +143,7 @@ class OverlayMetadataMergeTest {
     }
 
     @Test
-    void wideLegacyRangeGetsClippedWhenFormatsAreSynthesized(@TempDir Path tempDir) throws Exception {
+    void missingLegacyFieldIsNotSynthesized(@TempDir Path tempDir) throws Exception {
         Path pack = createPack(tempDir.resolve("synthesized-legacy-range.zip"), """
                 {
                   "pack": {"min_format": 42, "max_format": 87},
@@ -147,12 +157,13 @@ class OverlayMetadataMergeTest {
 
         JsonObject entry = overlayEntry(readJson(output.mergedDir().toPath().resolve("pack.mcmeta")),
                 "legacy_overlay");
-        assertEquals(42, entry.getAsJsonObject("formats").get("min_inclusive").getAsInt());
-        assertEquals(64, entry.getAsJsonObject("formats").get("max_inclusive").getAsInt());
+        assertFalse(entry.has("formats"));
+        assertEquals(42, entry.get("min_format").getAsInt());
+        assertEquals(87, entry.get("max_format").getAsInt());
     }
 
     @Test
-    void mismatchedLegacyStartStillStopsPublication(@TempDir Path tempDir) throws Exception {
+    void mismatchedLegacyRangesRemainAuthorsResponsibility(@TempDir Path tempDir) throws Exception {
         Path pack = createPack(tempDir.resolve("mismatched-legacy-range.zip"), """
                 {
                   "pack": {"min_format": 42, "max_format": 87},
@@ -167,11 +178,11 @@ class OverlayMetadataMergeTest {
                 }
                 """);
 
-        var failure = assertThrows(java.io.IOException.class,
-                () -> runMix(tempDir, new RecordingLogger(), pack));
-
-        assertTrue(failure.getMessage().contains("conflicting ranges"), failure::getMessage);
-        assertFalse(tempDir.resolve("output/merged.zip").toFile().exists());
+        MixOutput output = runMix(tempDir, new RecordingLogger(), pack);
+        JsonObject entry = overlayEntry(readJson(output.mergedDir().toPath().resolve("pack.mcmeta")),
+                "invalid_overlay");
+        assertEquals(43, entry.getAsJsonObject("formats").get("min_inclusive").getAsInt());
+        assertEquals(42, entry.get("min_format").getAsInt());
     }
 
     @Test
@@ -201,11 +212,8 @@ class OverlayMetadataMergeTest {
                 }
                 """);
 
-        var failure = assertThrows(java.io.IOException.class,
-                () -> runMix(tempDir, new RecordingLogger(), pack));
-
-        assertTrue(failure.getMessage().contains("entries"), failure::getMessage);
-        assertFalse(tempDir.resolve("output/merged.zip").toFile().exists());
+        MixOutput output = runMix(tempDir, new RecordingLogger(), pack);
+        assertTrue(output.mergedDir().toPath().resolve("pack.mcmeta").toFile().exists());
     }
 
     @Test
@@ -223,12 +231,10 @@ class OverlayMetadataMergeTest {
                 """);
         RecordingLogger logger = new RecordingLogger();
 
-        var failure = assertThrows(java.io.IOException.class,
-                () -> runMix(tempDir, logger, invalidPack));
-
-        assertTrue(failure.getMessage().contains("broken_assets"), failure::getMessage);
-        assertFalse(tempDir.resolve("output/merged.zip").toFile().exists(),
-                "Invalid overlay metadata reached the published zip");
+        MixOutput output = runMix(tempDir, logger, invalidPack);
+        JsonObject entry = overlayEntry(readJson(output.mergedDir().toPath().resolve("pack.mcmeta")),
+                "broken_assets");
+        assertTrue(entry.getAsJsonObject("formats").has("min_inclusive"));
     }
 
     private static MixOutput runMix(Path tempDir, RecordingLogger logger, Path... packs) throws Exception {
