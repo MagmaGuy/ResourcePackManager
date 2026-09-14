@@ -61,6 +61,7 @@ public final class ProxyStatusRenderer {
         line.accept("&8&m----- &eBackends &8&m-----");
         List<BackendListProvider.Backend> backends = snapshot.backends();
         java.util.List<String> executableUpdateAuthRejected = new java.util.ArrayList<>();
+        java.util.List<String> unavailableParticipants = new java.util.ArrayList<>();
         if (backends.isEmpty()) {
             line.accept("&c⚠ NetworkSync sees ZERO backends.");
             line.accept("&c  The proxy plugin manager reports no registered servers. Causes:");
@@ -69,6 +70,7 @@ public final class ProxyStatusRenderer {
             line.accept("&c  Fix: run `/server` and confirm at least one backend is listed.");
         } else {
             line.accept("&7Count: &f" + backends.size());
+            line.accept("&7Confirmed RSPM participants: &f" + snapshot.participatingBackends().size());
             for (BackendListProvider.Backend b : backends) {
                 String key = NetworkSync.sanitizeBackendName(b.name());
                 NetworkSync.ResolvedBackendEndpoint endpoint = NetworkSync.resolveBackendHttpEndpoint(
@@ -76,6 +78,11 @@ public final class ProxyStatusRenderer {
                 line.accept("&7  • &f" + b.name() + " &8(MC " + b.host() + ":" + b.mcPort()
                         + " → HTTP " + endpoint.host() + ":" + endpoint.port()
                         + ", " + endpoint.source() + ")");
+                if (!snapshot.participatingBackends().contains(b.name())) {
+                    line.accept("&7      " + snapshot.discoveryStatus().getOrDefault(b.name(), "waiting for discovery")
+                            + ". Pack synchronization is not waiting for this server.");
+                    continue;
+                }
                 NetworkSync.FetchOutcome zipOutcome = snapshot.fetchOutcomes()
                         .get(key + ":" + PackHttpServer.BEDROCK_PACK_PATH);
                 NetworkSync.FetchOutcome mapOutcome = snapshot.fetchOutcomes()
@@ -84,6 +91,7 @@ public final class ProxyStatusRenderer {
                         .get(key + ":" + PackHttpServer.EXECUTABLE_UPDATE_PATH);
                 line.accept("&7      /bedrock.zip:   " + describeOutcome(zipOutcome));
                 line.accept("&7      /mappings.json: " + describeOutcome(mapOutcome));
+                if (failedFetch(zipOutcome) || failedFetch(mapOutcome)) unavailableParticipants.add(b.name());
                 if (updateOutcome != null) {
                     line.accept("&7      /rspm-update.jar: " + describeOutcome(updateOutcome));
                     if (updateOutcome.httpStatus() == 401) {
@@ -147,7 +155,7 @@ public final class ProxyStatusRenderer {
                         ? " &8(unreachable warning already fired)"
                         : ""));
         } else {
-            line.accept("&7Consecutive empty polls: &a0 &8(healthy)");
+            line.accept("&7Consecutive empty polls: &f0 &8(content availability, not connection health)");
         }
         File mergedZip = snapshot.mergedBedrockZip();
         File mergedMap = snapshot.mergedMappings();
@@ -196,15 +204,25 @@ public final class ProxyStatusRenderer {
                 || snapshot.currentMergedPack() == null
                 || !geyserDetected
                 || !floodgateDetected
+                || !unavailableParticipants.isEmpty()
                 || !executableUpdateAuthRejected.isEmpty();
         if (somethingWrong) {
             line.accept("");
             line.accept("&8&m----- &c⚠ Diagnostic &8&m-----");
+            if (!unavailableParticipants.isEmpty()) {
+                line.accept("&e• RSPM participants with failed pack refreshes: &f" + String.join(", ", unavailableParticipants));
+                line.accept("&e  Committed cached content may still be available. Check their fetch results above.");
+            }
             if (backends.isEmpty()) {
                 line.accept("&c• No backends registered with this proxy. Bedrock players cannot");
                 line.accept("&c  receive a pack until at least one backend is added.");
             }
-            if (snapshot.currentMergedPack() == null && !backends.isEmpty()) {
+            if (snapshot.currentMergedPack() == null && !backends.isEmpty()
+                    && snapshot.participatingBackends().isEmpty()) {
+                line.accept("&7• No RSPM backend has been confirmed yet. Discovery continues automatically.");
+                line.accept("&7  Install RSPM on the backends that produce packs; other registered servers are allowed.");
+            }
+            if (snapshot.currentMergedPack() == null && !snapshot.participatingBackends().isEmpty()) {
                 line.accept("&c• Proxy has backends but no merged pack. Check fetch outcomes above");
                 line.accept("&c  — most likely the backend HTTP port is unreachable from this proxy.");
                 line.accept("&c  • CONNECT_FAILED → check velocity.toml addresses + firewall.");
@@ -242,6 +260,13 @@ public final class ProxyStatusRenderer {
     }
 
     // ---- helpers ----
+
+    private static boolean failedFetch(NetworkSync.FetchOutcome outcome) {
+        return outcome != null && switch (outcome.kind()) {
+            case CONNECT_FAILED, OTHER_ERROR, UNEXPECTED_STATUS -> true;
+            default -> false;
+        };
+    }
 
     private static String describeOutcome(NetworkSync.FetchOutcome o) {
         if (o == null) return "&7(not yet attempted this session)";

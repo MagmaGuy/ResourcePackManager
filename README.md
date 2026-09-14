@@ -203,6 +203,13 @@ pack through Geyser.
 
 Proxy config (`config.yml` in the proxy plugin's data folder):
 
+Only backends running RSPM participate in pack synchronization. Other registered
+servers are checked periodically with lightweight, asynchronous discovery requests;
+they do not delay pack merging or require RSPM to be installed. Newly discovered
+participants join automatically. `/rspm status` distinguishes confirmed participants
+from servers awaiting discovery, and reports failures of known participants even
+when a cached pack remains available.
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `network-http-offset-v2` | `1` | Fallback offset used only before a backend endpoint announcement is available. In normal operation the backend announces the exact HTTP port it bound. |

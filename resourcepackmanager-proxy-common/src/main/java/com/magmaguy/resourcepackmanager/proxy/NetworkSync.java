@@ -144,6 +144,8 @@ public final class NetworkSync {
     private final Consumer<MergedPack> onMergedPackReady;
     private final Predicate<Path> onPluginUpdateCandidate;
     private final HttpClient http;
+    private final BackendParticipation participation;
+    private Set<String> failedParticipants = Set.of();
     /**
      * Network key for this proxy. Used to look up Bedrock-relay entries
      * uploaded by backends that this proxy can't reach directly (typical of
@@ -280,6 +282,7 @@ public final class NetworkSync {
         this.http = HttpClient.newBuilder()
                 .connectTimeout(PER_BACKEND_TIMEOUT)
                 .build();
+        this.participation = new BackendParticipation(http);
 
         this.inboxRoot = new File(workingDir, "inbox");
         this.relayInboxRoot = new File(workingDir, "relay-inbox");
@@ -345,6 +348,7 @@ public final class NetworkSync {
     public void start(long initialDelayMillis, long intervalMillis) {
         if (pollTask != null) return;
         stopped = false;
+        participation.start();
         lifecycleGeneration.incrementAndGet();
         logger.info("NetworkSync starting (poll interval " + intervalMillis + " ms, network-http-offset "
                 + networkHttpOffset + " - endpoint announcements preferred, fallback HTTP port = mcPort + offset)");
@@ -357,6 +361,7 @@ public final class NetworkSync {
             stopped = true;
             lifecycleGeneration.incrementAndGet();
         }
+        participation.stop();
         ProxySchedulerAdapter.Cancellable task = pollTask;
         if (task != null) {
             task.cancel();
@@ -427,6 +432,7 @@ public final class NetworkSync {
             List<BackendListProvider.Backend> backends = backendListResult.backends();
             if (!isActive(pollGeneration)) return;
             if (backends.isEmpty()) {
+                participation.refresh(Map.of(), Set.of(), Instant.now());
                 stableCount = 0;
                 consecutiveEmptyPolls++;
                 maybeFireUnreachableWarning(backends);
@@ -465,6 +471,7 @@ public final class NetworkSync {
 
             refreshAnnouncedEndpoints(pollGeneration);
             if (!isActive(pollGeneration)) return;
+            refreshParticipation(backends);
 
             // Step 1: fetch per backend. Prefer the backend's own endpoint
             // announcement (it knows the HTTP port it actually bound), then
@@ -478,6 +485,7 @@ public final class NetworkSync {
             Map<String, String> correlatedHardFailures = new HashMap<>();
             for (BackendListProvider.Backend b : backends) {
                 if (!isActive(pollGeneration)) return;
+                if (!participation.isParticipant(b.name())) continue;
                 String sanitized = sanitizeBackendName(b.name());
                 ResolvedBackendEndpoint endpoint = resolveBackendHttpEndpoint(
                         b, networkHttpOffset, announcedEndpoints);
@@ -551,6 +559,8 @@ public final class NetworkSync {
                 }
             }
 
+            reportParticipantFailures(backends);
+
             // Step 1.5: relay fallback. If direct fetch failed hard for at
             // least one backend AND we have a network key, ask the magmaguy.com
             // hoster for any Bedrock files that BACKENDS uploaded to the relay
@@ -607,9 +617,15 @@ public final class NetworkSync {
             // the operator after a sensible delay if NOTHING is coming through.
             // Reset on first success — operator-visible state goes back to
             // "healthy" and a future failure can fire the warning again.
-            if (currentHashes.isEmpty()) {
+            List<BackendListProvider.Backend> participants = backends.stream()
+                    .filter(backend -> participation.isParticipant(backend.name())).toList();
+            // A fresh proxy waiting for discovery has no publication to withdraw.
+            // Keep topology/cache withdrawal active when any prior output exists.
+            if (participants.isEmpty() && currentHashes.isEmpty() && current == null
+                    && !mergedBedrockZip.exists() && !mergedMappings.exists()) return;
+            if (currentHashes.isEmpty() && !participants.isEmpty()) {
                 consecutiveEmptyPolls++;
-                maybeFireUnreachableWarning(backends);
+                maybeFireUnreachableWarning(participants);
             } else {
                 if (consecutiveEmptyPolls > 0 && unreachableWarningFired) {
                     logger.info("NetworkSync: recovered — at least one backend produced content this cycle.");
@@ -640,7 +656,7 @@ public final class NetworkSync {
                     lastMergedHashes = currentHashes;
                     return;
                 }
-                if (triggerMerge(effectiveDirectories, backends.size(), pollGeneration)) {
+                if (triggerMerge(effectiveDirectories, participants.size(), pollGeneration)) {
                     lastMergedHashes = currentHashes;
                 }
             }
@@ -657,6 +673,49 @@ public final class NetworkSync {
 
     private boolean isActive(long generation) {
         return !stopped && lifecycleGeneration.get() == generation;
+    }
+
+    private void refreshParticipation(List<BackendListProvider.Backend> backends) {
+        Map<String, BackendParticipation.Endpoint> endpoints = new LinkedHashMap<>();
+        Set<String> known = new HashSet<>();
+        BackendParticipation.Snapshot previous = participation.snapshot();
+        for (BackendListProvider.Backend backend : backends) {
+            ResolvedBackendEndpoint endpoint = resolveBackendHttpEndpoint(
+                    backend, networkHttpOffset, announcedEndpoints);
+            endpoints.put(backend.name(), new BackendParticipation.Endpoint(
+                    endpoint.host(), endpoint.port(), endpoint.backendId()));
+            // Announcements and validated committed caches provide positive evidence.
+            // An established name changing address must be rediscovered, not promoted
+            // from files that belonged to its previous endpoint.
+            if (!previous.participants().contains(backend.name())
+                    && !previous.discovery().containsKey(backend.name())
+                    && isCommittedArtifactSet(new File(inboxRoot, sanitizeBackendName(backend.name())))) {
+                known.add(backend.name());
+            }
+        }
+        participation.refresh(endpoints, known, Instant.now());
+    }
+
+    private void reportParticipantFailures(List<BackendListProvider.Backend> backends) {
+        Set<String> failed = new HashSet<>();
+        for (BackendListProvider.Backend backend : backends) {
+            if (!participation.isParticipant(backend.name())) continue;
+            String key = sanitizeBackendName(backend.name());
+            FetchOutcome pack = lastFetchOutcomes.get(key + ":" + PackHttpServer.BEDROCK_PACK_PATH);
+            FetchOutcome mappings = lastFetchOutcomes.get(key + ":" + PackHttpServer.GEYSER_MAPPINGS_PATH);
+            if (isHardFailure(pack) || isHardFailure(mappings)) {
+                failed.add(backend.name());
+                if (!failedParticipants.contains(backend.name())) {
+                    logger.warn("NetworkSync: RSPM participant '" + backend.name()
+                            + "' cannot refresh its pack. /bedrock.zip: " + describe(pack)
+                            + "; /mappings.json: " + describe(mappings)
+                            + ". Retaining committed content where available; run /rspm status for direct and relay results.");
+                }
+            } else if (failedParticipants.contains(backend.name())) {
+                logger.info("NetworkSync: RSPM participant '" + backend.name() + "' is responding again.");
+            }
+        }
+        failedParticipants = Set.copyOf(failed);
     }
 
     /**
@@ -736,6 +795,7 @@ public final class NetworkSync {
      */
     public Snapshot snapshot() {
         BackendListResult backendListResult = safeListBackends();
+        BackendParticipation.Snapshot discovery = participation.snapshot();
         return new Snapshot(
                 backendListResult.successful()
                         ? backendListResult.backends()
@@ -747,7 +807,7 @@ public final class NetworkSync {
                 mergedBedrockZip.isFile() ? mergedBedrockZip : null,
                 mergedMappings.isFile() ? mergedMappings : null,
                 networkHttpOffset,
-                List.copyOf(announcedEndpoints));
+                List.copyOf(announcedEndpoints), discovery.participants(), discovery.discovery());
     }
 
     /**
@@ -764,7 +824,9 @@ public final class NetworkSync {
             File mergedBedrockZip,
             File mergedMappings,
             int networkHttpOffset,
-            List<MagmaguyRspClient.BedrockEndpoint> announcedEndpoints) {}
+            List<MagmaguyRspClient.BedrockEndpoint> announcedEndpoints,
+            Set<String> participatingBackends,
+            Map<String, String> discoveryStatus) {}
 
     /**
      * Run the file-union merge across every backend's inbox and publish the result.

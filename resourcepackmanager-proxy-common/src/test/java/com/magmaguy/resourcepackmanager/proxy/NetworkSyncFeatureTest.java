@@ -78,7 +78,7 @@ class NetworkSyncFeatureTest {
                     () -> List.of(descriptor("single", backend)), work.toFile(), OFFSET,
                     mixerLogger(diagnostics), geyser.toFile(), NETWORK_KEY,
                     pack -> publications.incrementAndGet(), ignored -> false);
-            sync.pollOnce(); // Establish stable input hashes.
+            awaitFirstFetches(sync, 1); // Discover the participant and establish stable input hashes.
             NetworkSync active = sync;
             Future<?> firstMerge = workers.submit(active::pollOnce);
             assertTrue(mergeEntered.await(5, TimeUnit.SECONDS), () -> String.join("\n", diagnostics));
@@ -148,9 +148,8 @@ class NetworkSyncFeatureTest {
                     coordinator::accept);
 
             try {
-                sync.pollOnce();
+                awaitFirstFetches(sync, 2);
                 diagnostics.add("First poll: " + sync.snapshot().fetchOutcomes());
-                assertNull(published.get(), "first poll only establishes the stability baseline");
                 assertTrue(Files.isRegularFile(coordinator.pendingJar()));
                 assertTrue(Files.isRegularFile(coordinator.pendingManifest()));
                 assertArrayEquals(Files.readAllBytes(offeredUpdate),
@@ -183,9 +182,8 @@ class NetworkSyncFeatureTest {
         PackHttpServer server = PackHttpServer.start(fixture.pack().toFile(), 0, PackHttpServer.BEDROCK_PACK_PATH);
         try {
             server.registerFileRoute(PackHttpServer.GEYSER_MAPPINGS_PATH, fixture.mappings().toFile(), "application/json");
-            if (executableUpdate != null)
-                server.registerProtectedExecutableRoute(PackHttpServer.EXECUTABLE_UPDATE_PATH,
-                        executableUpdate::toFile, () -> NETWORK_KEY);
+            server.registerProtectedExecutableRoute(PackHttpServer.EXECUTABLE_UPDATE_PATH,
+                    () -> executableUpdate == null ? null : executableUpdate.toFile(), () -> NETWORK_KEY);
             return server;
         } catch (RuntimeException | Error failure) {
             server.close();
@@ -195,6 +193,20 @@ class NetworkSyncFeatureTest {
 
     private static BackendListProvider.Backend descriptor(String name, PackHttpServer server) {
         return new BackendListProvider.Backend(name, "127.0.0.1", server.port() - OFFSET);
+    }
+
+    private static void awaitFirstFetches(NetworkSync sync, int backends) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        do {
+            sync.pollOnce();
+            long fetched = sync.snapshot().fetchOutcomes().entrySet().stream()
+                    .filter(entry -> entry.getKey().endsWith(":" + PackHttpServer.BEDROCK_PACK_PATH)
+                            && (entry.getValue().kind() == NetworkSync.FetchOutcome.Kind.OK_200
+                            || entry.getValue().kind() == NetworkSync.FetchOutcome.Kind.NOT_MODIFIED_304)).count();
+            if (fetched == backends) return;
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        fail("Participants did not produce their first pack fetch: " + sync.snapshot());
     }
 
     private static void assertUpdateRouteRejectsMissingToken(PackHttpServer backend) throws Exception {

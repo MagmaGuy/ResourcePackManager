@@ -59,6 +59,7 @@ public final class PackHttpServer implements AutoCloseable {
     public static final String BEDROCK_PACK_PATH = "/bedrock.zip";
     public static final String GEYSER_MAPPINGS_PATH = "/mappings.json";
     public static final String EXECUTABLE_UPDATE_PATH = "/rspm-update.jar";
+    public static final String EXECUTABLE_UPDATE_AUTH_CHALLENGE = "Bearer realm=\"rspm-network-update\"";
     public static final String EXECUTABLE_UPDATE_TOKEN_DOMAIN =
             "resourcepackmanager.network-executable-update.v1";
 
@@ -241,7 +242,7 @@ public final class PackHttpServer implements AutoCloseable {
         // probe of this route.
         String authorization = exchange.getRequestHeaders().getFirst("Authorization");
         if (authorization == null || authorization.isBlank()) {
-            exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer realm=\"rspm-network-update\"");
+            exchange.getResponseHeaders().set("WWW-Authenticate", EXECUTABLE_UPDATE_AUTH_CHALLENGE);
             exchange.sendResponseHeaders(401, -1);
             exchange.close();
             return;
@@ -263,7 +264,7 @@ public final class PackHttpServer implements AutoCloseable {
 
         if (!NetworkAccessToken.matchesAuthorization(
                 authorization, EXECUTABLE_UPDATE_TOKEN_DOMAIN, networkKey)) {
-            exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer realm=\"rspm-network-update\"");
+            exchange.getResponseHeaders().set("WWW-Authenticate", EXECUTABLE_UPDATE_AUTH_CHALLENGE);
             exchange.sendResponseHeaders(401, -1);
             exchange.close();
             return;
