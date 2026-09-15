@@ -180,15 +180,15 @@ public class StatusCommand extends AdvancedCommand {
         boolean done = AutoHost.isDone();
         String activePath;
         String activeUrl;
-        if (selfUrl != null) {
+        if (!done) {
+            activePath = "&e(not yet ready - mixing, verifying hosting, or uploading)";
+            activeUrl = null;
+        } else if (selfUrl != null) {
             activePath = "&aSELF-HOSTED";
             activeUrl = selfUrl;
         } else if (rspUuid != null) {
             activePath = "&aREMOTE (magmaguy.com)";
             activeUrl = MagmaguyRspClient.BASE_URL + rspUuid;
-        } else if (!done) {
-            activePath = "&e(not yet ready — still mixing/uploading)";
-            activeUrl = null;
         } else {
             activePath = "&c(none — hosting disabled or failed)";
             activeUrl = null;

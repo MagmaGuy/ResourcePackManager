@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -88,7 +89,7 @@ public class AutoHost {
     private static final int UPLOAD_SOCKET_TIMEOUT = 1020; // 17 minutes; exceeds edge and hoster deadlines
 
     @Getter
-    private static boolean done = false;
+    private static volatile boolean done = false;
 
     private static BukkitTask keepAlive = null;
     @Getter
@@ -204,7 +205,7 @@ public class AutoHost {
         // fires on the proxy: if the BACKEND'S pack isn't built, neither Java nor
         // Bedrock can ever work, so the Java/backend warning is the root-cause
         // signal admins should see first.
-        if (!done && selfHostedUrl == null) {
+        if (!done) {
             warnPackNotReady(player);
             return;
         }
@@ -568,11 +569,11 @@ public class AutoHost {
         }
 
         // Self-host-first (the preferSelfHost default): commit only after the
-        // three-layer reachability check in trySelfHostFirst passes, falling back
+        // reachability checks in tryVerifiedSelfHost pass, falling back
         // to remote upload when any layer fails. See resolveJavaHostingRoute for
         // why proxy topology deliberately plays no part in this decision.
         if (route == JavaHostingRoute.SELF_HOST_FIRST) {
-            if (trySelfHostFirst(run)) {
+            if (tryVerifiedSelfHost(run)) {
                 return; // Self-host passed the reachability checks — we're done.
             }
             // Either the host looked non-routable, or the local HTTP server didn't
@@ -644,11 +645,10 @@ public class AutoHost {
      *       internet clients — skip immediately and let the caller fall through to
      *       remote hosting. Catches the common "ipify lookup failed, fell back to
      *       LAN IP" failure mode.</li>
-     *   <li><b>Localhost self-probe.</b> Once the {@link PackHttpServer} is up,
-     *       open an HTTP connection to {@code http://127.0.0.1:<port>/rspm.zip}
-     *       and verify a 200 with non-empty body. Catches port-bind collisions,
-     *       missing pack file, and route-registration bugs — but proves nothing
-     *       about external reachability.</li>
+     *   <li><b>Download probes.</b> Fetch a small sample of the pack through both
+     *       localhost and the advertised URL, checking it against the local file.
+     *       This catches missing files, incorrect routes, and routers that cannot
+     *       reach their own public address from the server's network.</li>
      *   <li><b>External reachability probe.</b> POST the announced URL to
      *       {@code POST /rsp/probe} on the magmaguy.com hoster — it fetches the
      *       URL from a public vantage and reports back whether it's reachable.
@@ -657,23 +657,18 @@ public class AutoHost {
      *       Layer 2 passes but no real client can ever download the pack.</li>
      * </ol>
      *
-     * <p><b>What this still does NOT detect:</b> the NAT-hairpin edge case where
-     * the port IS open to the public internet (Layer 3 passes) but the
-     * operator's own router doesn't loop traffic back from inside the LAN.
-     * External clients work, but the operator testing from the same machine
-     * fails. RSPM does not do per-player URL routing (LAN clients getting a
-     * LAN URL, internet clients the public URL), so this limitation stands.
-     * Workaround: testing from the host machine with a hairpin-broken
-     * router requires {@code preferSelfHost: false} OR
-     * {@code selfHostExternalHost: 127.0.0.1}.</p>
+     * <p>These checks cover the server's network and the external probe service.
+     * They cannot establish reachability from every player's network, or validate
+     * a complete client download. Forced self-hosting explicitly bypasses them.</p>
      *
      * @return {@code true} when all checks pass and self-host is now active.
      * {@code false} when the caller should fall through to remote hosting. On
      * {@code false}, the self-host server is torn down so the subsequent
      * remote-upload path doesn't announce a stale URL.
      */
-    private static boolean trySelfHostFirst(LifecycleRun run) {
-        if (!run.active() || Mix.getFinalResourcePack() == null) return false;
+    private static boolean tryVerifiedSelfHost(LifecycleRun run) {
+        if (!run.active() || !DefaultConfig.isSelfHostEnabled()
+                || Mix.getFinalResourcePack() == null) return false;
 
         // Layer 1: heuristic check on resolved external host.
         String host;
@@ -696,17 +691,24 @@ public class AutoHost {
         if (!ensureSelfHostServer(run)) return false;
         if (selfHostedUrl == null) return false;
 
-        // Layer 2: localhost self-probe — confirm the HTTP server is up and the
-        // pack route serves a non-empty body. This catches everything between
-        // "PackHttpServer.start() returned without throwing" and "an actual
-        // client could download the pack" EXCEPT the external-firewall case.
+        // Verify actual pack bytes, first locally and then through the exact URL
+        // players receive. A public probe alone cannot detect broken NAT loopback.
         int port = (selfHostServer != null) ? selfHostServer.port() : -1;
-        if (port <= 0 || !localhostSelfProbe(port)) {
+        File pack = Mix.getFinalResourcePack();
+        if (port <= 0 || !packDownloadProbe("http://127.0.0.1:" + port + "/rspm.zip", pack)) {
             if (!run.active()) return false;
             RSPLogger.detail("Self-host check: local pack server did not answer correctly. This is OK.");
             tearDownSelfHost();
             return false;
         }
+        if (!run.active()) return false;
+        if (!packDownloadProbe(selfHostedUrl, pack)) {
+            if (!run.active()) return false;
+            RSPLogger.detail("Self-host check: the advertised pack URL failed a download from this server.");
+            tearDownSelfHost();
+            return false;
+        }
+        if (!run.active()) return false;
 
         // Layer 3: external reachability probe via magmaguy.com hoster.
         // The localhost probe just proved the server responds on 127.0.0.1; this
@@ -743,49 +745,39 @@ public class AutoHost {
      *       Self-host commits. Best path: zero-bandwidth-to-hoster + low latency.</li>
      *   <li>{@code reachable=false} → external clients CAN'T reach our URL.
      *       Tear down self-host so the caller falls through to the
-     *       magmaguy.com upload path (which is universally reachable).</li>
-     *   <li>Probe communication itself fails (IOException) → we couldn't
-     *       verify either way. Default to KEEPING self-host: refusing to
-     *       commit just because we can't talk to magmaguy.com would be
-     *       paradoxical (the fallback path needs magmaguy.com too). A
-     *       legitimately broken self-host setup will be surfaced by clients
-     *       failing to download, which is no worse than the pre-probe
-     *       behavior.</li>
+     *       magmaguy.com upload path.</li>
+     *   <li>Probe communication fails: reachability is unverified. Try remote
+     *       hosting; failure of the probe does not establish that uploading will
+     *       fail too. Only forced self-hosting may bypass verification.</li>
      * </ul>
      *
-     * @return {@code true} if the probe confirmed external reachability OR
-     * couldn't be performed. {@code false} only when the hoster explicitly
-     * told us the URL is unreachable.
+     * @return {@code true} only when the probe confirmed external reachability.
      */
     private static boolean externalReachabilityProbe(LifecycleRun run, String url) {
         if (!run.active()) return false;
         MagmaguyRspClient c = client;
         if (c == null) {
-            // No client (extremely unlikely — initialize() set it before
-            // calling us). Don't block self-host on inability to probe.
-            return true;
+            RSPLogger.detail("Self-host check: external verification is unavailable.");
+            return false;
         }
         try {
             MagmaguyRspClient.ProbeResult result = c.probe(url);
             if (!run.active()) return false;
-            if (result.reachable()) {
+            if (result.reachable() && (result.status() == 200 || result.status() == 206)) {
                 RSPLogger.detail("External reachability probe via magmaguy.com: " + url
                         + " is reachable from the public internet (HTTP "
                         + result.status() + ", " + result.durationMs() + " ms). "
                         + "Committing to self-host.");
                 return true;
             }
-            RSPLogger.detail("Self-host check: local pack link is not public"
-                    + formatOptionalDetail(result.reasonOrNull()) + ". This is OK.");
+            RSPLogger.detail("Self-host check: external pack request was not successful (HTTP "
+                    + result.status() + ")" + formatOptionalDetail(result.reasonOrNull()) + ".");
             return false;
         } catch (java.io.IOException e) {
             if (!run.active()) return false;
-            // We couldn't talk to magmaguy.com to ask. Don't fail-closed —
-            // see method javadoc decision policy.
             RSPLogger.detail("External reachability probe via magmaguy.com failed to "
-                    + "communicate (" + e.getMessage() + "); keeping self-host. "
-                    + "If clients can't reach the pack URL, set preferSelfHost: false.");
-            return true;
+                    + "communicate (" + e.getMessage() + "); self-hosting was not verified.");
+            return false;
         }
     }
 
@@ -795,36 +787,63 @@ public class AutoHost {
     }
 
     /**
-     * Open an HTTP connection to {@code 127.0.0.1:<port>/rspm.zip}, verify 200
-     * status and non-empty body. Times out aggressively (3s) so a slow probe
-     * can't drag out boot. Uses {@link java.net.HttpURLConnection} so we don't
-     * pull in another Apache HC client dependency for one self-call.
-     *
-     * <p>Returns {@code false} on any anomaly (connection refused, non-200
-     * status, empty body, timeout, IO error) — operators see the underlying
-     * cause as part of the info log line.</p>
+     * Fetch at most 1 KiB and compare it with the pack, rather than accepting a
+     * HEAD response or an HTML error page as proof of delivery. Range-aware
+     * proxies may return 206; servers ignoring Range may return 200. Neither
+     * path reads the whole pack. Redirects are rejected conservatively.
      */
-    private static boolean localhostSelfProbe(int port) {
+    private static boolean packDownloadProbe(String url, File pack) {
         java.net.HttpURLConnection conn = null;
         try {
-            java.net.URI uri = new java.net.URI("http", null, "127.0.0.1", port, "/rspm.zip", null, null);
+            if (pack == null || !pack.isFile() || pack.length() == 0) return false;
+            long packLength = pack.length();
+            byte[] expected;
+            try (InputStream input = Files.newInputStream(pack.toPath())) {
+                expected = input.readNBytes((int) Math.min(1024, packLength));
+            }
+            if (expected.length == 0) return false;
+            java.net.URI uri = new java.net.URI(url);
             conn = (java.net.HttpURLConnection) uri.toURL().openConnection();
-            conn.setRequestMethod("HEAD");
+            conn.setRequestMethod("GET");
+            conn.setInstanceFollowRedirects(false);
+            conn.setUseCaches(false);
+            conn.setRequestProperty("Range", "bytes=0-" + (expected.length - 1));
+            conn.setRequestProperty("Accept-Encoding", "identity");
             conn.setConnectTimeout(3000);
             conn.setReadTimeout(3000);
             int code = conn.getResponseCode();
-            int len = conn.getContentLength();
-            if (code != 200) {
-                RSPLogger.detail("Self-host check detail: local pack server returned HTTP " + code + ".");
+            long length = conn.getContentLengthLong();
+            if (code != 200 && code != 206) {
+                RSPLogger.detail("Self-host download check returned HTTP " + code + ".");
                 return false;
             }
-            if (len == 0) {
-                RSPLogger.detail("Self-host check detail: local pack file looked empty.");
+            long expectedLength = code == 206 ? expected.length : packLength;
+            String expectedRange = "bytes 0-" + (expected.length - 1) + "/" + packLength;
+            if ((length >= 0 && length != expectedLength)
+                    || (code == 206 && !expectedRange.equals(conn.getHeaderField("Content-Range")))) {
+                RSPLogger.detail("Self-host download check returned an unexpected pack size or byte range.");
+                return false;
+            }
+            byte[] actual = new byte[expected.length];
+            long deadline = System.nanoTime() + 3_000_000_000L;
+            try (InputStream input = conn.getInputStream()) {
+                int offset = 0;
+                while (offset < actual.length) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) return false;
+                    conn.setReadTimeout((int) Math.max(1, remaining / 1_000_000L));
+                    int read = input.read(actual, offset, actual.length - offset);
+                    if (read < 0) return false;
+                    offset += read;
+                }
+            }
+            if (!Arrays.equals(expected, actual)) {
+                RSPLogger.detail("Self-host download check returned different data from the resource pack.");
                 return false;
             }
             return true;
         } catch (java.io.IOException | java.net.URISyntaxException e) {
-            RSPLogger.detail("Self-host check detail: local pack server did not answer"
+            RSPLogger.detail("Self-host download check failed"
                     + formatOptionalDetail(e.getMessage()) + ".");
             return false;
         } finally {
@@ -1368,6 +1387,8 @@ public class AutoHost {
      * Start a local HTTP server (or reuse an already-running one) that serves
      * the current {@link Mix#getFinalResourcePack()} zip. Called from any
      * upload-error path and from the {@code selfHostForce} short-circuit.
+     * Automatic fallback uses the same verification as self-host-first;
+     * only the explicit force setting may publish an unverified URL.
      *
      * <p>The server is started once and left running for the plugin's lifetime;
      * {@code PackHttpServer} reads the file per-request, so a re-mix that
@@ -1376,9 +1397,10 @@ public class AutoHost {
      *
      * @return {@code true} if a server is now serving the pack (whether newly
      * started or already running), {@code false} if self-host is disabled,
-     * the pack file is missing, or the port is unavailable.
+     * the pack file is missing, the port is unavailable, or verification fails.
      */
     private static boolean fallbackToSelfHost(LifecycleRun run) {
+        if (!DefaultConfig.isSelfHostForce()) return tryVerifiedSelfHost(run);
         if (!run.active() || !ensureSelfHostServer(run)) return false;
         if (!run.active()) return false;
         commitSelfHost(run);
@@ -1389,7 +1411,7 @@ public class AutoHost {
      * Ensure the self-host {@link PackHttpServer} is running and {@link #selfHostedUrl}
      * is populated, WITHOUT marking {@link #done} or broadcasting to players.
      *
-     * <p>Split out from {@link #fallbackToSelfHost()} so {@link #trySelfHostFirst()}
+     * <p>Split out from {@link #fallbackToSelfHost()} so {@link #tryVerifiedSelfHost()}
      * can stand the server up purely to <em>probe</em> it (localhost + external
      * reachability) before deciding whether to commit. The previous code broadcast
      * the unverified self-host URL to every online player the moment the server
