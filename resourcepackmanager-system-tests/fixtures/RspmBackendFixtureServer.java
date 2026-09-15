@@ -19,6 +19,7 @@ import javax.crypto.spec.SecretKeySpec;
 /** Lightweight process fixture for the explicit real-proxy boot suite. */
 public final class RspmBackendFixtureServer {
     private static final String UPDATE_ROUTE = "/rspm-update.jar";
+    private static final String UPDATE_AUTH_CHALLENGE = "Bearer realm=\"rspm-network-update\"";
     private static final String AUTHORITY_ROUTE =
             "/server/plugins/resourcepackmanager/version";
     private static final String UPDATE_TOKEN_DOMAIN =
@@ -53,12 +54,12 @@ public final class RspmBackendFixtureServer {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         register(server, "/bedrock.zip", root.resolve("bedrock.zip"), "application/zip");
         register(server, "/mappings.json", root.resolve("mappings.json"), "application/json");
-        if (updateJar != null) {
-            String expectedAuthorization = updateAuthorization(keyPem);
-            Path executable = updateJar;
-            server.createContext(UPDATE_ROUTE,
-                    exchange -> serveProtectedUpdate(exchange, executable, expectedAuthorization));
-        }
+        // The production route identifies RSPM even before an update or network
+        // key is available. Proxy discovery uses its anonymous HEAD challenge.
+        String expectedAuthorization = keyPem == null ? null : updateAuthorization(keyPem);
+        Path executable = updateJar;
+        server.createContext(UPDATE_ROUTE,
+                exchange -> serveProtectedUpdate(exchange, executable, expectedAuthorization));
         if (authorityJar != null) {
             Path release = authorityJar;
             server.createContext(AUTHORITY_ROUTE,
@@ -90,8 +91,17 @@ public final class RspmBackendFixtureServer {
                 return;
             }
             String provided = exchange.getRequestHeaders().getFirst("Authorization");
+            if (provided == null || provided.isBlank()) {
+                exchange.getResponseHeaders().set("WWW-Authenticate", UPDATE_AUTH_CHALLENGE);
+                exchange.sendResponseHeaders(401, -1);
+                return;
+            }
+            if (expectedAuthorization == null) {
+                exchange.sendResponseHeaders(503, -1);
+                return;
+            }
             if (!constantTimeEquals(expectedAuthorization, provided)) {
-                exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
+                exchange.getResponseHeaders().set("WWW-Authenticate", UPDATE_AUTH_CHALLENGE);
                 exchange.sendResponseHeaders(401, -1);
                 return;
             }
