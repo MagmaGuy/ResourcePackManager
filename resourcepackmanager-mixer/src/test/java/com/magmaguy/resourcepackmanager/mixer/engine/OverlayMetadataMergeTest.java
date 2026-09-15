@@ -21,6 +21,110 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class OverlayMetadataMergeTest {
 
     @Test
+    void collidingLegacyAndMinorVersionPacksPreserveExactModernMaximum(@TempDir Path tempDir) throws Exception {
+        Path legacy = createPack(tempDir.resolve("legacy.zip"), """
+                {"pack":{"pack_format":46,"supported_formats":[46,64]}}
+                """);
+        Path modern = createPack(tempDir.resolve("modern.zip"), """
+                {"pack":{"min_format":[97,0],"max_format":[97,1]},
+                 "overlays":{"entries":[{"directory":"modern","min_format":[97,1],"max_format":[97,1]}]}}
+                """);
+
+        JsonObject result = readJson(runMix(tempDir, new RecordingLogger(), legacy, modern)
+                .mergedDir().toPath().resolve("pack.mcmeta"));
+        JsonObject pack = result.getAsJsonObject("pack");
+        assertEquals(46, pack.get("min_format").getAsInt());
+        assertEquals(JsonParser.parseString("[97,1]"), pack.get("max_format"));
+        assertEquals(JsonParser.parseString("[46,64]"), pack.get("supported_formats"));
+        assertEquals(46, pack.get("pack_format").getAsInt());
+        assertEquals(JsonParser.parseString("[97,1]"), overlayEntry(result, "modern").get("min_format"));
+        assertEquals(JsonParser.parseString("[97,1]"), overlayEntry(result, "modern").get("max_format"));
+    }
+
+    @Test
+    void collidingMinorVersionPacksCompareBothComponents(@TempDir Path tempDir) throws Exception {
+        Path earlier = createPack(tempDir.resolve("earlier.zip"), """
+                {"pack":{"min_format":[97,1],"max_format":[97,2]}}
+                """);
+        Path later = createPack(tempDir.resolve("later.zip"), """
+                {"pack":{"min_format":[97,3],"max_format":[97,10]}}
+                """);
+
+        JsonObject pack = readJson(runMix(tempDir, new RecordingLogger(), later, earlier)
+                .mergedDir().toPath().resolve("pack.mcmeta")).getAsJsonObject("pack");
+        assertEquals(JsonParser.parseString("[97,1]"), pack.get("min_format"));
+        assertEquals(JsonParser.parseString("[97,10]"), pack.get("max_format"));
+        assertFalse(pack.has("supported_formats"));
+    }
+
+    @Test
+    void integerAndSingleElementUpperBoundsIncludeEveryMinorVersion(@TempDir Path tempDir) throws Exception {
+        Path broad = createPack(tempDir.resolve("broad.zip"), """
+                {"pack":{"min_format":[97],"max_format":[97]}}
+                """);
+        Path exact = createPack(tempDir.resolve("exact.zip"), """
+                {"pack":{"min_format":[97,1],"max_format":[97,1]}}
+                """);
+
+        JsonObject pack = readJson(runMix(tempDir, new RecordingLogger(), exact, broad)
+                .mergedDir().toPath().resolve("pack.mcmeta")).getAsJsonObject("pack");
+        assertEquals(97, pack.get("min_format").getAsInt());
+        assertEquals(97, pack.get("max_format").getAsInt());
+    }
+
+    @Test
+    void exactZeroMinorMaximumDoesNotBecomeUnbounded(@TempDir Path tempDir) throws Exception {
+        Path earlier = createPack(tempDir.resolve("earlier.zip"), """
+                {"pack":{"min_format":75,"max_format":88}}
+                """);
+        Path exact = createPack(tempDir.resolve("exact.zip"), """
+                {"pack":{"min_format":[97,0],"max_format":[97,0]}}
+                """);
+
+        JsonObject pack = readJson(runMix(tempDir, new RecordingLogger(), exact, earlier)
+                .mergedDir().toPath().resolve("pack.mcmeta")).getAsJsonObject("pack");
+        assertEquals(75, pack.get("min_format").getAsInt());
+        assertEquals(JsonParser.parseString("[97,0]"), pack.get("max_format"));
+    }
+
+    @Test
+    void legacyRangeFormsRetainTheirRangeMeaningDuringCollision(@TempDir Path tempDir) throws Exception {
+        Path scalar = createPack(tempDir.resolve("scalar.zip"), """
+                {"pack":{"pack_format":46,"supported_formats":46}}
+                """);
+        Path array = createPack(tempDir.resolve("array.zip"), """
+                {"pack":{"pack_format":55,"supported_formats":[55,63]}}
+                """);
+        Path object = createPack(tempDir.resolve("object.zip"), """
+                {"pack":{"pack_format":64,"supported_formats":{"min_inclusive":63,"max_inclusive":64}}}
+                """);
+
+        JsonObject pack = readJson(runMix(tempDir, new RecordingLogger(), scalar, array, object)
+                .mergedDir().toPath().resolve("pack.mcmeta")).getAsJsonObject("pack");
+        assertEquals(JsonParser.parseString("[46,64]"), pack.get("supported_formats"));
+        assertEquals(46, pack.get("pack_format").getAsInt());
+        assertFalse(pack.has("min_format"));
+        assertFalse(pack.has("max_format"));
+    }
+
+    @Test
+    void normalizedModernMetadataDoesNotRegainObsoleteSourceFields(@TempDir Path tempDir) throws Exception {
+        Path higher = createPack(tempDir.resolve("higher.zip"), """
+                {"pack":{"min_format":75,"max_format":88,"description":"keep higher priority"}}
+                """);
+        Path lower = createPack(tempDir.resolve("lower.zip"), """
+                {"pack":{"min_format":[97,0],"max_format":[97,1],"supported_formats":[75,97],"custom":true}}
+                """);
+
+        JsonObject pack = readJson(runMix(tempDir, new RecordingLogger(), higher, lower)
+                .mergedDir().toPath().resolve("pack.mcmeta")).getAsJsonObject("pack");
+        assertFalse(pack.has("supported_formats"));
+        assertEquals(JsonParser.parseString("[97,1]"), pack.get("max_format"));
+        assertEquals("keep higher priority", pack.get("description").getAsString());
+        assertTrue(pack.get("custom").getAsBoolean());
+    }
+
+    @Test
     void singlePackMetadataIsCopiedWithoutRewriting(@TempDir Path tempDir) throws Exception {
         String metadata = "{\n  \"pack\": {\"min_format\": 42, \"max_format\": 87, \"description\": \"author supplied\"},\n"
                 + "  \"overlays\": {\"entries\": [{\"directory\": \"Overlay-Author\",\n"

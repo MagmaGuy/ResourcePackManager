@@ -407,9 +407,9 @@ public final class MergeOperations {
         if (source.has("pack") && target.has("pack")) {
             JsonObject sourcePack = source.getAsJsonObject("pack");
             JsonObject targetPack = target.getAsJsonObject("pack");
-            mergePackFormatDeclaration(sourcePack, targetPack);
+            boolean normalizedFormats = mergePackFormatDeclaration(sourcePack, targetPack);
             for (String key : sourcePack.keySet()) {
-                if (!targetPack.has(key)) {
+                if (!targetPack.has(key) && !(normalizedFormats && isPackFormatField(key))) {
                     targetPack.add(key, sourcePack.get(key).deepCopy());
                 }
             }
@@ -500,7 +500,7 @@ public final class MergeOperations {
         logger.collision("Merged pack.mcmeta: " + targetFile.getPath());
     }
 
-    private void mergePackFormatDeclaration(JsonObject sourcePack, JsonObject targetPack) {
+    private boolean mergePackFormatDeclaration(JsonObject sourcePack, JsonObject targetPack) {
         boolean sourceHasRange = hasExplicitFormatRange(sourcePack);
         boolean targetHasRange = hasExplicitFormatRange(targetPack);
 
@@ -510,83 +510,93 @@ public final class MergeOperations {
                 int targetFormat = targetPack.get("pack_format").getAsInt();
                 targetPack.addProperty("pack_format", Math.max(sourceFormat, targetFormat));
             }
-            return;
+            return false;
         }
 
-        int[] sourceRange = readPackFormatRange(sourcePack);
-        int[] targetRange = readPackFormatRange(targetPack);
+        PackFormatRange sourceRange = readPackFormatRange(sourcePack);
+        PackFormatRange targetRange = readPackFormatRange(targetPack);
 
-        if (sourceRange == null && targetRange == null) return;
+        if (sourceRange == null && targetRange == null) return false;
         if (sourceRange == null) {
-            normalizePackFormatDeclaration(targetPack, targetRange[0], targetRange[1]);
-            return;
+            normalizePackFormatDeclaration(targetPack, targetRange.min(), targetRange.max());
+            return true;
         }
         if (targetRange == null) {
-            normalizePackFormatDeclaration(targetPack, sourceRange[0], sourceRange[1]);
-            return;
+            normalizePackFormatDeclaration(targetPack, sourceRange.min(), sourceRange.max());
+            return true;
         }
 
         normalizePackFormatDeclaration(
                 targetPack,
-                Math.min(sourceRange[0], targetRange[0]),
-                Math.max(sourceRange[1], targetRange[1]));
+                sourceRange.min().compareTo(targetRange.min()) < 0 ? sourceRange.min() : targetRange.min(),
+                sourceRange.max().compareTo(targetRange.max()) > 0 ? sourceRange.max() : targetRange.max());
+        return true;
+    }
+
+    private boolean isPackFormatField(String key) {
+        return key.equals("pack_format") || key.equals("supported_formats")
+                || key.equals("min_format") || key.equals("max_format");
     }
 
     private boolean hasExplicitFormatRange(JsonObject pack) {
         return pack.has("min_format") || pack.has("max_format") || pack.has("supported_formats");
     }
 
-    private int[] readPackFormatRange(JsonObject pack) {
+    private PackFormatRange readPackFormatRange(JsonObject pack) {
         int packFormat = pack.has("pack_format") ? pack.get("pack_format").getAsInt() : -1;
         int[] supportedRange = parseSupportedFormatsRange(pack.get("supported_formats"));
 
         if (pack.has("min_format") || pack.has("max_format")) {
-            int min = readFormatRangeMin(pack);
-            int max = readFormatRangeMax(pack);
+            PackFormat min = readFormatBound(pack.get("min_format"), false);
+            PackFormat max = readFormatBound(pack.get("max_format"), true);
 
-            if (min == Integer.MAX_VALUE) {
-                min = supportedRange != null ? supportedRange[0] : packFormat;
+            if (min == null) {
+                int major = supportedRange != null ? supportedRange[0] : packFormat;
+                if (major >= 0) min = new PackFormat(major, 0);
             }
-            if (max == Integer.MIN_VALUE) {
-                max = supportedRange != null ? supportedRange[1] : packFormat;
+            if (max == null) {
+                int major = supportedRange != null ? supportedRange[1] : packFormat;
+                if (major >= 0) max = new PackFormat(major, Integer.MAX_VALUE);
             }
-            if (min >= 0 && max >= 0) return new int[]{min, max};
+            if (min != null && max != null) return new PackFormatRange(min, max);
         }
 
-        if (supportedRange != null) return supportedRange;
-        if (packFormat >= 0) return new int[]{packFormat, packFormat};
+        if (supportedRange != null) return new PackFormatRange(
+                new PackFormat(supportedRange[0], 0), new PackFormat(supportedRange[1], Integer.MAX_VALUE));
+        if (packFormat >= 0) return new PackFormatRange(
+                new PackFormat(packFormat, 0), new PackFormat(packFormat, Integer.MAX_VALUE));
         return null;
     }
 
-    private void normalizePackFormatDeclaration(JsonObject pack, int min, int max) {
-        if (min > max) {
-            int swap = min;
+    private void normalizePackFormatDeclaration(JsonObject pack, PackFormat min, PackFormat max) {
+        if (min.compareTo(max) > 0) {
+            PackFormat swap = min;
             min = max;
             max = swap;
         }
 
-        if (max > LAST_PRE_MINOR_CLIENT_PACK_FORMAT) {
-            pack.addProperty("min_format", min);
-            pack.addProperty("max_format", max);
+        if (max.major() > LAST_PRE_MINOR_CLIENT_PACK_FORMAT) {
+            pack.add("min_format", min.toJson(false));
+            pack.add("max_format", max.toJson(true));
 
-            if (min <= LAST_PRE_MINOR_CLIENT_PACK_FORMAT) {
+            if (min.major() <= LAST_PRE_MINOR_CLIENT_PACK_FORMAT) {
                 JsonArray supportedFormats = new JsonArray();
-                supportedFormats.add(min);
+                supportedFormats.add(min.major());
                 supportedFormats.add(LAST_PRE_MINOR_CLIENT_PACK_FORMAT);
                 pack.add("supported_formats", supportedFormats);
-                ensurePackFormatInRange(pack, min, max, min);
+                ensurePackFormatInRange(pack, min.major(), max.major(), min.major());
             } else {
                 pack.remove("supported_formats");
-                ensurePackFormatInRange(pack, min, max, min);
+                ensurePackFormatInRange(pack, min.major(), max.major(), min.major());
             }
         } else {
             pack.remove("min_format");
             pack.remove("max_format");
             JsonArray supportedFormats = new JsonArray();
-            supportedFormats.add(min);
-            supportedFormats.add(max);
+            supportedFormats.add(min.major());
+            supportedFormats.add(max.major());
             pack.add("supported_formats", supportedFormats);
-            ensurePackFormatInRange(pack, min, max, max);
+            ensurePackFormatInRange(pack, min.major(), max.major(), max.major());
         }
     }
 
@@ -604,29 +614,49 @@ public final class MergeOperations {
         }
     }
 
-    /**
-     * Read pack.min_format from a `pack` block. Accepts int form or 2-int array form
-     * (some pre-1.21.9 packs shipped min_format as the same shape as supported_formats).
-     * Returns Integer.MAX_VALUE if the field is missing or unreadable so callers can
-     * detect "not declared" and skip widening.
-     */
-    private int readFormatRangeMin(JsonObject pack) {
-        if (!pack.has("min_format")) return Integer.MAX_VALUE;
-        JsonElement el = pack.get("min_format");
-        if (el.isJsonPrimitive()) return el.getAsInt();
-        if (el.isJsonArray() && el.getAsJsonArray().size() >= 1) return el.getAsJsonArray().get(0).getAsInt();
-        return Integer.MAX_VALUE;
+    // Unlike supported_formats, these arrays are one [major, minor] version, not a range.
+    // An omitted minor means zero for a lower bound and every minor for an upper bound.
+    private PackFormat readFormatBound(JsonElement element, boolean upper) {
+        if (element == null) return null;
+        JsonElement major = element;
+        JsonElement minor = null;
+        if (element.isJsonArray()) {
+            JsonArray parts = element.getAsJsonArray();
+            if (parts.size() < 1 || parts.size() > 2) return null;
+            major = parts.get(0);
+            if (parts.size() == 2) minor = parts.get(1);
+        }
+        Integer majorNumber = readNonNegativeInteger(major);
+        Integer minorNumber = minor == null ? (upper ? Integer.MAX_VALUE : 0) : readNonNegativeInteger(minor);
+        return majorNumber == null || minorNumber == null ? null : new PackFormat(majorNumber, minorNumber);
     }
 
-    private int readFormatRangeMax(JsonObject pack) {
-        if (!pack.has("max_format")) return Integer.MIN_VALUE;
-        JsonElement el = pack.get("max_format");
-        if (el.isJsonPrimitive()) return el.getAsInt();
-        if (el.isJsonArray() && el.getAsJsonArray().size() >= 1) {
-            JsonArray arr = el.getAsJsonArray();
-            return arr.get(arr.size() - 1).getAsInt();
+    private Integer readNonNegativeInteger(JsonElement element) {
+        if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isNumber()) return null;
+        try {
+            int number = element.getAsBigDecimal().intValueExact();
+            return number >= 0 ? number : null;
+        } catch (ArithmeticException | NumberFormatException malformed) {
+            return null;
         }
-        return Integer.MIN_VALUE;
+    }
+
+    private record PackFormatRange(PackFormat min, PackFormat max) { }
+
+    private record PackFormat(int major, int minor) implements Comparable<PackFormat> {
+        @Override
+        public int compareTo(PackFormat other) {
+            int majorOrder = Integer.compare(major, other.major);
+            return majorOrder != 0 ? majorOrder : Integer.compare(minor, other.minor);
+        }
+
+        JsonElement toJson(boolean upper) {
+            if (minor == (upper ? Integer.MAX_VALUE : 0)) return new JsonPrimitive(major);
+            JsonArray parts = new JsonArray();
+            parts.add(major);
+            parts.add(minor);
+            return parts;
+        }
     }
 
     /**
