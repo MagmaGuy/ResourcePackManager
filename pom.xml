@@ -145,6 +145,8 @@
     </dependencyManagement>
 
     <build>
+        <!-- Keep one local artifact per module. Published Maven coordinates retain the version. -->
+        <finalName>${project.artifactId}</finalName>
         <pluginManagement>
             <plugins>
                 <plugin>
