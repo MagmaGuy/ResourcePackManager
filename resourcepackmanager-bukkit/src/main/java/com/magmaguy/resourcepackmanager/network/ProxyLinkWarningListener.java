@@ -1,5 +1,7 @@
 package com.magmaguy.resourcepackmanager.network;
 
+import com.magmaguy.easyminecraftgoals.thirdparty.BedrockChecker;
+
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -27,12 +29,12 @@ public class ProxyLinkWarningListener implements Listener {
         // this session and later boots — knows Bedrock is in play here.
         if (NetworkMode.isActive()
                 && NetworkMode.getKeySource() == NetworkMode.KeySource.NONE
-                && ProxyLinkWarning.looksBedrock(player)) {
+                && BedrockChecker.isBedrock(player)) {
             ProxyLinkWarning.noteBedrockBehindUnlinkedProxy();
         }
 
         if (!ProxyLinkWarning.bedrockProxyLinkMissing()) return;
-        boolean bedrock = ProxyLinkWarning.looksBedrock(player);
+        boolean bedrock = BedrockChecker.isBedrock(player);
         // Ops always get it; a joining Bedrock player is the live symptom, so
         // warn an online op then too even if that Bedrock player is not one.
         if (!player.isOp() && !bedrock) return;

@@ -1,5 +1,7 @@
 package com.magmaguy.resourcepackmanager.autohost;
 
+import com.magmaguy.easyminecraftgoals.thirdparty.BedrockChecker;
+
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
@@ -181,7 +183,7 @@ public class AutoHost {
     }
 
     public static void sendResourcePack(Player player) {
-        if (isFloodgatePlayer(player)) {
+        if (BedrockChecker.isBedrock(player)) {
             RSPLogger.detail("Skipping Java resource pack send for Bedrock/Floodgate player " + player.getName()
                     + "; proxy Geyser handles Bedrock pack delivery.");
             return;
@@ -301,7 +303,7 @@ public class AutoHost {
     public static void handleResourcePackStatus(PlayerResourcePackStatusEvent event) {
         Player player = event.getPlayer();
         UUID id = player.getUniqueId();
-        if (isFloodgatePlayer(player)) {
+        if (BedrockChecker.isBedrock(player)) {
             settlePlayer(id);
             return;
         }
@@ -367,25 +369,6 @@ public class AutoHost {
         }
     }
 
-    private static boolean isFloodgatePlayer(Player player) {
-        if (Bukkit.getPluginManager().getPlugin("floodgate") == null
-                && Bukkit.getPluginManager().getPlugin("Floodgate") == null) {
-            return false;
-        }
-        try {
-            Class<?> floodgateApiClass = Class.forName("org.geysermc.floodgate.api.FloodgateApi");
-            Object floodgateApi = floodgateApiClass.getMethod("getInstance").invoke(null);
-            Object result = floodgateApiClass.getMethod("isFloodgatePlayer", UUID.class)
-                    .invoke(floodgateApi, player.getUniqueId());
-            return Boolean.TRUE.equals(result);
-        } catch (ClassNotFoundException | NoSuchMethodException ignored) {
-            return false;
-        } catch (Throwable throwable) {
-            Logger.warn("Failed to check Floodgate player status for " + player.getName()
-                    + ": " + throwable.getMessage());
-            return false;
-        }
-    }
 
     /**
      * SHA-1 of the pack this JVM last successfully published, used to recognise a reload that

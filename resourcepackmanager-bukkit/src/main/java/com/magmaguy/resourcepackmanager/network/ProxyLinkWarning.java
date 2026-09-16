@@ -6,7 +6,6 @@ import com.magmaguy.resourcepackmanager.config.DataConfig;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
-import java.util.regex.Pattern;
 
 /**
  * Warns operators when this backend has a Bedrock stack (Geyser or Floodgate)
@@ -20,12 +19,6 @@ import java.util.regex.Pattern;
  * — this class is that dedicated, robust surface.</p>
  */
 public final class ProxyLinkWarning {
-
-    // Floodgate's default Bedrock username convention: a '.' prefix and a
-    // 4-digit suffix. Java names can't start with a dot, so this is a
-    // plugin-free Bedrock signal that survives proxy-only Floodgate, where no
-    // Bedrock plugin exists on the backend at all.
-    private static final Pattern BEDROCK_NAME_PATTERN = Pattern.compile("^\\..*\\d{4}$");
 
     private ProxyLinkWarning() {
     }
@@ -46,20 +39,6 @@ public final class ProxyLinkWarning {
     private static boolean hasBedrockStack() {
         return Bukkit.getPluginManager().getPlugin("Geyser-Spigot") != null
                 || Bukkit.getPluginManager().getPlugin("floodgate") != null;
-    }
-
-    /**
-     * Best-effort, plugin-free Bedrock detection for a connecting player, so
-     * proxy-only Floodgate (no Bedrock plugin on the backend) is still caught.
-     * Two signals reach the backend through the forwarded connection: the
-     * Floodgate synthetic UUID (its most-significant bits are zero, which a
-     * real Mojang UUID never is) and the dotted username convention.
-     */
-    public static boolean looksBedrock(Player player) {
-        if (player == null) return false;
-        if (player.getUniqueId().getMostSignificantBits() == 0L) return true;
-        String name = player.getName();
-        return name != null && BEDROCK_NAME_PATTERN.matcher(name).matches();
     }
 
     /**
