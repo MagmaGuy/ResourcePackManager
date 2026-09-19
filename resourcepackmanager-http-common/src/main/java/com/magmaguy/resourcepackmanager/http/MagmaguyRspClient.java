@@ -140,6 +140,8 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 .build();
 
         return HttpClients.custom()
+                // The hosting lifecycle owns retry timing and its shared budget.
+                .disableAutomaticRetries()
                 .setConnectionManager(connectionManager)
                 .setDefaultRequestConfig(requestConfig)
                 .build();

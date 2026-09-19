@@ -36,9 +36,11 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 
 /**
  * Bukkit-side orchestration for the magmaguy.com auto-hosting flow.
@@ -126,14 +128,59 @@ public class AutoHost {
     private static final Object RELAY_IO_LOCK = new Object();
     private static final AtomicLong BEDROCK_PUBLICATION_GENERATION = new AtomicLong();
     private static volatile boolean bedrockPublicationAuthorized = false;
-    private static final long RELAY_RETRY_DELAY_TICKS = 30L * 20L;
 
     private static final AtomicLong LIFECYCLE_GENERATION = new AtomicLong();
     private static volatile LifecycleRun lifecycleRun = null;
-    private static final long HOST_RETRY_PERIOD_TICKS = 30L * 20L;
+    private static final long HOST_RETRY_PERIOD_TICKS = 20L;
     private static final long STILL_ALIVE_PERIOD_NANOS = 6L * 60L * 60L * 1_000_000_000L;
 
-    private record LifecycleRun(long generation, BooleanSupplier cancellationRequested) {
+    /** One in-flight attempt and at most five retries per burst. */
+    static final class RetryWindow {
+        private final LongSupplier clock;
+        private int failures;
+        private long nextAttemptNanos;
+        private boolean running;
+
+        RetryWindow() { this(System::nanoTime); }
+
+        RetryWindow(LongSupplier clock) { this.clock = clock; }
+
+        synchronized boolean tryStart() {
+            if (running || (nextAttemptNanos != 0 && clock.getAsLong() - nextAttemptNanos < 0)) return false;
+            running = true;
+            return true;
+        }
+
+        synchronized void finish(boolean success) {
+            running = false;
+            if (success) {
+                failures = 0;
+                nextAttemptNanos = 0;
+                return;
+            }
+            failures++;
+            long ceilingSeconds;
+            if (failures >= 6) {
+                ceilingSeconds = 30L * 60L;
+                failures = 0;
+            } else {
+                ceilingSeconds = 30L << (failures - 1);
+            }
+            long delayNanos = ThreadLocalRandom.current().nextLong(
+                    ceilingSeconds * 500_000_000L, ceilingSeconds * 1_000_000_000L + 1);
+            nextAttemptNanos = clock.getAsLong() + delayNanos;
+        }
+
+        synchronized long remainingTicks() {
+            // An active upload owns the attempt; polling never starts another one.
+            if (running) return 20L;
+            return Math.max(1L, (nextAttemptNanos - clock.getAsLong() + 49_999_999L) / 50_000_000L);
+        }
+    }
+
+    private record LifecycleRun(long generation, BooleanSupplier cancellationRequested,
+                                RetryWindow hostingRetry, RetryWindow relayRetry,
+                                Map<String, RelayReceipt> relayReceipts) {
         private boolean active() {
             return lifecycleRun == this
                     && generation == LIFECYCLE_GENERATION.get()
@@ -146,9 +193,9 @@ public class AutoHost {
     /**
      * Re-upload cadence for the relay. Hoster TTL is 30 min; we upload every
      * 25 to have a safety margin against scheduling jitter and brief network
-     * outages. Pack uploads are bandwidth-cheap (typically a few MB) and the
-     * hoster's index update is sha1-checked so identical re-uploads are
-     * effectively free.
+     * outages. Successful artifacts are reused during a retry burst. Ordinary
+     * renewal still uploads because the existing hoster protocol refreshes TTL
+     * on upload only.
      */
     private static final long RELAY_UPLOAD_PERIOD_TICKS = 25L * 60L * 20L;
 
@@ -413,7 +460,8 @@ public class AutoHost {
         }
 
         long generation = LIFECYCLE_GENERATION.incrementAndGet();
-        LifecycleRun run = new LifecycleRun(generation, cancellation);
+        LifecycleRun run = new LifecycleRun(generation, cancellation,
+                new RetryWindow(), new RetryWindow(), new ConcurrentHashMap<>());
         lifecycleRun = run;
         if (!run.active()) {
             LIFECYCLE_GENERATION.incrementAndGet();
@@ -485,32 +533,37 @@ public class AutoHost {
                     return;
                 }
 
-                if (done) {
-                    counter = 0;
-                    // Remote hosting needs a periodic keep-alive. Self-hosting does not: the
-                    // PackHttpServer remains live for this lifecycle and serves the current file
-                    // directly. Falling through here when rspUUID is null used to re-run
-                    // commitSelfHost() every 30 seconds, which re-sent the pack to every online
-                    // Java player and left clients stuck in an endless resource-pack reload loop.
-                    if (rspUUID == null) return;
-                    if (System.nanoTime() < nextStillAliveNanos) return;
-                    try {
-                        sendStillAlive(run);
-                        nextStillAliveNanos = System.nanoTime() + STILL_ALIVE_PERIOD_NANOS;
-                    } catch (Exception e) {
-                        if (run.active()) {
-                            rspUUID = null;
-                            done = false;
-                            Logger.warn("Failed to autohost resource pack!");
-                            e.printStackTrace();
+                if (!run.hostingRetry().tryStart()) return;
+                try {
+                    if (done) {
+                        counter = 0;
+                        // Remote hosting needs a periodic keep-alive. Self-hosting does not: the
+                        // PackHttpServer remains live for this lifecycle and serves the current file
+                        // directly. Falling through here when rspUUID is null used to re-run
+                        // commitSelfHost() every 30 seconds, which re-sent the pack to every online
+                        // Java player and left clients stuck in an endless resource-pack reload loop.
+                        if (rspUUID == null) return;
+                        if (System.nanoTime() < nextStillAliveNanos) return;
+                        try {
+                            sendStillAlive(run);
+                            nextStillAliveNanos = System.nanoTime() + STILL_ALIVE_PERIOD_NANOS;
+                        } catch (Exception e) {
+                            if (run.active()) {
+                                rspUUID = null;
+                                done = false;
+                                Logger.warn("Failed to autohost resource pack!");
+                                e.printStackTrace();
+                            }
                         }
+                    } else {
+                        checkFileExistence(run);
+                        if (!done && rspUUID == null && counter % 10 == 0) {
+                            Logger.warn("Failed to connect to remote server to autohost the resource pack!");
+                        }
+                        counter++;
                     }
-                } else {
-                    checkFileExistence(run);
-                    if (!done && rspUUID == null && counter % 10 == 0) {
-                        Logger.warn("Failed to connect to remote server to autohost the resource pack!");
-                    }
-                    counter++;
+                } finally {
+                    run.hostingRetry().finish(done);
                 }
             }
         }.runTaskTimerAsynchronously(ResourcePackManager.plugin, 0, HOST_RETRY_PERIOD_TICKS);
@@ -1164,17 +1217,52 @@ public class AutoHost {
     }
 
     private static void reconcileRelay(LifecycleRun run, long requestedGeneration) {
+        if (!run.active() || requestedGeneration != BEDROCK_PUBLICATION_GENERATION.get()) return;
+        if (!run.relayRetry().tryStart()) {
+            scheduleRelayRetry(run, requestedGeneration);
+            return;
+        }
+        boolean success = false;
+        try {
+            success = reconcileRelayOnce(run, requestedGeneration);
+        } finally {
+            run.relayRetry().finish(success);
+            if (!success && run.active()
+                    && requestedGeneration == BEDROCK_PUBLICATION_GENERATION.get()) {
+                scheduleRelayRetry(run, requestedGeneration);
+            }
+        }
+    }
+
+    private record RelayReceipt(String sha1, long validUntilNanos) {}
+
+    private static boolean uploadRelayIfNeeded(LifecycleRun run, MagmaguyRspClient relayClient,
+                                                String networkKey, String id, String kind,
+                                                File file, String sha1) throws IOException {
+        RelayReceipt receipt = run.relayReceipts().get(kind);
+        if (receipt != null && sha1 != null && sha1.equals(receipt.sha1())
+                && System.nanoTime() < receipt.validUntilNanos()) return true;
+        if (relayClient.uploadBedrockRelay(networkKey, id, kind, file, sha1).isEmpty()) return false;
+        // Preserve successful pieces of a publication across retries. Refresh before
+        // the hoster's 30-minute TTL; the ordinary 25-minute renewal still uploads.
+        run.relayReceipts().put(kind, new RelayReceipt(sha1,
+                System.nanoTime() + 20L * 60L * 1_000_000_000L));
+        return true;
+    }
+
+    private static boolean reconcileRelayOnce(LifecycleRun run, long requestedGeneration) {
         boolean retry = false;
         synchronized (RELAY_IO_LOCK) {
             if (!run.active()
                     || requestedGeneration != BEDROCK_PUBLICATION_GENERATION.get()
-                    || MagmaguyRspClient.isRemoteRelayDisabled()) return;
+                    || MagmaguyRspClient.isRemoteRelayDisabled()) return false;
             MagmaguyRspClient relayClient = client;
             String id = backendId;
             String networkKey = NetworkMode.getNetworkKey();
-            if (relayClient == null || id == null || networkKey == null || networkKey.isBlank()) return;
+            if (relayClient == null || id == null || networkKey == null || networkKey.isBlank()) return false;
 
             if (!bedrockPublicationAuthorized) {
+                run.relayReceipts().clear();
                 MagmaguyRspClient.RelayDeleteResult deletion = relayClient.deleteBedrockRelay(
                         networkKey, id, null);
                 retry = !deletion.confirmed() && deletion.retryable();
@@ -1183,6 +1271,7 @@ public class AutoHost {
                 BedrockOutputPublication.Snapshot publication = BedrockOutputPublication.current(outputDir);
                 if (publication == null) {
                     if (requestedGeneration == BEDROCK_PUBLICATION_GENERATION.get()) {
+                        run.relayReceipts().clear();
                         bedrockPublicationAuthorized = false;
                         bedrockPackRouteDescriptor = null;
                         bedrockMappingsRouteDescriptor = null;
@@ -1193,7 +1282,7 @@ public class AutoHost {
                 } else {
                     PackHttpServer server = selfHostServer;
                     if (server != null) announceBackendEndpoint(relayClient, networkKey, server.port());
-                    if (!run.active() || requestedGeneration != BEDROCK_PUBLICATION_GENERATION.get()) return;
+                    if (!run.active() || requestedGeneration != BEDROCK_PUBLICATION_GENERATION.get()) return false;
 
                     try {
                         // The ZIP embeds the complete set manifest and is uploaded
@@ -1202,10 +1291,10 @@ public class AutoHost {
                         boolean sidecarReady;
                         boolean sidecarRetryable = true;
                         if (publication.hasMappings()) {
-                            sidecarReady = relayClient.uploadBedrockRelay(
-                                    networkKey, id, "mappings", publication.mappings(),
-                                    publication.mappingsSha1()).isPresent();
+                            sidecarReady = uploadRelayIfNeeded(run, relayClient, networkKey, id, "mappings",
+                                    publication.mappings(), publication.mappingsSha1());
                         } else {
+                            run.relayReceipts().remove("mappings");
                             MagmaguyRspClient.RelayDeleteResult deletion =
                                     relayClient.deleteBedrockRelay(
                                             networkKey, id, "mappings");
@@ -1216,11 +1305,10 @@ public class AutoHost {
                             retry = sidecarRetryable;
                         } else if (!run.active()
                                 || requestedGeneration != BEDROCK_PUBLICATION_GENERATION.get()) {
-                            return;
+                            return false;
                         } else {
-                            boolean zipCommitted = relayClient.uploadBedrockRelay(
-                                    networkKey, id, "zip", publication.pack(),
-                                    publication.packSha1()).isPresent();
+                            boolean zipCommitted = uploadRelayIfNeeded(run, relayClient, networkKey, id, "zip",
+                                    publication.pack(), publication.packSha1());
                             retry = !zipCommitted;
                             if (zipCommitted) RSPLogger.detail(
                                     "Pushed authoritative Bedrock artifact set to relay for proxy fallback.");
@@ -1232,10 +1320,7 @@ public class AutoHost {
                 }
             }
         }
-        if (retry && run.active()
-                && requestedGeneration == BEDROCK_PUBLICATION_GENERATION.get()) {
-            scheduleRelayRetry(run, requestedGeneration);
-        }
+        return !retry;
     }
 
     private static synchronized void scheduleRelayRetry(LifecycleRun run, long publicationGeneration) {
@@ -1254,7 +1339,7 @@ public class AutoHost {
                         reconcileRelay(run, publicationGeneration);
                     }
                 },
-                RELAY_RETRY_DELAY_TICKS);
+                run.relayRetry().remainingTicks());
         ownTask.set(task);
         relayRetryTask = task;
     }

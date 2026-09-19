@@ -14,6 +14,14 @@ plugin; if that is not reachable it falls back to uploading the pack to
 magmaguy.com and pushing that URL to clients. Either way, players receive the
 combined pack without you having to host or stitch anything together by hand.
 
+Remote hosting and Bedrock relay failures use randomized exponential backoff.
+Each flow permits one in-flight attempt and five retries, then waits 15–30 minutes
+before trying a new burst. A successful operation resets its retry budget.
+The HTTP library does not add retries underneath that budget. Java hosting checks
+the remote SHA-1 before uploading; Bedrock publication reuses successful artifact
+uploads during retries for up to 20 minutes. The ordinary 25-minute Bedrock renewal
+still uploads because the existing relay protocol refreshes its lease on upload.
+
 ## Key features
 
 - **Automatic pack merging**: collects the resource packs supplied by other
