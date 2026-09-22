@@ -48,7 +48,7 @@ public class ItemsAdderDetector {
      * ({@link #needsConfiguration()}) parse config.yml once instead of once
      * per question.
      */
-    private static boolean isItemsAdderHosting(YamlConfiguration config) {
+    static boolean isItemsAdderHosting(YamlConfiguration config) {
         try {
             // Check self-host
             boolean selfHostEnabled = config.getBoolean("resource-pack.hosting.self-host.enabled", false);

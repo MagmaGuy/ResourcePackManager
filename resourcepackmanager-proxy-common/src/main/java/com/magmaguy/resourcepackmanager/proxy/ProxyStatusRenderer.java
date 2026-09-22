@@ -246,10 +246,12 @@ public final class ProxyStatusRenderer {
                 line.accept("&e  ResourcePackManager.jar propagation from the affected backend.");
                 line.accept("&e  Run /rspm status on this proxy and each affected backend, then");
                 line.accept("&e  compare the Network key fingerprint shown at the top.");
-                line.accept("&e  Common cause: missing/different plugins/floodgate/key.pem files.");
-                line.accept("&e  If they differ: fully stop both, back up the backend key.pem, then");
-                line.accept("&e  manually copy the proxy's key.pem to the affected backend. Start");
-                line.accept("&e  the backend, then proxy. Never post/paste key.pem or weaken auth.");
+                line.accept("&e  If they differ: verify this is the intended proxy and backend.");
+                line.accept("&e  Stop the affected backend, back up its RSPM data.yml, and remove");
+                line.accept("&e  only its networkKey entry. Restart it and join through this proxy");
+                line.accept("&e  to provision the proxy's persisted RSPM identity. Check grant warnings");
+                line.accept("&e  and matching fingerprints. Keep the proxy network-key and Floodgate keys.");
+                line.accept("&e  Never share key contents or weaken forwarding authentication.");
                 line.accept("&e  If they match: confirm the same candidate/version is loaded and the");
                 line.accept("&e  HTTP URL targets this backend. If 401 persists, attach both status");
                 line.accept("&e  outputs plus the warning to support (never attach the key itself).");

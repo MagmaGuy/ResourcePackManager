@@ -752,6 +752,8 @@ public final class MagmaguyRspClient implements AutoCloseable {
                 return Optional.empty();
             }
             return Optional.of(toEndpoint(json.getAsJsonObject("entry")));
+        } catch (RuntimeException malformedResponse) {
+            throw new IOException("Invalid Bedrock endpoint announcement response", malformedResponse);
         }
     }
 
@@ -790,6 +792,8 @@ public final class MagmaguyRspClient implements AutoCloseable {
                     return Optional.empty();
                 }
                 return Optional.of(toEntry(json.getAsJsonObject("entry")));
+            } catch (RuntimeException malformedResponse) {
+                throw new IOException("Invalid Bedrock relay upload response", malformedResponse);
             }
         } finally {
             abortableClients.remove(uploadClient);

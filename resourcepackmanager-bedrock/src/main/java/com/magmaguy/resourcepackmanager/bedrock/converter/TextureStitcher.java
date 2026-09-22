@@ -152,6 +152,7 @@ public class TextureStitcher {
         // 3. Load unique textures (dedup by source texture reference -> one atlas region).
         Map<String, BufferedImage> loadedByRef = new LinkedHashMap<>(); // textureRef -> image
         Map<String, File> sourceFileByRef = new LinkedHashMap<>();      // textureRef -> file on disk
+        Set<String> attemptedRefs = new HashSet<>();
         List<String> placementOrderRefs = new ArrayList<>();            // ref order to draw
         List<String> missingCustom = new ArrayList<>();                 // custom-ns refs with no file on disk
         List<String> missingVanilla = new ArrayList<>();                // minecraft: refs (client-side, expected miss)
@@ -159,7 +160,7 @@ public class TextureStitcher {
         for (String index : sortedIndices) {
             String textureRef = textureMap.get(index);
             if (textureRef == null) continue;
-            if (loadedByRef.containsKey(textureRef)) continue; // already loaded once
+            if (!attemptedRefs.add(textureRef)) continue; // Includes absent and undecodable textures.
 
             String ns = BedrockNaming.extractNamespace(textureRef);
             String path = BedrockNaming.extractPath(textureRef);
@@ -373,7 +374,18 @@ public class TextureStitcher {
             } catch (Exception e) {
                 BedrockLog.warn("[BedrockConverter] Failed to parse textures from " + file.getPath() + ": " + e.getMessage());
             }
-            result.put(boneName, new BoneTextures(textures));
+            LinkedHashMap<String, String> resolved = new LinkedHashMap<>();
+            for (String slot : textures.keySet()) {
+                String value = textures.get(slot);
+                Set<String> visited = new HashSet<>();
+                while (value != null && value.startsWith("#")) {
+                    String alias = value.substring(1);
+                    if (!visited.add(alias)) { value = null; break; }
+                    value = textures.get(alias);
+                }
+                if (value != null) resolved.put(slot, value);
+            }
+            result.put(boneName, new BoneTextures(resolved));
         }
         return result;
     }

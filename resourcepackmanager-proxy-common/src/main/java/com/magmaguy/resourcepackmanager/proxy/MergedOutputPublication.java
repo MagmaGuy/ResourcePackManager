@@ -21,6 +21,9 @@ public final class MergedOutputPublication {
     public static final String MARKER_NAME = ".rspm_merged_publication.properties";
     public static final String REVOCATION_NAME = ".rspm_merged_publication.revoked";
     private static final String VERSION = "1";
+    private static final String GENERATION_PREFIX = ".rspm-geyser-";
+    private static final String PROCESS_IDENTITY = ProcessHandle.current().pid() + "-"
+            + java.lang.management.ManagementFactory.getRuntimeMXBean().getStartTime();
 
     private MergedOutputPublication() {
     }
@@ -186,6 +189,52 @@ public final class MergedOutputPublication {
                     actualMappingsSha1);
         } catch (IOException | RuntimeException invalid) {
             return null;
+        }
+    }
+
+    /**
+     * Geyser opens the codec's path for each later chunk request. A registered pack can
+     * outlive this plugin (hot reload), so generations survive until the JVM exits.
+     */
+    static File retainForGeyser(File mergedDir, File source, String expectedSha1) throws IOException {
+        Path root = mergedDir.toPath().toAbsolutePath().normalize();
+        Files.createDirectories(root);
+        try (var paths = Files.newDirectoryStream(root, GENERATION_PREFIX + "*.zip")) {
+            for (Path path : paths) {
+                String name = path.getFileName().toString();
+                if (name.matches("\\.rspm-geyser-[0-9]+-[0-9]+-[0-9a-f-]{36}\\.zip")
+                        && !name.startsWith(GENERATION_PREFIX + PROCESS_IDENTITY + "-")
+                        && Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    Files.deleteIfExists(path);
+                }
+            }
+        }
+        Path generation = root.resolve(GENERATION_PREFIX + PROCESS_IDENTITY + "-" + UUID.randomUUID() + ".zip");
+        try {
+            Files.copy(source.toPath(), generation);
+            if (!expectedSha1.equals(sha1(generation.toFile())))
+                throw new IOException("Merged pack changed while retaining its Geyser generation");
+            return generation.toFile();
+        } catch (IOException failure) {
+            try { Files.deleteIfExists(generation); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+            throw failure;
+        }
+    }
+
+    /** Small authority check only; immutable generation bytes were verified when retained. */
+    static boolean permitsDelivery(File generation, String expectedSha1) {
+        if (generation == null || expectedSha1 == null) return false;
+        File mergedDir = generation.getParentFile();
+        if (Files.exists(revocationPath(mergedDir))) return false;
+        try (InputStream input = Files.newInputStream(markerPath(mergedDir))) {
+            Properties properties = new Properties();
+            properties.load(input);
+            return VERSION.equals(properties.getProperty("version"))
+                    && !Boolean.parseBoolean(properties.getProperty("withdrawn", "false"))
+                    && expectedSha1.equals(properties.getProperty("pack.sha1"))
+                    && !Files.exists(revocationPath(mergedDir));
+        } catch (IOException | RuntimeException unavailable) {
+            return false;
         }
     }
 

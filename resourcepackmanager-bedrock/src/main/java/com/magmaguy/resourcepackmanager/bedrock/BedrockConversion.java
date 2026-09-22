@@ -63,6 +63,7 @@ import java.util.zip.ZipFile;
  * the {@link BedrockConverterContext}.</p>
  */
 public class BedrockConversion {
+    public static final String OUTPUT_REVISION = "mapping-identity-texture-aliases-v2";
 
     public static final String BEDROCK_PACK_NAME = "ResourcePackManager_Bedrock";
     public static final String GEYSER_MAPPINGS_NAME = "rspm_geyser_mappings.json";
@@ -568,11 +569,13 @@ public class BedrockConversion {
                                 continue;
                             }
                         }
+                        if (!iconTextureMap.containsKey(iconKey)) continue;
                         String itemsStem = def.itemsRelPath();
                         for (String base : baseItems) {
                             if (ctx.isCancellationRequested()) return;
                             String mappingHash = BedrockShortName.forBaseMapping(
-                                    leaf.modelRef(), base, MappedItemRegistry.predicateShape(leaf.predicates()));
+                                    leaf.modelRef(), base, def.itemIdentifier() + "|"
+                                            + MappedItemRegistry.predicateShape(leaf.predicates()));
                             String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
                             registry.addMapping(base, geyserEntry(
                                     def,
@@ -714,7 +717,8 @@ public class BedrockConversion {
         for (String base : baseItems) {
             if (isCancelled(cancellationRequested)) return false;
             String mappingHash = BedrockShortName.forBaseMapping(
-                    leaf.modelRef(), base, MappedItemRegistry.predicateShape(leaf.predicates()));
+                    leaf.modelRef(), base, definition.itemIdentifier() + "|"
+                            + MappedItemRegistry.predicateShape(leaf.predicates()));
             String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
             String attachableOutPath = mappingHash;
 
@@ -921,9 +925,7 @@ public class BedrockConversion {
      * falling back to an inline delete when the rename cannot be taken.
      */
     private static void deleteOffCriticalPath(File directory) {
-        if (directory == null || !directory.exists()) return;
-        if (AsyncDirectoryCleaner.deleteLater(directory)) return;
-        recursivelyDelete(directory);
+        AsyncDirectoryCleaner.delete(directory);
     }
 
     private static void recursivelyDelete(File file) {

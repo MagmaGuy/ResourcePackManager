@@ -66,7 +66,7 @@ public final class MappedItemRegistry {
     }
 
     public boolean registerModelOnce(String javaItemModel) {
-        return writtenModels.add(safeIdentifier(javaItemModel));
+        return writtenModels.add(javaItemModel);
     }
 
     public void addMapping(String baseItem, GeyserDefinitionEntry entry) {
@@ -100,9 +100,12 @@ public final class MappedItemRegistry {
         if (keepPrevious) {
             kept = previous.entry();
             dropped = entry;
+            emittedEntryKeys.remove(key);
         } else {
             kept = entry;
             dropped = previous.entry();
+            emittedEntryKeys.remove(baseItem + "|" + dropped.bedrockIdentifier() + "|"
+                    + predicateShape(dropped.predicates()));
             bucket.set(previous.index(), entry);
             entriesByIdentity.put(identity, new EmittedEntry(baseItem, previous.index(), entry));
         }

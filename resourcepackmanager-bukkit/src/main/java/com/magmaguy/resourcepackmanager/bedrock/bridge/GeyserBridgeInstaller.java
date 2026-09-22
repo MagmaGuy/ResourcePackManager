@@ -203,8 +203,9 @@ public final class GeyserBridgeInstaller {
     }
 
     private static final class RelocatedBridgeInvocationHandler implements InvocationHandler {
-        private final ConcurrentMap<String, com.magmaguy.resourcepackmanager.bridge.BridgeEntityDefinition> definitions =
-                new ConcurrentHashMap<>();
+        private record EncodedDefinition(com.magmaguy.resourcepackmanager.bridge.BridgeEntityDefinition definition, byte[] payload) { }
+        // Definitions are immutable records. Weak keys let a replaced content generation retire.
+        private final Map<Object, EncodedDefinition> definitions = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
 
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) {
@@ -246,22 +247,29 @@ public final class GeyserBridgeInstaller {
             };
         }
 
-        private void registerDefinition(Object definition) {
-            com.magmaguy.resourcepackmanager.bridge.BridgeEntityDefinition bridgeDefinition = convert(definition);
-            if (bridgeDefinition != null) {
-                definitions.putIfAbsent(bridgeDefinition.identifier(), bridgeDefinition);
+        private void registerDefinition(Object definition) { encoded(definition); }
+
+        private EncodedDefinition encoded(Object definition) {
+            synchronized (definitions) {
+                EncodedDefinition cached = definitions.get(definition);
+                if (cached != null) return cached;
+                var converted = convert(definition);
+                if (converted == null) return null;
+                EncodedDefinition encoded = new EncodedDefinition(converted,
+                        com.magmaguy.resourcepackmanager.bridge.BridgeCodec.encode(
+                                com.magmaguy.resourcepackmanager.bridge.BridgeMessage.registerDefinition(converted)));
+                definitions.put(definition, encoded);
+                return encoded;
             }
         }
 
         private void prepareEntitySpawn(org.bukkit.entity.Player player, int javaEntityId, Object definition) {
-            com.magmaguy.resourcepackmanager.bridge.BridgeEntityDefinition bridgeDefinition = convert(definition);
-            if (bridgeDefinition == null) {
-                return;
-            }
-            definitions.putIfAbsent(bridgeDefinition.identifier(), bridgeDefinition);
-            send(player, com.magmaguy.resourcepackmanager.bridge.BridgeMessage.registerDefinition(bridgeDefinition));
+            EncodedDefinition encoded = encoded(definition);
+            if (encoded == null) return;
+            if (player != null && player.isOnline() && ResourcePackManager.plugin != null && ResourcePackManager.plugin.isEnabled())
+                player.sendPluginMessage(ResourcePackManager.plugin, CHANNEL, encoded.payload());
             send(player, com.magmaguy.resourcepackmanager.bridge.BridgeMessage.setCustomEntity(
-                    javaEntityId, bridgeDefinition.identifier()));
+                    javaEntityId, encoded.definition().identifier()));
         }
 
         private com.magmaguy.resourcepackmanager.bridge.BridgeEntityDefinition convert(Object definition) {

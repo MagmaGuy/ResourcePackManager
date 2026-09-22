@@ -128,9 +128,10 @@ public final class BedrockMappingsMerger {
         // Accumulate per-base-item entry lists. LinkedHashMap on the outer map preserves
         // first-seen order across the union of base items, which keeps diff-friendly
         // determinism when inputs are ordered consistently.
-        Map<String, List<JsonObject>> byBase = new LinkedHashMap<>();
+        Map<String, LinkedHashMap<String, JsonObject>> entriesByBase = new LinkedHashMap<>();
         // (baseItem, bedrockId) -> backendIndexOfLastWriter, for collision messages.
         Map<String, Integer> ownerByKey = new LinkedHashMap<>();
+        int duplicateCount = 0;
 
         for (int i = 0; i < parsed.size(); i++) {
             JsonObject root = parsed.get(i);
@@ -144,7 +145,7 @@ public final class BedrockMappingsMerger {
                     return null;
                 }
                 JsonArray defs = defsEl.getAsJsonArray();
-                List<JsonObject> bucket = byBase.computeIfAbsent(baseItem, k -> new ArrayList<>());
+                LinkedHashMap<String, JsonObject> bucket = entriesByBase.computeIfAbsent(baseItem, k -> new LinkedHashMap<>());
 
                 for (JsonElement el : defs) {
                     if (!el.isJsonObject()) {
@@ -168,17 +169,22 @@ public final class BedrockMappingsMerger {
                     Integer prevOwner = ownerByKey.get(key);
                     if (prevOwner != null) {
                         // Last writer wins: remove the previous entry from the bucket then append the new one.
-                        logger.warn("[BedrockMappingsMerger] Duplicate bedrock_identifier '" + bedrockId
+                        if (duplicateCount++ < 3) logger.warn("[BedrockMappingsMerger] Duplicate bedrock_identifier '" + bedrockId
                                 + "' under base item '" + baseItem
                                 + "' between backend #" + prevOwner + " and backend #" + i
                                 + "; last writer wins (backend #" + i + ").");
-                        removeFirstWithBedrockId(bucket, bedrockId);
+                        bucket.remove(bedrockId);
                     }
-                    bucket.add(def);
+                    bucket.put(bedrockId, def);
                     ownerByKey.put(key, i);
                 }
             }
         }
+
+        if (duplicateCount > 3) logger.warn("[BedrockMappingsMerger] Resolved " + duplicateCount
+                + " duplicate identifiers with last-writer precedence (first 3 shown).");
+        Map<String, List<JsonObject>> byBase = new LinkedHashMap<>();
+        entriesByBase.forEach((base, entries) -> byBase.put(base, new ArrayList<>(entries.values())));
 
         // Post-walk empty check: every input was `{"items": {}}` or had no items keys.
         // Per user policy, emit nothing rather than write `{"items": {}}` to disk.
@@ -280,18 +286,6 @@ public final class BedrockMappingsMerger {
         } catch (IOException e) {
             logger.warn("[BedrockMappingsMerger] Failed to delete previous merged mappings "
                     + output.getAbsolutePath() + ": " + e.getMessage());
-        }
-    }
-
-    private void removeFirstWithBedrockId(List<JsonObject> bucket, String bedrockId) {
-        for (int idx = 0; idx < bucket.size(); idx++) {
-            JsonObject def = bucket.get(idx);
-            if (def.has("bedrock_identifier")
-                    && def.get("bedrock_identifier").isJsonPrimitive()
-                    && bedrockId.equals(def.get("bedrock_identifier").getAsString())) {
-                bucket.remove(idx);
-                return;
-            }
         }
     }
 

@@ -80,11 +80,11 @@ public final class ProxyPluginUpdateCoordinator {
             if (versionComparison < 0) {
                 logger.warn("Ignored backend-offered RSPM " + offered.version()
                         + " because this proxy already runs newer " + current.version() + ".");
-                return false;
+                return true;
             }
             if (versionComparison == 0 && offered.sha256().equals(current.sha256())) {
                 clearMatchingPending(offered.sha256());
-                return false;
+                return true;
             }
 
             Path pendingDirectory = pendingDirectory();

@@ -75,9 +75,8 @@ public final class NetworkKeyAuthority {
         }
 
         /**
-         * @return {@code false} when a new key could not be written. The caller must
-         *         warn loudly: an unpersisted key is regenerated on the next boot,
-         *         which silently unlinks every backend that was already provisioned.
+         * @return whether the admitted identity is durable; unresolved persistence now
+         *         fails before a Resolution can be returned.
          */
         public boolean persisted() {
             return persisted;
@@ -95,11 +94,11 @@ public final class NetworkKeyAuthority {
      * @param dataDir          the proxy plugin's data directory
      * @param floodgateKeyPem  path to {@code plugins/floodgate/key.pem}; may be absent
      */
-    public static Resolution resolve(Path dataDir, Path floodgateKeyPem) {
+    public static synchronized Resolution resolve(Path dataDir, Path floodgateKeyPem) {
         Path keyFile = dataDir.resolve(KEY_FILENAME);
 
-        String existing = readKey(keyFile);
-        if (existing != null) return new Resolution(existing, Source.PERSISTED, true, null);
+        KeyState existing = readKey(keyFile);
+        if (existing.key() != null) return new Resolution(existing.key(), Source.PERSISTED, true, null);
 
         String seeded = floodgateKeyPem == null
                 ? null
@@ -107,35 +106,53 @@ public final class NetworkKeyAuthority {
         String key = seeded != null ? seeded : NetworkKeyResolver.mint();
         Source source = seeded != null ? Source.SEEDED_FROM_FLOODGATE : Source.MINTED;
 
-        String error = writeKey(dataDir, keyFile, key);
+        String error = writeKey(dataDir, keyFile, key, existing.malformedBytes());
+        if (error != null) {
+            // Another initializer may have established the identity while we prepared ours.
+            KeyState concurrent = readKey(keyFile);
+            if (concurrent.key() != null) return new Resolution(concurrent.key(), Source.PERSISTED, true, null);
+            throw new IllegalStateException("Could not establish persistent RSPM network identity: " + error);
+        }
         return new Resolution(key, source, error == null, error);
     }
 
-    /**
-     * Reads a persisted key. Blank or malformed content is treated as absent so a
-     * truncated write is re-established rather than propagated to every backend.
-     */
-    private static String readKey(Path keyFile) {
+    private record KeyState(String key, byte[] malformedBytes) { }
+
+    /** Unreadable existing identity fails; a successfully read malformed value retains the documented regeneration policy. */
+    private static KeyState readKey(Path keyFile) {
         try {
-            if (!Files.isRegularFile(keyFile)) return null;
-            String raw = new String(Files.readAllBytes(keyFile), StandardCharsets.UTF_8).trim();
-            return isWellFormed(raw) ? raw : null;
+            byte[] bytes = Files.readAllBytes(keyFile);
+            String raw = new String(bytes, StandardCharsets.UTF_8).trim();
+            return isWellFormed(raw) ? new KeyState(raw, null) : new KeyState(null, bytes);
+        } catch (java.nio.file.NoSuchFileException missing) {
+            return new KeyState(null, null);
         } catch (IOException exception) {
-            return null;
+            throw new java.io.UncheckedIOException("Cannot read established RSPM network identity", exception);
         }
     }
 
-    private static String writeKey(Path dataDir, Path keyFile, String key) {
+    private static String writeKey(Path dataDir, Path keyFile, String key, byte[] malformedBytes) {
+        Path pending = null;
         try {
             Files.createDirectories(dataDir);
-            Files.write(keyFile, (key + System.lineSeparator()).getBytes(StandardCharsets.UTF_8),
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
+            pending = Files.createTempFile(dataDir, ".network-key-", ".tmp");
+            Files.writeString(pending, key + System.lineSeparator(), StandardCharsets.UTF_8);
+            if (malformedBytes == null) {
+                // No replacement on first install: preserve another initializer's accepted key.
+                Files.move(pending, keyFile);
+            } else {
+                if (!java.util.Arrays.equals(malformedBytes, Files.readAllBytes(keyFile)))
+                    throw new IOException("Network identity changed during malformed-key recovery");
+                Files.move(pending, keyFile, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
             return null;
         } catch (IOException | RuntimeException exception) {
-            return exception.getMessage() == null
-                    ? exception.getClass().getSimpleName()
-                    : exception.getMessage();
+            return exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+        } finally {
+            if (pending != null) {
+                try { Files.deleteIfExists(pending); } catch (IOException ignored) { }
+            }
         }
     }
 

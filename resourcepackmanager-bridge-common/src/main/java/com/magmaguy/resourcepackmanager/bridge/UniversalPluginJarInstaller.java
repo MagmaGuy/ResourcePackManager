@@ -78,6 +78,19 @@ public final class UniversalPluginJarInstaller {
             throw new IOException("legacy bridge path is not a regular file: " + legacy);
         }
 
+        // A newer installed extension can reject this source and still need an older
+        // pending update removed; otherwise Geyser would apply that downgrade at boot.
+        ExistingArtifact installed = newestValidArtifact(target, legacy);
+        if (installed != null && Files.exists(staged, LinkOption.NOFOLLOW_LINKS)) {
+            var pending = UniversalPluginJarInspector.inspect(staged);
+            if (UniversalPluginJarInspector.compareVersions(pending.version(), installed.inspection().version()) < 0
+                    || pending.sha256().equals(installed.inspection().sha256())) {
+                if (!pending.sha256().equals(UniversalPluginJarInspector.sha256(staged)))
+                    throw new IOException("Staged Geyser update changed during reconciliation");
+                Files.delete(staged);
+                deleteIfEmpty(updateDirectory);
+            }
+        }
         ExistingArtifact newestExisting = newestValidArtifact(target, legacy, staged);
         if (newestExisting != null
                 && UniversalPluginJarInspector.compareVersions(
@@ -94,10 +107,20 @@ public final class UniversalPluginJarInstaller {
         }
 
         if (targetExists) {
-            if (Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS)
-                    && sourceHash.equals(UniversalPluginJarInspector.sha256(staged))) {
-                Files.delete(staged);
-                deleteIfEmpty(updateDirectory);
+            if (Files.exists(staged, LinkOption.NOFOLLOW_LINKS)) {
+                UniversalPluginJarInspector.Inspection stagedInspection = UniversalPluginJarInspector.inspect(staged);
+                int comparison = UniversalPluginJarInspector.compareVersions(stagedInspection.version(), sourceVersion);
+                if (comparison < 0 || sourceHash.equals(stagedInspection.sha256())) {
+                    if (!stagedInspection.sha256().equals(UniversalPluginJarInspector.sha256(staged))) {
+                        throw new IOException("Staged Geyser update changed during reconciliation");
+                    }
+                    Files.delete(staged);
+                    deleteIfEmpty(updateDirectory);
+                } else {
+                    // Same-version changed bytes represent an explicitly staged replacement.
+                    return new Result(source, target, staged, sourceHash, State.STAGED_FOR_GEYSER_RESTART,
+                            sourceVersion, stagedInspection.version(), false);
+                }
             }
             return new Result(source, target, staged, sourceHash, State.CURRENT,
                     sourceVersion, sourceVersion, false);

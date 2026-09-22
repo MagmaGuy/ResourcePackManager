@@ -19,9 +19,8 @@ import java.util.function.BiConsumer;
  *
  * <p>Updates the registered file when {@link #onMergedPackReady(MergedPack)} is
  * called by {@link NetworkSync}. Per-session registration uses the latest pack
- * file in {@link #current}. The path is stable across re-merges (the merger
- * overwrites the same file atomically), so Geyser picks up new bytes on the
- * next session load.
+ * generation in {@link #current}. Exposed generations remain immutable for the
+ * JVM lifetime because Geyser reads their paths after session registration.
  *
  * <p>This class is platform-neutral within the Geyser ecosystem — the same
  * instance works on Geyser-Velocity, Geyser-BungeeCord,
@@ -114,6 +113,10 @@ public final class GeyserBinder {
             return;
         }
         java.io.File packFile = pack.packFile();
+        if (!MergedOutputPublication.permitsDelivery(packFile, pack.sha1Hex())) {
+            notifyPackUnavailable(event, "the proxy's merged publication is changing or has been withdrawn");
+            return;
+        }
         if (packFile == null || !packFile.isFile()) {
             logger.warn("Merged Bedrock pack file is missing on disk: "
                     + (packFile == null ? "null" : packFile.getAbsolutePath()));

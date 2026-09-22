@@ -87,7 +87,9 @@ public final class AtlasSpriteIndex {
             for (JsonElement el : sources) {
                 if (!el.isJsonObject()) continue;
                 JsonObject src = el.getAsJsonObject();
-                if (!isPrimitiveString(src, "type") || !"single".equals(src.get("type").getAsString())) continue;
+                if (!isPrimitiveString(src, "type")) continue;
+                String type = src.get("type").getAsString();
+                if (!"single".equals(type) && !"minecraft:single".equals(type)) continue;
                 if (!isPrimitiveString(src, "resource")) continue;
                 String resource = src.get("resource").getAsString();
                 // A single source without an explicit "sprite" keeps the resource as its

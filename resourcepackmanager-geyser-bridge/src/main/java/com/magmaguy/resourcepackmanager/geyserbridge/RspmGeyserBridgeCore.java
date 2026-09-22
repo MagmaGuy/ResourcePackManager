@@ -31,6 +31,9 @@ import org.geysermc.mcprotocollib.network.event.session.SessionAdapter;
 import org.geysermc.mcprotocollib.network.packet.Packet;
 import org.geysermc.mcprotocollib.protocol.packet.common.clientbound.ClientboundCustomPayloadPacket;
 import org.geysermc.mcprotocollib.protocol.packet.common.serverbound.ServerboundCustomPayloadPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.ClientboundRemoveEntitiesPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundRespawnPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundLoginPacket;
 
 import java.lang.reflect.Method;
 import java.io.InputStreamReader;
@@ -471,6 +474,7 @@ public class RspmGeyserBridgeCore {
 
     private void registerPacketListener(GeyserSession session, int attempt) {
         schedule(() -> extension.guarded(() -> {
+            if (!CUSTOM_ENTITIES.containsKey(session)) return;
             if (session.getDownstream() == null || session.getDownstream().getSession() == null) {
                 if (attempt < 80) {
                     registerPacketListener(session, attempt + 1);
@@ -497,6 +501,14 @@ public class RspmGeyserBridgeCore {
 
                 @Override
                 public void packetReceived(Session tcpSession, Packet packet) {
+                    Map<Integer, String> bindings = CUSTOM_ENTITIES.get(session);
+                    if (bindings == null || session.getDownstream() == null
+                            || session.getDownstream().getSession() != tcpSession) return;
+                    if (packet instanceof ClientboundRemoveEntitiesPacket removed) {
+                        for (int entityId : removed.getEntityIds()) bindings.remove(entityId);
+                    } else if (packet instanceof ClientboundRespawnPacket || packet instanceof ClientboundLoginPacket) {
+                        bindings.clear();
+                    }
                     if (packet instanceof ClientboundCustomPayloadPacket payloadPacket
                             && payloadChannelEquals(payloadPacket, CUSTOM_ENTITY_CHANNEL)) {
                         extension.guarded(() -> handleMessage(session, BridgeCodec.decode(payloadPacket.getData())));
@@ -605,7 +617,7 @@ public class RspmGeyserBridgeCore {
     }
 
     private void handleMessage(GeyserSession session, BridgeMessage message) {
-        if (message == null || message.type() == null) {
+        if (message == null || message.type() == null || !CUSTOM_ENTITIES.containsKey(session)) {
             return;
         }
 
@@ -622,7 +634,9 @@ public class RspmGeyserBridgeCore {
             return;
         }
 
-        BridgeEntityDefinition merged = mergeDefinition(DEFINITIONS.get(definition.identifier()), definition);
+        BridgeEntityDefinition existing = DEFINITIONS.get(definition.identifier());
+        if (sameDefinition(existing, definition)) return;
+        BridgeEntityDefinition merged = mergeDefinition(existing, definition);
         DEFINITIONS.put(definition.identifier(), merged);
         boolean missingEntity = (entityDefinitionWindowClosed || geyserLoaded)
                 && !LOADED_DEFINITIONS.containsKey(merged.identifier());
@@ -642,6 +656,18 @@ public class RspmGeyserBridgeCore {
             case "INT", "INTEGER" -> "INTEGER";
             default -> type.toUpperCase(Locale.ROOT);
         };
+    }
+
+    private static boolean sameDefinition(BridgeEntityDefinition existing, BridgeEntityDefinition incoming) {
+        if (existing == null || existing.width() != incoming.width() || existing.height() != incoming.height()) return false;
+        List<BridgePropertyDefinition> left = existing.properties();
+        List<BridgePropertyDefinition> right = incoming.properties();
+        if (left.size() != right.size()) return false;
+        for (int i = 0; i < left.size(); i++) {
+            if (!java.util.Objects.equals(left.get(i).identifier(), right.get(i).identifier())
+                    || !propertyType(left.get(i).type()).equals(propertyType(right.get(i).type()))) return false;
+        }
+        return true;
     }
 
     private BridgeEntityDefinition mergeDefinition(BridgeEntityDefinition existing, BridgeEntityDefinition incoming) {
@@ -665,7 +691,9 @@ public class RspmGeyserBridgeCore {
             return;
         }
 
-        CUSTOM_ENTITIES.computeIfAbsent(session, ignored -> new ConcurrentHashMap<>()).put(entityId, identifier);
+        Map<Integer, String> bindings = CUSTOM_ENTITIES.get(session);
+        if (bindings == null) return;
+        bindings.put(entityId, identifier);
         replaceAlreadySpawnedEntity(session, entityId, identifier);
     }
 

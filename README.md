@@ -97,10 +97,12 @@ building or downloading a secondary bridge artifact.
 - Build with JDK 21. Run the Java version required by your backend or proxy. The Maven build emits Java 17-compatible plugin bytecode; that does not lower the Minecraft server's own Java requirement.
 - A Bukkit/Paper server. `plugin.yml` declares `api-version: 1.21.4`.
 - MagmaCore (shaded into the Bukkit jar; no separate install).
-- For Bedrock support: **GeyserMC** on the backend or proxy where Bedrock players connect, and
-  **Floodgate** for network mode: the network key is auto-derived from
-  `plugins/floodgate/key.pem`, so the same `key.pem` must be shared across the
-  whole network (Floodgate requires this anyway).
+- For Bedrock support: **GeyserMC** on the backend or proxy where Bedrock players connect.
+  Floodgate handles Bedrock authentication where configured. RSPM separately owns
+  a persisted proxy `network-key` and provisions each backend's `data.yml` `networkKey`
+  on a player connection. Floodgate's key may seed the initial RSPM identity; copying
+  it does not replace established RSPM identities. Modern Velocity forwarding must
+  use the same forwarding secret on proxy and backend for signed provisioning.
 
 All other plugin integrations are soft dependencies: RSPM merges their packs if
 present and does nothing if absent (e.g. EliteMobs, FreeMinecraftModels,
@@ -223,8 +225,13 @@ when a cached pack remains available.
 | `network-http-offset-v2` | `1` | Fallback offset used only before a backend endpoint announcement is available. In normal operation the backend announces the exact HTTP port it bound. |
 | `geyser-extension-auto-install` | `true` | Install/update the universal RSPM jar as a Geyser extension. Set `false` to prevent both startup installation and update staging. |
 
-The proxy `network-key` is auto-derived from `plugins/floodgate/key.pem`; there is
-no manual key to paste. RSPM's proxy plugin does not control pack acceptance:
+The proxy persists its RSPM identity in `network-key` and provisions backend
+`data.yml` `networkKey` entries automatically. Compare fingerprints with `/rspm status`.
+For a confirmed stale backend identity, stop that backend, retain a recovery copy of
+`data.yml`, remove only its `networkKey` entry, restart and join through the intended
+proxy. Resolve any signed-grant warnings before retrying. Preserve the proxy's
+`network-key` and Floodgate credentials; never publish secret contents.
+RSPM's proxy plugin does not control pack acceptance:
 the backend `forceResourcePack` option applies only to Java pack offers sent by
 Bukkit, while Geyser owns Bedrock acceptance through its
 `force-resource-packs` setting.

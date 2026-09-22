@@ -125,7 +125,7 @@ public class AutoHost {
      */
     private static BukkitTask relayUploadTask = null;
     private static BukkitTask relayRetryTask = null;
-    private static final Object RELAY_IO_LOCK = new Object();
+    private static final java.util.concurrent.locks.ReentrantLock RELAY_IO_LOCK = new java.util.concurrent.locks.ReentrantLock();
     private static final AtomicLong BEDROCK_PUBLICATION_GENERATION = new AtomicLong();
     private static volatile boolean bedrockPublicationAuthorized = false;
 
@@ -311,7 +311,7 @@ public class AutoHost {
 
     /** Drop a player's resend bookkeeping when they leave. */
     public static void forgetPlayer(UUID playerId) {
-        playerSessionGenerations.put(playerId, playerSessionSequence.incrementAndGet());
+        playerSessionGenerations.remove(playerId);
         cancelPlayerTasks(playerId);
         resendAttempts.remove(playerId);
         resendPending.remove(playerId);
@@ -455,7 +455,8 @@ public class AutoHost {
                 && publishedSHA1 != null
                 && publishedSHA1.equals(Mix.getFinalSHA1())) {
             RSPLogger.detail("Resource pack is unchanged and already hosted; skipping re-registration.");
-            for (Player player : Bukkit.getOnlinePlayers()) sendResourcePack(player);
+            LifecycleRun currentRun = lifecycleRun;
+            if (currentRun != null) broadcastResourcePackSync(currentRun);
             return;
         }
 
@@ -1100,9 +1101,9 @@ public class AutoHost {
                     // bounded and serialized with any upload that is finishing.
                     try (MagmaguyRspClient deleteClient = new MagmaguyRspClient(
                             ResourcePackManager.plugin.getLogger(), 2, 2)) {
-                        synchronized (RELAY_IO_LOCK) {
-                            deleteClient.deleteBedrockRelayOnShutdown(
-                                    networkKey, backendId);
+                        if (RELAY_IO_LOCK.tryLock(250, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                            try { deleteClient.deleteBedrockRelayOnShutdown(networkKey, backendId); }
+                            finally { RELAY_IO_LOCK.unlock(); }
                         }
                     }
                 }
@@ -1252,7 +1253,8 @@ public class AutoHost {
 
     private static boolean reconcileRelayOnce(LifecycleRun run, long requestedGeneration) {
         boolean retry = false;
-        synchronized (RELAY_IO_LOCK) {
+        RELAY_IO_LOCK.lock();
+        try {
             if (!run.active()
                     || requestedGeneration != BEDROCK_PUBLICATION_GENERATION.get()
                     || MagmaguyRspClient.isRemoteRelayDisabled()) return false;
@@ -1319,6 +1321,8 @@ public class AutoHost {
                     }
                 }
             }
+        } finally {
+            RELAY_IO_LOCK.unlock();
         }
         return !retry;
     }
@@ -1594,9 +1598,8 @@ public class AutoHost {
                     + " (serving /rspm.zip, " + PackHttpServer.BEDROCK_PACK_PATH
                     + ", " + PackHttpServer.GEYSER_MAPPINGS_PATH + ", and protected "
                     + PackHttpServer.EXECUTABLE_UPDATE_PATH + ")");
-            if (run.active()) {
-                announceBackendEndpoint(client, NetworkMode.getNetworkKey(), server.port());
-            }
+            // The existing relay task announces on its first asynchronous tick.
+            // Never hold initialize/shutdown's monitor across the HTTP request.
         } catch (IOException e) {
             // Loud multi-line ERROR: this backend is now invisible to the proxy.
             // Bedrock players will not get its content in the merged pack.

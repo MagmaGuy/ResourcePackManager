@@ -252,7 +252,7 @@ public final class ZipUtil {
 
         // Zip-slip guard: refuse entries that resolve outside the destination.
         if (!resolved.startsWith(destinationRoot)) {
-            throw new IOException("Entry is outside of the target dir: " + zipEntry.getName());
+            throw new java.util.zip.ZipException("Entry is outside of the target dir: " + zipEntry.getName());
         }
 
         return resolved.toFile();

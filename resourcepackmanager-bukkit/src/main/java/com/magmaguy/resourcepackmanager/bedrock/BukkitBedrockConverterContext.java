@@ -24,6 +24,7 @@ import java.util.function.BooleanSupplier;
  */
 public final class BukkitBedrockConverterContext implements BedrockConverterContext {
     private final BooleanSupplier runCancellation;
+    private final BedrockDisplayOffsets.Snapshot offsets;
 
     /**
      * Adapter exposing MagmaCore's static {@code Logger} as the converter
@@ -42,6 +43,7 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
 
     public BukkitBedrockConverterContext(BooleanSupplier runCancellation) {
         this.runCancellation = runCancellation == null ? () -> false : runCancellation;
+        this.offsets = captureDisplayOffsets();
     }
 
     @Override
@@ -152,9 +154,10 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
 
     @Override
     public BedrockDisplayOffsets.Snapshot displayOffsets() {
-        // Pulls the live YAML-backed values from BedrockDisplayOffsetsConfig.
-        // Snapshot is captured once per generate() call inside BedrockConversion,
-        // so a /reload between calls cleanly picks up new values on the next mix.
+        return offsets;
+    }
+
+    private static BedrockDisplayOffsets.Snapshot captureDisplayOffsets() {
         return new BedrockDisplayOffsets.Snapshot(
                 BedrockDisplayOffsetsConfig.getFirstPersonBaseRotationX(),
                 BedrockDisplayOffsetsConfig.getFirstPersonBaseRotationY(),

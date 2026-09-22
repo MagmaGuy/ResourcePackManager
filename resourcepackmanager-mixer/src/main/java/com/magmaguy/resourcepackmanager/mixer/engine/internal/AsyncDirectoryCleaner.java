@@ -75,6 +75,10 @@ public final class AsyncDirectoryCleaner {
     public static void delete(File directory) {
         if (deleteLater(directory)) return;
         recursivelyDelete(directory);
+        if (Files.exists(directory.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new java.io.UncheckedIOException(new IOException(
+                    "Could not clear required staging directory: " + directory));
+        }
     }
 
     /**

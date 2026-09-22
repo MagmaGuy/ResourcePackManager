@@ -102,7 +102,7 @@ public final class MixEngine {
                     }
                 } catch (CancellationException cancelled) {
                     throw cancelled;
-                } catch (Exception e) {
+                } catch (java.util.zip.ZipException e) {
                     // Typed so the caller can quarantine this exact pack. A bad pack fails
                     // identically on every attempt, so an untyped failure leaves the caller
                     // with nothing to act on but the message string.
@@ -128,11 +128,8 @@ public final class MixEngine {
 
             for (File packDir : unzippedPackDirs) {
                 checkCancelled();
-                if (!packDir.exists()) continue;
-                if (!packDir.isDirectory()) {
-                    logger.warn("Expected staged pack to be a directory but it isn't: " + packDir.getAbsolutePath());
-                    continue;
-                }
+                if (!packDir.isDirectory())
+                    throw new IOException("Required staged pack directory is unavailable: " + packDir.getAbsolutePath());
                 File[] subFiles = sortedChildren(packDir);
                 warnOnLikelyNestedRoot(packDir, subFiles);
                 for (File subFile : subFiles) {
@@ -158,17 +155,24 @@ public final class MixEngine {
 
             // 4. Zip.
             File mergedZip = new File(outputDir, input.outputName() + ".zip");
-            ZipUtil.ZipResult zipResult = ZipUtil.zipJavaResourcePackWithSha1(
-                    mergedDir, mergedZip.getAbsolutePath(), cancellationRequested);
-            checkCancelled();
-            if (!zipResult.success()) {
-                throw new IOException("Failed to zip merged resource pack into " + mergedZip.getAbsolutePath());
+            byte[] sha1Bytes;
+            String sha1Hex;
+            if (input.reusableArchiveSha1() != null) {
+                // Revalidate after expanded input assembly: a concurrent replacement must not
+                // acquire the old Java identity. No recompression is needed for unchanged inputs.
+                sha1Hex = Sha1.hex(mergedZip);
+                if (!input.reusableArchiveSha1().equalsIgnoreCase(sha1Hex))
+                    throw new IOException("Previously verified Java archive changed during Bedrock rebuild");
+                sha1Bytes = java.util.HexFormat.of().parseHex(sha1Hex);
+            } else {
+                ZipUtil.ZipResult zipResult = ZipUtil.zipJavaResourcePackWithSha1(
+                        mergedDir, mergedZip.getAbsolutePath(), cancellationRequested);
+                checkCancelled();
+                if (!zipResult.success())
+                    throw new IOException("Failed to zip merged resource pack into " + mergedZip.getAbsolutePath());
+                sha1Bytes = zipResult.sha1Bytes();
+                sha1Hex = Sha1.bytesToHexString(sha1Bytes);
             }
-
-            // 5. SHA-1. ZipUtil calculated this over the final compressed bytes
-            // while writing them, avoiding an immediate full-file reread.
-            byte[] sha1Bytes = zipResult.sha1Bytes();
-            String sha1Hex = Sha1.bytesToHexString(sha1Bytes);
 
             // 6. Collision log. Written to collisionLogDir (the plugin data folder on the
             //    Bukkit side) rather than outputDir, matching the legacy on-disk path so
@@ -430,9 +434,9 @@ public final class MixEngine {
 
     private static File[] sortedChildren(File directory) {
         File[] children = directory == null ? null : directory.listFiles();
-        if (children == null || children.length == 0) {
-            return new File[0];
-        }
+        if (children == null)
+            throw new java.io.UncheckedIOException(new IOException("Could not list required pack directory: " + directory));
+        if (children.length == 0) return children;
         Arrays.sort(children, Comparator.comparing(File::getName));
         return children;
     }

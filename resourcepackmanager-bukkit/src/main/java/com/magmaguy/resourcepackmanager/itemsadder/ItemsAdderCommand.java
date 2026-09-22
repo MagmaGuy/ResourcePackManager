@@ -5,7 +5,7 @@ import com.magmaguy.magmacore.command.CommandData;
 import com.magmaguy.magmacore.command.arguments.ListStringCommandArgument;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
-import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
+import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -19,6 +19,9 @@ import java.util.List;
  * Command to handle ItemsAdder configuration and warning dismissal.
  */
 public class ItemsAdderCommand extends AdvancedCommand {
+    private boolean configurationPending;
+    private long configurationRequest;
+    private Runnable cancelPendingPublication = () -> { };
 
     public ItemsAdderCommand() {
         super(List.of("itemsadder"));
@@ -54,14 +57,12 @@ public class ItemsAdderCommand extends AdvancedCommand {
      * Handle the configure action - modifies ItemsAdder config and reloads plugins.
      */
     private void handleConfigure(CommandSender sender) {
-        if (!ItemsAdderDetector.isItemsAdderInstalled()) {
-            Logger.sendMessage(sender, "&cItemsAdder is not installed!");
+        if (configurationPending) {
+            Logger.sendMessage(sender, "&eItemsAdder configuration is already pending.");
             return;
         }
-
-        if (ItemsAdderDetector.isItemsAdderHosting()) {
-            Logger.sendMessage(sender, "&eItemsAdder is already configured to host its own resource pack.");
-            Logger.sendMessage(sender, "&7If you want ResourcePackManager to host instead, please manually disable ItemsAdder's hosting.");
+        if (!ItemsAdderDetector.isItemsAdderInstalled()) {
+            Logger.sendMessage(sender, "&cItemsAdder is not installed!");
             return;
         }
 
@@ -72,7 +73,13 @@ public class ItemsAdderCommand extends AdvancedCommand {
         }
 
         try {
-            YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
+            byte[] original = java.nio.file.Files.readAllBytes(configFile.toPath());
+            YamlConfiguration config = new YamlConfiguration();
+            config.loadFromString(new String(original, java.nio.charset.StandardCharsets.UTF_8));
+            if (ItemsAdderDetector.isItemsAdderHosting(config)) {
+                Logger.sendMessage(sender, "&eItemsAdder is already hosting its pack. Disable its hosting before configuring RSPM.");
+                return;
+            }
 
             // Set no-host enabled
             config.set("resource-pack.hosting.no-host.enabled", true);
@@ -86,7 +93,19 @@ public class ItemsAdderCommand extends AdvancedCommand {
             config.set("resource-pack.zip.compress-json-files", false);
 
             // Save the config
-            config.save(configFile);
+            java.nio.file.Path pending = java.nio.file.Files.createTempFile(
+                    configFile.toPath().toAbsolutePath().getParent(), ".rspm-config-", ".tmp");
+            try {
+                config.save(pending.toFile());
+                if (!java.util.Arrays.equals(original, java.nio.file.Files.readAllBytes(configFile.toPath()))) {
+                    throw new java.io.IOException("ItemsAdder config changed during configuration; retry the command.");
+                }
+                com.magmaguy.resourcepackmanager.mixer.engine.internal.ZipUtil.publishAtomically(pending, configFile.toPath());
+            } finally {
+                java.nio.file.Files.deleteIfExists(pending);
+            }
+            configurationPending = true;
+            long request = ++configurationRequest;
 
             Logger.sendMessage(sender, "&aItemsAdder configuration updated successfully!");
             Logger.sendMessage(sender, "&7- Enabled no-host mode");
@@ -100,39 +119,47 @@ public class ItemsAdderCommand extends AdvancedCommand {
                 @Override
                 public void run() {
                     try {
-                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "iareload");
+                        if (!Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "iareload")) {
+                            throw new IllegalStateException("ItemsAdder refused /iareload");
+                        }
                         Logger.sendMessage(sender, "&aItemsAdder reload requested!");
                     } catch (Exception e) {
                         Logger.sendMessage(sender, "&cFailed to reload ItemsAdder: " + e.getMessage());
                         Logger.sendMessage(sender, "&7Try running /iareload manually.");
+                        configurationPending = false;
+                        return;
                     }
 
                     new BukkitRunnable() {
                         @Override
                         public void run() {
                             try {
-                                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "iazip");
+                                cancelPendingPublication = ThirdPartyResourcePack.awaitNextSourcePublication("ItemsAdder", success -> {
+                                    if (configurationRequest != request) return;
+                                    configurationPending = false;
+                                    Logger.sendMessage(sender, success
+                                            ? "&aRSPM merged the regenerated ItemsAdder export. Use /rspm status to check hosting."
+                                            : "&cThe regenerated ItemsAdder export could not be merged. Check the console; RSPM will retry.");
+                                });
+                                if (!Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "iazip")) {
+                                    throw new IllegalStateException("ItemsAdder refused /iazip");
+                                }
                                 Logger.sendMessage(sender, "&aItemsAdder zip regeneration requested!");
+                                Logger.sendMessage(sender, "&7RSPM will detect and merge the completed export. Use /rspm status to check hosting.");
                             } catch (Exception e) {
                                 Logger.sendMessage(sender, "&cFailed to regenerate ItemsAdder zip: " + e.getMessage());
                                 Logger.sendMessage(sender, "&7Try running /iazip manually.");
+                                cancelPendingPublication.run();
+                                if (configurationRequest == request) configurationPending = false;
                             }
                         }
                     }.runTaskLater(ResourcePackManager.plugin, 100L);
 
-                    // Schedule RSPM reload after ItemsAdder has time to reload and regenerate
-                    new BukkitRunnable() {
-                        @Override
-                        public void run() {
-                            Logger.sendMessage(sender, "&eReloading ResourcePackManager...");
-                            ReloadCommand.reloadPlugin(sender);
-                            Logger.sendMessage(sender, "&aConfiguration complete! ResourcePackManager is now hosting the merged resource pack.");
-                        }
-                    }.runTaskLater(ResourcePackManager.plugin, 300L); // 15 seconds to let IA reload/regenerate
                 }
             }.runTaskLater(ResourcePackManager.plugin, 20L); // 1 second delay
 
         } catch (Exception e) {
+            configurationPending = false;
             Logger.sendMessage(sender, "&cFailed to update ItemsAdder config: " + e.getMessage());
             e.printStackTrace();
         }

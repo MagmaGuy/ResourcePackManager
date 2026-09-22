@@ -176,6 +176,7 @@ public final class AssetResolver {
         // real texture resource BEFORE any consumer reads the textures block. Done once
         // here so the stitcher, flat-icon emitter, icon renderer, and geometry converter
         // all see resolvable refs.
+        resolveTextureAliases(merged);
         rewriteAtlasSpriteTextures(merged);
 
         boolean flatBuiltin = rootParent != null && FLAT_BUILTIN_ROOTS.contains(rootParent);
@@ -187,6 +188,27 @@ public final class AssetResolver {
      * texture resource they alias (e.g. {@code "ia:627" -> "inkless:vanillasets/cake_sword"}).
      * No-op for packs that declare no atlas sprite remaps. See {@link AtlasSpriteIndex}.
      */
+    private static void resolveTextureAliases(JsonObject merged) {
+        if (!merged.has("textures") || !merged.get("textures").isJsonObject()) return;
+        JsonObject original = merged.getAsJsonObject("textures");
+        JsonObject resolved = new JsonObject();
+        for (Map.Entry<String, JsonElement> entry : original.entrySet()) {
+            JsonElement value = entry.getValue();
+            Set<String> visited = new java.util.HashSet<>();
+            while (value != null && value.isJsonPrimitive() && value.getAsString().startsWith("#")) {
+                String alias = value.getAsString();
+                if (!visited.add(alias)) {
+                    value = null;
+                    break;
+                }
+                value = original.get(alias.substring(1));
+                if (value == null) value = original.get(alias);
+            }
+            if (value != null && value.isJsonPrimitive()) resolved.add(entry.getKey(), value);
+        }
+        merged.add("textures", resolved);
+    }
+
     private void rewriteAtlasSpriteTextures(JsonObject merged) {
         if (merged == null || !merged.has("textures") || !merged.get("textures").isJsonObject()) return;
         AtlasSpriteIndex sprites = atlasSprites();

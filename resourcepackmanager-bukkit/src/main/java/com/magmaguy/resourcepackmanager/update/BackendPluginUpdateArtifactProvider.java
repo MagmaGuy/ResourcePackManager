@@ -18,15 +18,19 @@ import java.util.List;
  */
 public final class BackendPluginUpdateArtifactProvider {
     private static volatile Path downloadedUpdate;
+    private static final java.util.Map<Path, CachedInspection> inspections = new java.util.HashMap<>();
+    private record CachedInspection(long size, java.nio.file.attribute.FileTime modified, Object fileKey,
+                                    long verifiedAt, UniversalPluginJarInspector.Inspection inspection) { }
 
     private BackendPluginUpdateArtifactProvider() {
     }
 
-    public static boolean recordDownloaded(File file) {
+    public static synchronized boolean recordDownloaded(File file) {
         if (file == null) return false;
         try {
             UniversalPluginJarInspector.inspect(file.toPath());
             downloadedUpdate = file.toPath().toAbsolutePath().normalize();
+            inspections.remove(downloadedUpdate);
             return true;
         } catch (Exception exception) {
             if (ResourcePackManager.plugin != null) {
@@ -50,8 +54,8 @@ public final class BackendPluginUpdateArtifactProvider {
         return current(pluginsDirectory == null ? null : pluginsDirectory.toPath(), runningJar);
     }
 
-    static File current(Path pluginsDirectory, Path runningJar) {
-        List<Path> candidates = new ArrayList<>();
+    static synchronized File current(Path pluginsDirectory, Path runningJar) {
+        java.util.Set<Path> candidates = new java.util.LinkedHashSet<>();
         if (downloadedUpdate != null) candidates.add(downloadedUpdate);
         if (pluginsDirectory != null) {
             candidates.add(pluginsDirectory
@@ -61,19 +65,39 @@ public final class BackendPluginUpdateArtifactProvider {
         if (runningJar != null) candidates.add(runningJar);
 
         UniversalPluginJarInspector.Inspection newest = null;
+        java.util.Set<Path> visited = new java.util.HashSet<>();
         for (Path candidate : candidates) {
-            if (candidate == null || !Files.isRegularFile(candidate)) continue;
+            if (candidate == null) continue;
+            candidate = candidate.toAbsolutePath().normalize();
+            if (!visited.add(candidate)) continue;
             try {
+                var attributes = Files.readAttributes(candidate, java.nio.file.attribute.BasicFileAttributes.class);
+                if (!attributes.isRegularFile()) continue;
+                CachedInspection cached = inspections.get(candidate);
+                long now = System.nanoTime();
                 UniversalPluginJarInspector.Inspection inspected =
-                        UniversalPluginJarInspector.inspect(candidate);
+                        cached != null && cached.size() == attributes.size()
+                                && cached.modified().equals(attributes.lastModifiedTime())
+                                && java.util.Objects.equals(cached.fileKey(), attributes.fileKey())
+                                && now - cached.verifiedAt() < java.util.concurrent.TimeUnit.MINUTES.toNanos(1)
+                                ? cached.inspection() : UniversalPluginJarInspector.inspect(candidate);
+                if (cached == null || cached.inspection() != inspected) {
+                    var after = Files.readAttributes(candidate, java.nio.file.attribute.BasicFileAttributes.class);
+                    if (after.size() != attributes.size() || !after.lastModifiedTime().equals(attributes.lastModifiedTime())
+                            || !java.util.Objects.equals(after.fileKey(), attributes.fileKey())) continue;
+                    inspections.put(candidate, new CachedInspection(attributes.size(), attributes.lastModifiedTime(),
+                            attributes.fileKey(), now, inspected));
+                }
                 if (newest == null || UniversalPluginJarInspector.compareVersions(
                         inspected.version(), newest.version()) > 0) {
                     newest = inspected;
                 }
             } catch (Exception exception) {
+                inspections.remove(candidate);
                 if (candidate.equals(downloadedUpdate)) downloadedUpdate = null;
             }
         }
+        inspections.keySet().retainAll(candidates.stream().map(path -> path.toAbsolutePath().normalize()).toList());
         return newest == null ? null : newest.jar().toFile();
     }
 }

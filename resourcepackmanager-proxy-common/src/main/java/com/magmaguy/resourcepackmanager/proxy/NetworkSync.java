@@ -70,6 +70,32 @@ import java.util.concurrent.atomic.AtomicLong;
  * and {@link ProxySchedulerAdapter} implementations.</p>
  */
 public final class NetworkSync {
+    // RSPM owns these files and replaces committed generations. Metadata reuse is bounded
+    // by byte reconciliation so an external edit restoring size/time is not trusted forever.
+    private static final long VERIFIED_FILE_TTL_NANOS = Duration.ofMinutes(1).toNanos();
+    private static final Map<Path, VerifiedFile> VERIFIED_FILES = new java.util.concurrent.ConcurrentHashMap<>();
+    private record FileIdentity(long size, java.nio.file.attribute.FileTime modified, Object fileKey) {
+        static FileIdentity read(Path path) throws IOException {
+            var attributes = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes.class);
+            if (!attributes.isRegularFile()) throw new IOException("Not a regular artifact file: " + path);
+            return new FileIdentity(attributes.size(), attributes.lastModifiedTime(), attributes.fileKey());
+        }
+    }
+    private record VerifiedFile(FileIdentity identity, long verifiedAt, byte[] sha1, ArtifactSetManifest manifest) { }
+
+    private static VerifiedFile verifiedFile(Path path, FileIdentity identity) {
+        VerifiedFile cached = VERIFIED_FILES.get(path);
+        return cached != null && cached.identity().equals(identity)
+                && System.nanoTime() - cached.verifiedAt() < VERIFIED_FILE_TTL_NANOS ? cached : null;
+    }
+
+    private static void rememberVerifiedFile(Path path, FileIdentity identity, byte[] sha1, ArtifactSetManifest manifest) {
+        if (VERIFIED_FILES.size() >= 2048) VERIFIED_FILES.clear();
+        VerifiedFile existing = verifiedFile(path, identity);
+        VERIFIED_FILES.put(path, new VerifiedFile(identity, existing == null ? System.nanoTime() : existing.verifiedAt(),
+                sha1 != null ? sha1.clone() : existing == null ? null : existing.sha1(),
+                manifest != null ? manifest : existing == null ? null : existing.manifest()));
+    }
 
     /**
      * Number of consecutive identical-hash poll cycles required before we merge.
@@ -316,7 +342,7 @@ public final class NetworkSync {
                 byte[] sha1 = sha1OfFile(previousPublication.pack());
                 if (sha1 != null) {
                     this.current = new MergedPack(
-                            previousPublication.pack(),
+                            MergedOutputPublication.retainForGeyser(mergedDir, previousPublication.pack(), hex(sha1)),
                             hex(sha1), sha1, MergedPack.NETWORK_PACK_UUID);
                     logger.info("NetworkSync: pre-loaded previous merged pack from "
                             + previousPublication.pack().getAbsolutePath() + " ("
@@ -357,6 +383,7 @@ public final class NetworkSync {
 
     /** Cancel the polling loop. Called on proxy shutdown. */
     public void stop() {
+        Path ownedRoot = workingDir.toPath().toAbsolutePath().normalize();
         synchronized (pollCompletionMonitor) {
             stopped = true;
             lifecycleGeneration.incrementAndGet();
@@ -389,6 +416,7 @@ public final class NetworkSync {
             try { rc.close(); } catch (Exception ignored) {}
             relayClient = null;
         }
+        VERIFIED_FILES.keySet().removeIf(path -> path.startsWith(ownedRoot));
     }
 
     /** The most recently published merged pack, or {@code null} if none yet. */
@@ -836,16 +864,16 @@ public final class NetworkSync {
                                  int configuredBackendCount,
                                  long pollGeneration) {
         if (!isActive(pollGeneration)) return false;
-        List<File> zips = new ArrayList<>();
-        List<File> mappings = new ArrayList<>();
-        Set<String> zipHashes = new TreeSet<>();
-        Set<String> mappingsHashes = new TreeSet<>();
+        Map<String, File> zipInputs = new LinkedHashMap<>();
+        Map<String, File> mappingInputs = new LinkedHashMap<>();
         for (File backendInbox : contributionDirectories) {
             File zip = new File(backendInbox, INBOX_BEDROCK_ZIP_NAME);
             File map = new File(backendInbox, INBOX_MAPPINGS_NAME);
-            addDirectMergeInput(zip, zips, zipHashes);
-            if (zip.isFile()) addDirectMergeInput(map, mappings, mappingsHashes);
+            addDirectMergeInput(zip, zipInputs);
+            if (zip.isFile()) addDirectMergeInput(map, mappingInputs);
         }
+        List<File> zips = new ArrayList<>(zipInputs.values());
+        List<File> mappings = new ArrayList<>(mappingInputs.values());
 
         if (zips.isEmpty()) {
             clearPublishedPack("no backend has a usable Bedrock ZIP", pollGeneration);
@@ -900,15 +928,17 @@ public final class NetworkSync {
             }
             String sha1Hex = hex(sha1);
 
+            File immutableGeneration = MergedOutputPublication.retainForGeyser(mergedDir, mergedZipFile, sha1Hex);
             if (!publishMergedArtifactSet(
                     mergedZipFile.toPath(),
                     mergedMappingsFile == null ? null : mergedMappingsFile.toPath(),
                     pollGeneration)) {
+                Files.deleteIfExists(immutableGeneration.toPath());
                 return false;
             }
 
             MergedPack pack = new MergedPack(
-                    mergedBedrockZip, sha1Hex, sha1, MergedPack.NETWORK_PACK_UUID);
+                    immutableGeneration, sha1Hex, sha1, MergedPack.NETWORK_PACK_UUID);
             synchronized (pollCompletionMonitor) {
                 if (!isActive(pollGeneration)) return false;
                 current = pack;
@@ -917,6 +947,9 @@ public final class NetworkSync {
             logger.info("Merged Bedrock pack published at " + mergedBedrockZip.getAbsolutePath()
                     + " (sha1=" + sha1Hex + ").");
             return true;
+        } catch (IOException failure) {
+            logger.warn("NetworkSync: could not retain the committed Bedrock generation: " + failure.getMessage(), failure);
+            return false;
         } finally {
             try {
                 deleteDirectoryTreeUnder(
@@ -927,13 +960,14 @@ public final class NetworkSync {
         }
     }
 
-    private static void addDirectMergeInput(File file, List<File> files, Set<String> hashes) {
+    private static void addDirectMergeInput(File file, Map<String, File> files) {
         if (file == null || !file.isFile()) {
             return;
         }
         String sha1 = sha1HexOfFile(file);
-        if (sha1 != null && !hashes.add(sha1)) return;
-        files.add(file);
+        String key = sha1 == null ? file.getAbsolutePath() : sha1;
+        files.remove(key);
+        files.put(key, file);
     }
 
     // ------------------------------------------------------------------
@@ -1893,14 +1927,27 @@ public final class NetworkSync {
             if (!committedArtifactSetMatches(relayDirectory, manifest)) return false;
             return !manifest.mappingsPresent()
                     || relayEntryMatchesManifest(listed.mappings(), manifest);
-        } catch (InvalidArtifactSetException ignored) {
+        } catch (IOException ignored) {
             return false;
         }
     }
 
     private static ArtifactSetManifest readArtifactSetManifest(File zipFile)
-            throws InvalidArtifactSetException {
-        if (zipFile == null || !zipFile.isFile()) {
+            throws IOException {
+        Path path = zipFile == null ? null : zipFile.toPath().toAbsolutePath().normalize();
+        if (path == null) throw new InvalidArtifactSetException("ZIP is missing");
+        FileIdentity identity = FileIdentity.read(path);
+        VerifiedFile cached = verifiedFile(path, identity);
+        if (cached != null && cached.manifest() != null) return cached.manifest();
+        ArtifactSetManifest manifest = readArtifactSetManifestUncached(zipFile);
+        if (!identity.equals(FileIdentity.read(path))) throw new IOException("Artifact changed during manifest read: " + path);
+        rememberVerifiedFile(path, identity, null, manifest);
+        return manifest;
+    }
+
+    private static ArtifactSetManifest readArtifactSetManifestUncached(File zipFile)
+            throws IOException {
+        if (zipFile == null) {
             throw new InvalidArtifactSetException("ZIP is missing");
         }
         try (ZipFile archive = new ZipFile(zipFile)) {
@@ -1955,7 +2002,7 @@ public final class NetworkSync {
                     generationId, mappingsPresent, mappingsSha1, mappingsSize);
         } catch (InvalidArtifactSetException invalid) {
             throw invalid;
-        } catch (IOException | RuntimeException invalid) {
+        } catch (java.util.zip.ZipException | RuntimeException invalid) {
             throw new InvalidArtifactSetException(
                     "could not read artifact-set manifest: " + invalid.getMessage(), invalid);
         }
@@ -2001,7 +2048,7 @@ public final class NetworkSync {
             return committedArtifactSetMatches(
                     directory,
                     readArtifactSetManifest(new File(directory, INBOX_BEDROCK_ZIP_NAME)));
-        } catch (InvalidArtifactSetException invalid) {
+        } catch (IOException invalid) {
             return false;
         }
     }
@@ -2251,7 +2298,7 @@ public final class NetworkSync {
             Files.createDirectories(directory);
             provenance = directory.resolve(DIRECT_BACKEND_ID_FILE_NAME);
         }
-        writeStringAtomically(provenance, normalizedId + System.lineSeparator());
+        if (!normalizedId.equals(prior)) writeStringAtomically(provenance, normalizedId + System.lineSeparator());
         return changed;
     }
 
@@ -2369,7 +2416,7 @@ public final class NetworkSync {
 
     private List<File> effectiveContributionDirectories(
             List<BackendListProvider.Backend> backends,
-            Map<String, String> relayAuthority) {
+            Map<String, String> relayAuthority) throws IOException {
         List<File> directories = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (BackendListProvider.Backend backend : backends) {
@@ -2379,11 +2426,33 @@ public final class NetworkSync {
                     ? new File(inboxRoot, directName)
                     : new File(relayInboxRoot, sanitizeBackendName(relayBackendId));
             String identity = directory.toPath().toAbsolutePath().normalize().toString();
-            if (seen.add(identity) && isCommittedArtifactSet(directory)) {
+            if (seen.add(identity) && committedArtifactSetForMerge(directory)) {
                 directories.add(directory);
             }
         }
         return directories;
+    }
+
+    /** An environmental read failure cannot turn a committed backend into an omitted input. */
+    private static boolean committedArtifactSetForMerge(File directory) throws IOException {
+        String generation;
+        try {
+            generation = Files.readString(new File(directory, ARTIFACT_GENERATION_FILE_NAME).toPath(), StandardCharsets.UTF_8).trim();
+        } catch (java.nio.file.NoSuchFileException absent) { return false; }
+        ArtifactSetManifest manifest;
+        try { manifest = readArtifactSetManifest(new File(directory, INBOX_BEDROCK_ZIP_NAME)); }
+        catch (InvalidArtifactSetException invalid) { return false; }
+        if (!generation.equals(manifest.generationId())) return false;
+        File mappings = new File(directory, INBOX_MAPPINGS_NAME);
+        if (!manifest.mappingsPresent()) {
+            try { Files.readAttributes(mappings.toPath(), java.nio.file.attribute.BasicFileAttributes.class); return false; }
+            catch (java.nio.file.NoSuchFileException absent) { return true; }
+        }
+        var attributes = Files.readAttributes(mappings.toPath(), java.nio.file.attribute.BasicFileAttributes.class);
+        if (!attributes.isRegularFile() || attributes.size() != manifest.mappingsSize()) return false;
+        String actual = sha1HexOfFile(mappings);
+        if (actual == null) throw new IOException("Could not verify required mappings " + mappings);
+        return actual.equals(manifest.mappingsSha1());
     }
 
     private void removeOrphanMappings(List<File> contributionDirectories) throws IOException {
@@ -2406,7 +2475,7 @@ public final class NetworkSync {
             for (File file : List.of(zip, new File(directory, INBOX_MAPPINGS_NAME))) {
                 if (!file.isFile()) continue;
                 byte[] sha = sha1OfFile(file);
-                if (sha == null) continue;
+                if (sha == null) throw new IOException("Could not hash required merged input " + file);
                 Path path = file.toPath().toAbsolutePath().normalize();
                 String rel = path.startsWith(root)
                         ? root.relativize(path).toString().replace('\\', '/')
@@ -2675,13 +2744,23 @@ public final class NetworkSync {
     }
 
     private static byte[] sha1OfFile(File f) {
-        try (java.io.InputStream in = new java.io.BufferedInputStream(new FileInputStream(f))) {
+        Path path = f.toPath().toAbsolutePath().normalize();
+        try {
+            FileIdentity identity = FileIdentity.read(path);
+            VerifiedFile cached = verifiedFile(path, identity);
+            if (cached != null && cached.sha1() != null) return cached.sha1().clone();
             MessageDigest md = MessageDigest.getInstance("SHA-1");
-            byte[] buf = new byte[8192];
+            try (java.io.InputStream in = new java.io.BufferedInputStream(new FileInputStream(f))) {
+            byte[] buf = new byte[64 * 1024];
             int n;
             while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
-            return md.digest();
+            }
+            if (!identity.equals(FileIdentity.read(path))) throw new IOException("Artifact changed during hashing: " + path);
+            byte[] digest = md.digest();
+            rememberVerifiedFile(path, identity, digest, null);
+            return digest;
         } catch (Exception e) {
+            VERIFIED_FILES.remove(path);
             return null;
         }
     }

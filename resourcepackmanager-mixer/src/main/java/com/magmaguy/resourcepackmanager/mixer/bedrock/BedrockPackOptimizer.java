@@ -152,11 +152,16 @@ public final class BedrockPackOptimizer {
                                                  AliasMatcher aliasMatcher,
                                                  Set<Path> protectedDuplicates) throws IOException {
         String original = Files.readString(file, StandardCharsets.UTF_8);
-        if (!aliasMatcher.containsMatch(original)) return false;
+        if (original.indexOf('\\') < 0 && !aliasMatcher.containsMatch(original)) return false;
         JsonElement parsed;
         try {
             parsed = JsonParser.parseString(original);
         } catch (Exception malformed) {
+            if (original.indexOf('\\') >= 0) {
+                for (Replacement replacement : replacements.values()) {
+                    protectedDuplicates.add(replacement.duplicateFile());
+                }
+            }
             aliasMatcher.protectMatches(original, protectedDuplicates);
             return false;
         }

@@ -21,7 +21,7 @@ public final class Sha1 {
     public static byte[] bytes(File file) throws IOException {
         try (FileInputStream fileInputStream = new FileInputStream(file);
              DigestInputStream digestInputStream = new DigestInputStream(fileInputStream, MessageDigest.getInstance("SHA-1"))) {
-            byte[] buffer = new byte[1024];
+            byte[] buffer = new byte[64 * 1024];
             while (digestInputStream.read(buffer) > 0) {
                 // streaming digest update
             }

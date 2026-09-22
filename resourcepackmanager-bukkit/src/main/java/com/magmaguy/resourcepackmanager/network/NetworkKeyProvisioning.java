@@ -35,6 +35,8 @@ public final class NetworkKeyProvisioning implements Listener, PluginMessageList
     private static final String GRANT = "KEY_GRANT";
 
     private static NetworkKeyProvisioning instance;
+    private boolean forwardingPolicyLoaded;
+    private String forwardingSecret;
 
     private NetworkKeyProvisioning() {
     }
@@ -85,7 +87,22 @@ public final class NetworkKeyProvisioning implements Listener, PluginMessageList
         String grantedKey = separator < 0 ? body : body.substring(0, separator).trim();
         String presentedSignature = separator < 0 ? null : body.substring(separator + 1).trim();
 
-        String secret = readForwardingSecret();
+        if (NetworkMode.getNetworkKey() != null) {
+            NetworkMode.acceptProvisionedKey(grantedKey);
+            return;
+        }
+        final String secret;
+        try {
+            if (!forwardingPolicyLoaded) {
+                forwardingSecret = readForwardingSecret();
+                forwardingPolicyLoaded = true;
+            }
+            secret = forwardingSecret;
+        } catch (Exception failure) {
+            Logger.warn("Rejected network key: could not read the forwarding authentication policy: "
+                    + failure.getMessage());
+            return;
+        }
         if (secret != null && !NetworkKeyGrantSignature.verify(secret, grantedKey, presentedSignature)) {
             // The two causes need different fixes, so they get different messages. Telling a
             // BungeeCord operator to "match the forwarding secret" would be a wild goose chase:
@@ -116,16 +133,17 @@ public final class NetworkKeyProvisioning implements Listener, PluginMessageList
      *
      * @return the secret, or {@code null} on any topology that does not use one
      */
-    private static String readForwardingSecret() {
+    private static String readForwardingSecret() throws java.io.IOException,
+            org.bukkit.configuration.InvalidConfigurationException {
         for (String path : new String[]{"config/paper-global.yml", "paper-global.yml"}) {
             File file = new File(path);
-            if (!file.isFile()) continue;
             try {
-                String secret = YamlConfiguration.loadConfiguration(file)
-                        .getString("proxies.velocity.secret");
+                YamlConfiguration config = new YamlConfiguration();
+                config.load(file);
+                String secret = config.getString("proxies.velocity.secret");
                 if (secret != null && !secret.isBlank()) return secret;
-            } catch (Throwable ignored) {
-                // Detection logic; an unreadable config must not break provisioning.
+            } catch (java.io.FileNotFoundException missing) {
+                if (!java.nio.file.Files.notExists(file.toPath())) throw missing;
             }
         }
         return null;

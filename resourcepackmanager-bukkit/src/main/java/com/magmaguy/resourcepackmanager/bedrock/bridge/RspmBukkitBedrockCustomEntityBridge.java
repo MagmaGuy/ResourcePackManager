@@ -18,7 +18,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 public final class RspmBukkitBedrockCustomEntityBridge implements BedrockCustomEntityBridge {
-    private final ConcurrentMap<String, BridgeEntityDefinition> definitions = new ConcurrentHashMap<>();
+    private record EncodedDefinition(CustomEntityDefinition source, byte[] payload) { }
+    private final ConcurrentMap<String, EncodedDefinition> definitions = new ConcurrentHashMap<>();
 
     @Override
     public boolean isAvailable() {
@@ -30,7 +31,7 @@ public final class RspmBukkitBedrockCustomEntityBridge implements BedrockCustomE
         if (definition == null) {
             return;
         }
-        definitions.computeIfAbsent(definition.identifier(), ignored -> convert(definition));
+        encodedDefinition(definition);
     }
 
     @Override
@@ -39,8 +40,8 @@ public final class RspmBukkitBedrockCustomEntityBridge implements BedrockCustomE
             return;
         }
 
-        BridgeEntityDefinition bridgeDefinition = definitions.computeIfAbsent(definition.identifier(), ignored -> convert(definition));
-        send(player, BridgeMessage.registerDefinition(bridgeDefinition));
+        player.sendPluginMessage(ResourcePackManager.plugin, GeyserBridgeInstaller.CHANNEL,
+                encodedDefinition(definition).payload());
         send(player, BridgeMessage.setCustomEntity(javaEntityId, definition.identifier()));
     }
 
@@ -67,6 +68,12 @@ public final class RspmBukkitBedrockCustomEntityBridge implements BedrockCustomE
 
     private boolean canSend(Player player) {
         return player != null && player.isOnline() && isAvailable();
+    }
+
+    private EncodedDefinition encodedDefinition(CustomEntityDefinition definition) {
+        return definitions.compute(definition.identifier(), (identifier, existing) ->
+                existing != null && existing.source() == definition ? existing
+                        : new EncodedDefinition(definition, BridgeCodec.encode(BridgeMessage.registerDefinition(convert(definition)))));
     }
 
     private BridgeEntityDefinition convert(CustomEntityDefinition definition) {

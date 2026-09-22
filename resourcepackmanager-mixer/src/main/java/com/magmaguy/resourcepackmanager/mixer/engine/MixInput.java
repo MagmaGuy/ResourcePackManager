@@ -18,5 +18,11 @@ public record MixInput(
     File outputDir,            // where final zip + per-pack staging dirs land
     File collisionLogDir,      // where collision_log.txt is written (when writeCollisionLog == true)
     String outputName,         // file name without extension, e.g. "ResourcePackManager_RSP"
-    boolean writeCollisionLog
-) {}
+    boolean writeCollisionLog,
+    String reusableArchiveSha1 // optional verified prior Java output; rebuild expanded converter input only
+) {
+    public MixInput(List<File> orderedPacks, File workingDir, File outputDir,
+                    File collisionLogDir, String outputName, boolean writeCollisionLog) {
+        this(orderedPacks, workingDir, outputDir, collisionLogDir, outputName, writeCollisionLog, null);
+    }
+}

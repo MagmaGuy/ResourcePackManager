@@ -83,9 +83,8 @@ public final class PackFileIndex {
             }
 
             @Override
-            public FileVisitResult visitFileFailed(Path file, IOException failure) {
-                // Matches the old Files.walk behaviour of simply not listing what cannot be read.
-                return FileVisitResult.CONTINUE;
+            public FileVisitResult visitFileFailed(Path file, IOException failure) throws IOException {
+                throw failure;
             }
         });
         files.sort(Comparator.comparing(PackFile::relativePath));

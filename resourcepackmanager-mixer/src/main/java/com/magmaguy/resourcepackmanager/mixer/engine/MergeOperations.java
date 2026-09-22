@@ -289,11 +289,7 @@ public final class MergeOperations {
 
         overlayJson.add("sources", merged);
 
-        try (Writer writer = new BufferedWriter(new FileWriter(overlayAtlas), 1 << 16)) {
-            new Gson().toJson(overlayJson, writer);
-        } catch (IOException e) {
-            logger.warn("Failed to merge base atlas sources into overlay atlas: " + overlayAtlas.getPath());
-        }
+        writeJsonAtomically(overlayAtlas, overlayJson);
 
         logger.collision("Merged base atlas sources into overlay: " + overlayAtlas.getPath()
                 + " (" + addedCount + " sources added from base)");
@@ -331,15 +327,27 @@ public final class MergeOperations {
         boolean clampedUvs = clampModelUvs(json);
         if (!addedParticle && !clampedUvs) return;
 
-        try (Writer writer = new BufferedWriter(new FileWriter(file), 1 << 16)) {
-            new Gson().toJson(json, writer);
-        } catch (IOException e) {
-            logger.warn("Failed to sanitize model JSON: " + file.getPath());
-            return;
-        }
+        writeJsonAtomically(file, json);
 
         if (addedParticle) stats[0]++;
         if (clampedUvs) stats[1]++;
+    }
+
+    private static void writeJsonAtomically(File file, JsonObject json) {
+        java.nio.file.Path pending = null;
+        try {
+            pending = Files.createTempFile(file.toPath().toAbsolutePath().getParent(), ".rspm-json-", ".tmp");
+            try (Writer writer = Files.newBufferedWriter(pending, java.nio.charset.StandardCharsets.UTF_8)) {
+                new Gson().toJson(json, writer);
+            }
+            com.magmaguy.resourcepackmanager.mixer.engine.internal.ZipUtil.publishAtomically(pending, file.toPath());
+        } catch (IOException failure) {
+            throw new java.io.UncheckedIOException("Failed to write staged JSON " + file, failure);
+        } finally {
+            if (pending != null) {
+                try { Files.deleteIfExists(pending); } catch (IOException ignored) { }
+            }
+        }
     }
 
     private boolean addMissingParticleTexture(JsonObject json) {
@@ -853,7 +861,7 @@ public final class MergeOperations {
         if (sourceType.equals("select") && targetType.equals("select")) {
             String sourceProp = sourceModel.has("property") ? sourceModel.get("property").getAsString() : "";
             String targetProp = targetModel.has("property") ? targetModel.get("property").getAsString() : "";
-            if (sourceProp.equals(targetProp)) {
+            if (sourceProp.equals(targetProp) && sameSelectDispatch(sourceModel, targetModel)) {
                 mergeSelectCases(sourceModel, targetModel);
                 target.add("model", targetModel);
                 copyNonModelKeys(source, target);
@@ -911,16 +919,8 @@ public final class MergeOperations {
         JsonArray targetCases = targetModel.has("cases") ? targetModel.getAsJsonArray("cases") : new JsonArray();
 
         Map<String, JsonElement> caseMap = new LinkedHashMap<>();
-        for (JsonElement e : sourceCases) {
-            String when = e.getAsJsonObject().has("when")
-                    ? e.getAsJsonObject().get("when").getAsString() : "";
-            caseMap.put(when, e);
-        }
-        for (JsonElement e : targetCases) {
-            String when = e.getAsJsonObject().has("when")
-                    ? e.getAsJsonObject().get("when").getAsString() : "";
-            caseMap.put(when, e);
-        }
+        addSelectCases(caseMap, sourceCases);
+        addSelectCases(caseMap, targetCases);
 
         JsonArray merged = new JsonArray();
         for (JsonElement e : caseMap.values()) {
@@ -928,6 +928,31 @@ public final class MergeOperations {
         }
 
         targetModel.add("cases", merged);
+    }
+
+    private static boolean sameSelectDispatch(JsonObject source, JsonObject target) {
+        JsonObject sourceParameters = source.deepCopy();
+        JsonObject targetParameters = target.deepCopy();
+        for (String key : List.of("type", "cases", "fallback")) {
+            sourceParameters.remove(key);
+            targetParameters.remove(key);
+        }
+        return sourceParameters.equals(targetParameters);
+    }
+
+    private static void addSelectCases(Map<String, JsonElement> cases, JsonArray input) {
+        for (JsonElement element : input) {
+            JsonObject definition = element.getAsJsonObject();
+            JsonElement when = definition.get("when");
+            if (when == null) continue;
+            Iterable<JsonElement> values = when.isJsonArray() ? when.getAsJsonArray() : List.of(when);
+            for (JsonElement value : values) {
+                if (!value.isJsonPrimitive()) continue;
+                JsonObject scalarCase = definition.deepCopy();
+                scalarCase.add("when", value);
+                cases.put(value.getAsString(), scalarCase);
+            }
+        }
     }
 
     private JsonObject mergeSoundsJson(JsonObject source, JsonObject target) {

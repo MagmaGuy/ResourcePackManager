@@ -600,7 +600,7 @@ public final class IconRenderer {
     private static BufferedImage loadTexture(String texRef, File mergedJavaPack,
                                              Map<String, BufferedImage> cache) {
         BufferedImage cached = cache.get(texRef);
-        if (cached != null) return cached;
+        if (cached != null || cache.containsKey(texRef)) return cached;
         int colon = texRef.indexOf(':');
         String ns = colon >= 0 ? texRef.substring(0, colon) : "minecraft";
         String path = colon >= 0 ? texRef.substring(colon + 1) : texRef;

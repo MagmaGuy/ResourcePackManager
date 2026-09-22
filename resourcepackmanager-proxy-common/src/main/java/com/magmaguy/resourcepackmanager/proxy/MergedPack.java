@@ -13,7 +13,7 @@ import java.util.UUID;
  * itself serves the bytes to Bedrock clients over the Bedrock protocol. Hence
  * no {@code url} field on this record.
  *
- * @param packFile  on-disk path to the merged Bedrock zip; stable across re-merges
+ * @param packFile  on-disk path to an immutable merged Bedrock generation
  *                  (overwritten atomically by {@link NetworkSync})
  * @param sha1Hex   lowercase hex SHA-1 of the merged zip
  * @param sha1Bytes raw SHA-1 bytes (20 bytes) — convenient for protocol APIs that

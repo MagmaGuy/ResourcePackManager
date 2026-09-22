@@ -347,25 +347,22 @@ public final class BedrockPackMerger {
         }
 
         for (Path jsonFile : jsonFiles) {
+            String original = Files.readString(jsonFile, StandardCharsets.UTF_8);
+            String rewritten;
             try {
-                JsonElement rootElement;
-                try (FileReader reader = new FileReader(jsonFile.toFile(), StandardCharsets.UTF_8)) {
-                    rootElement = JsonParser.parseReader(reader);
-                }
-                try (Writer writer = new BufferedWriter(new FileWriter(jsonFile.toFile(), StandardCharsets.UTF_8), 1 << 16)) {
-                    GSON.toJson(rewriteJsonStrings(rootElement, referenceRewrites), writer);
-                }
-            } catch (Exception parseException) {
-                try {
-                    String rewritten = rewriteText(Files.readString(jsonFile, StandardCharsets.UTF_8), referenceRewrites);
-                    Files.writeString(jsonFile, rewritten, StandardCharsets.UTF_8);
-                    logger.warn("[BedrockPackMerger] Rewrote JSON references with text fallback for "
-                            + root.relativize(jsonFile).toString().replace('\\', '/') + ": "
-                            + parseException.getMessage());
-                } catch (IOException ioException) {
-                    throw new IOException("Failed to rewrite JSON references in "
-                            + jsonFile, ioException);
-                }
+                JsonElement rootElement = JsonParser.parseString(original);
+                rewritten = GSON.toJson(rewriteJsonStrings(rootElement, referenceRewrites));
+            } catch (com.google.gson.JsonParseException parseException) {
+                rewritten = rewriteText(original, referenceRewrites);
+                logger.warn("[BedrockPackMerger] Rewrote malformed JSON references with text fallback for "
+                        + root.relativize(jsonFile) + ": " + parseException.getMessage());
+            }
+            Path pending = Files.createTempFile(jsonFile.getParent(), ".rspm-json-", ".tmp");
+            try {
+                Files.writeString(pending, rewritten, StandardCharsets.UTF_8);
+                ZipUtil.publishAtomically(pending, jsonFile);
+            } finally {
+                Files.deleteIfExists(pending);
             }
         }
     }
