@@ -2020,8 +2020,10 @@ public final class NetworkSync {
             throw new IOException("refusing to publish an unverified artifact set");
         }
         Files.createDirectories(directory.toPath());
+        // Inbox directories are pruned when a backend disappears. Recovery
+        // copies must outlive that cache cleanup if restoration fails.
         Path rollback = Files.createTempDirectory(
-                directory.toPath(), ".artifact-set-rollback-");
+                workingDir.toPath(), ".artifact-set-rollback-");
         Path zip = new File(directory, INBOX_BEDROCK_ZIP_NAME).toPath();
         Path mappings = new File(directory, INBOX_MAPPINGS_NAME).toPath();
         Path marker = new File(directory, ARTIFACT_GENERATION_FILE_NAME).toPath();
@@ -2032,6 +2034,8 @@ public final class NetworkSync {
         PublicationBackup markerBackup = null;
         PublicationBackup zipEtagBackup = null;
         PublicationBackup mappingsEtagBackup = null;
+        boolean mutationStarted = false;
+        boolean retainBackups = false;
         try {
             zipBackup = PublicationBackup.capture(zip, rollback, "zip");
             mappingsBackup = PublicationBackup.capture(mappings, rollback, "mappings");
@@ -2043,6 +2047,8 @@ public final class NetworkSync {
 
             // Marker removal makes intermediate stable-path replacements
             // invisible to effectiveContributionDirectories().
+            mutationStarted = true;
+            retainBackups = true;
             Files.deleteIfExists(marker);
             publishFrom(candidateMappings == null ? null : candidateMappings.toPath(), mappings);
             publishFrom(candidateZip.toPath(), zip);
@@ -2073,22 +2079,33 @@ public final class NetworkSync {
             }
             if (!isActive(pollGeneration)) throw new IOException("poll generation ended");
             writeStringAtomically(marker, manifest.generationId() + System.lineSeparator());
-        } catch (IOException publicationFailure) {
+            retainBackups = false;
+        } catch (IOException | RuntimeException publicationFailure) {
+            if (!mutationStarted) throw publicationFailure;
             try {
                 restorePublication(
                         zipBackup, mappingsBackup, zipEtagBackup, mappingsEtagBackup);
                 restorePublication(markerBackup);
+                retainBackups = false;
             } catch (IOException rollbackFailure) {
                 publicationFailure.addSuppressed(rollbackFailure);
-                Files.deleteIfExists(marker);
+                logger.warn("NetworkSync: inbox rollback is incomplete for " + directory
+                        + "; recovery copies are retained at " + rollback, rollbackFailure);
+                try {
+                    Files.deleteIfExists(marker);
+                } catch (IOException | RuntimeException revocationFailure) {
+                    publicationFailure.addSuppressed(revocationFailure);
+                }
             }
             throw publicationFailure;
         } finally {
-            try {
-                deleteDirectoryTreeUnder(
-                        directory.toPath().toAbsolutePath().normalize(),
-                        rollback.toAbsolutePath().normalize());
-            } catch (IOException ignored) {
+            if (!retainBackups) {
+                try {
+                    deleteDirectoryTreeUnder(
+                            workingDir.toPath().toAbsolutePath().normalize(),
+                            rollback.toAbsolutePath().normalize());
+                } catch (IOException ignored) {
+                }
             }
         }
     }
@@ -2486,6 +2503,8 @@ public final class NetworkSync {
         PublicationBackup deployedBackup = null;
         PublicationBackup markerBackup = null;
         PublicationBackup revocationBackup = null;
+        boolean mutationStarted = false;
+        boolean retainBackups = false;
         try {
             zipBackup = PublicationBackup.capture(
                     mergedBedrockZip.toPath(), backupDirectory, "pack.zip");
@@ -2505,18 +2524,18 @@ public final class NetworkSync {
                     "publication-revocation");
             if (!isActive(pollGeneration)) return false;
 
+            mutationStarted = true;
+            retainBackups = true;
             MergedOutputPublication.beginMutation(mergedDir);
             publishFrom(stagedMappings, mergedMappings.toPath());
             publishFrom(stagedZip, mergedBedrockZip.toPath());
             if (deployedMappings != null) publishFrom(stagedMappings, deployedMappings);
 
             if (!isActive(pollGeneration)) {
-                restoreMergedPublication(
-                        markerBackup,
-                        zipBackup, mappingsBackup, deployedBackup, revocationBackup);
-                return false;
+                throw new IOException("poll generation ended during publication");
             }
             MergedOutputPublication.commit(mergedDir);
+            retainBackups = false;
             if (deployedMappings != null) {
                 if (stagedMappings == null) {
                     logger.info("Removed stale Geyser mappings because the current network has no custom-item mappings.");
@@ -2526,24 +2545,46 @@ public final class NetworkSync {
                 }
             }
             return true;
-        } catch (IOException exception) {
-            try {
-                restoreMergedPublication(
-                        markerBackup,
-                        zipBackup, mappingsBackup, deployedBackup, revocationBackup);
-            } catch (IOException rollbackFailure) {
-                exception.addSuppressed(rollbackFailure);
-                MergedOutputPublication.revoke(mergedDir);
+        } catch (IOException | RuntimeException exception) {
+            if (mutationStarted) {
+                try {
+                    restoreMergedPublication(
+                            markerBackup,
+                            zipBackup, mappingsBackup, deployedBackup, revocationBackup);
+                    retainBackups = false;
+                } catch (IOException rollbackFailure) {
+                    retainBackups = true;
+                    exception.addSuppressed(rollbackFailure);
+                    logger.warn("NetworkSync: merged publication rollback is incomplete; recovery copies are retained at "
+                            + backupDirectory, rollbackFailure);
+                    try {
+                        if (!MergedOutputPublication.revoke(mergedDir)) {
+                            logger.warn("NetworkSync: could not fully persist merged-output withdrawal after rollback failed.");
+                        }
+                    } catch (RuntimeException revocationFailure) {
+                        exception.addSuppressed(revocationFailure);
+                    }
+                    synchronized (pollCompletionMonitor) {
+                        current = null;
+                        try {
+                            onMergedPackReady.accept(null);
+                        } catch (RuntimeException notificationFailure) {
+                            exception.addSuppressed(notificationFailure);
+                        }
+                    }
+                }
             }
             logger.warn("NetworkSync: could not publish the complete merged artifact set: "
                     + exception.getMessage(), exception);
             return false;
         } finally {
-            try {
-                deleteDirectoryTreeUnder(
-                        mergedDir.toPath().toAbsolutePath().normalize(),
-                        backupDirectory.toAbsolutePath().normalize());
-            } catch (IOException ignored) {
+            if (!retainBackups) {
+                try {
+                    deleteDirectoryTreeUnder(
+                            mergedDir.toPath().toAbsolutePath().normalize(),
+                            backupDirectory.toAbsolutePath().normalize());
+                } catch (IOException ignored) {
+                }
             }
         }
     }
@@ -2575,9 +2616,11 @@ public final class NetworkSync {
                 } else {
                     Files.deleteIfExists(backup.target());
                 }
-            } catch (IOException restoreFailure) {
-                if (failure == null) failure = restoreFailure;
-                else failure.addSuppressed(restoreFailure);
+            } catch (IOException | RuntimeException restoreFailure) {
+                IOException destinationFailure = new IOException("Could not restore " + backup.target()
+                        + " from " + (backup.existed() ? backup.copy() : "its previous absence"), restoreFailure);
+                if (failure == null) failure = destinationFailure;
+                else failure.addSuppressed(destinationFailure);
             }
         }
         if (failure != null) throw failure;

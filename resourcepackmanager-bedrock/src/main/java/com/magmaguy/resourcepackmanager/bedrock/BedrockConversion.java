@@ -347,8 +347,6 @@ public class BedrockConversion {
                                            Path publishedMappings,
                                            File outputDir,
                                            BedrockConverterContext ctx) throws IOException {
-        Path backupDir = Files.createTempDirectory(
-                publishedZip.toAbsolutePath().getParent(), ".rspm-bedrock-rollback-");
         File deployedMappingsFile = ctx.deployedMappingsFile();
         Path deployedMappings = deployedMappingsFile == null
                 ? null
@@ -360,22 +358,34 @@ public class BedrockConversion {
         if (previousDeployedMappings != null && previousDeployedMappings.equals(deployedMappings)) {
             previousDeployedMappings = null;
         }
-        PublicationBackup zipBackup = PublicationBackup.capture(publishedZip, backupDir, "pack.zip");
-        PublicationBackup mappingsBackup = PublicationBackup.capture(
-                publishedMappings, backupDir, "mappings.json");
-        PublicationBackup deployedBackup = deployedMappings == null
-                ? null
-                : PublicationBackup.capture(deployedMappings, backupDir, "deployed-mappings.json");
-        PublicationBackup previousDeployedBackup = previousDeployedMappings == null
-                ? null
-                : PublicationBackup.capture(
-                previousDeployedMappings, backupDir, "previous-deployed-mappings.json");
         File provenanceFile = ctx.deployedMappingsProvenanceFile();
         Path provenance = provenanceFile == null ? null : provenanceFile.toPath().toAbsolutePath();
-        PublicationBackup provenanceBackup = provenance == null
-                ? null
-                : PublicationBackup.capture(provenance, backupDir, "deployment-provenance.txt");
+        Path backupDir = Files.createTempDirectory(
+                publishedZip.toAbsolutePath().getParent(), ".rspm-bedrock-rollback-");
+        PublicationBackup zipBackup = null;
+        PublicationBackup mappingsBackup = null;
+        PublicationBackup deployedBackup = null;
+        PublicationBackup previousDeployedBackup = null;
+        PublicationBackup provenanceBackup = null;
+        boolean mutationStarted = false;
+        boolean retainBackups = false;
         try {
+            zipBackup = PublicationBackup.capture(publishedZip, backupDir, "pack.zip");
+            mappingsBackup = PublicationBackup.capture(publishedMappings, backupDir, "mappings.json");
+            if (deployedMappings != null) {
+                deployedBackup = PublicationBackup.capture(
+                        deployedMappings, backupDir, "deployed-mappings.json");
+            }
+            if (previousDeployedMappings != null) {
+                previousDeployedBackup = PublicationBackup.capture(
+                        previousDeployedMappings, backupDir, "previous-deployed-mappings.json");
+            }
+            if (provenance != null) {
+                provenanceBackup = PublicationBackup.capture(
+                        provenance, backupDir, "deployment-provenance.txt");
+            }
+            mutationStarted = true;
+            retainBackups = true;
             ctx.beginPublishedArtifactSetMutation(outputDir);
             publishFrom(stagedMappings, publishedMappings);
             publishFrom(stagedZip, publishedZip);
@@ -402,20 +412,31 @@ public class BedrockConversion {
                 if (ctx.isCancellationRequested()) throw new CancellationException();
                 throw new IOException("Platform rejected the Bedrock artifact-set authority commit");
             }
+            retainBackups = false;
         } catch (IOException | RuntimeException publicationFailure) {
+            // A failed capture has not changed any publication destination.
+            if (!mutationStarted) throw publicationFailure;
             IOException rollbackFailure = null;
             rollbackFailure = restore(zipBackup, rollbackFailure);
             rollbackFailure = restore(mappingsBackup, rollbackFailure);
             rollbackFailure = restore(deployedBackup, rollbackFailure);
             rollbackFailure = restore(previousDeployedBackup, rollbackFailure);
             rollbackFailure = restore(provenanceBackup, rollbackFailure);
+            retainBackups = rollbackFailure != null;
             if (rollbackFailure != null) {
                 publicationFailure.addSuppressed(rollbackFailure);
-                ctx.invalidatePublishedArtifactSet(outputDir);
+                BedrockLog.warn("Bedrock publication rollback is incomplete. Recovery copies are retained at "
+                        + backupDir + ". Restore failures identify the affected destinations: "
+                        + rollbackFailure);
+                try {
+                    ctx.invalidatePublishedArtifactSet(outputDir);
+                } catch (RuntimeException invalidationFailure) {
+                    publicationFailure.addSuppressed(invalidationFailure);
+                }
             }
             throw publicationFailure;
         } finally {
-            recursivelyDelete(backupDir.toFile());
+            if (!retainBackups) recursivelyDelete(backupDir.toFile());
         }
     }
 
@@ -444,9 +465,12 @@ public class BedrockConversion {
             } else {
                 Files.deleteIfExists(backup.target());
             }
-        } catch (IOException restoreFailure) {
-            if (previous == null) return restoreFailure;
-            previous.addSuppressed(restoreFailure);
+        } catch (IOException | RuntimeException restoreFailure) {
+            IOException failure = new IOException("Could not restore " + backup.target()
+                    + " from " + (backup.existed() ? backup.copy() : "its previous absence"), restoreFailure);
+            BedrockLog.warn(failure.getMessage() + ": " + restoreFailure.getMessage());
+            if (previous == null) return failure;
+            previous.addSuppressed(failure);
         }
         return previous;
     }
