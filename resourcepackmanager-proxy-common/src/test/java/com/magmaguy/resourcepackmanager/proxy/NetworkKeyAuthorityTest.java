@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * The proxy's key resolution order is a compatibility contract: existing
@@ -102,20 +103,24 @@ class NetworkKeyAuthorityTest {
     }
 
     /**
-     * When the key cannot be written the resolution must say so — an
-     * unpersisted key re-mints on the next boot, silently unlinking every
-     * backend provisioned with this one, so callers escalate loudly.
+     * A key that cannot be persisted must never become the admitted network identity.
      */
     @Test
     void reportsPersistenceFailureInsteadOfPretending(@TempDir Path parent) throws Exception {
         Path fileAsDataDir = parent.resolve("actually-a-file");
         Files.writeString(fileAsDataDir, "occupies the dataDir path");
 
-        NetworkKeyAuthority.Resolution resolution =
-                NetworkKeyAuthority.resolve(fileAsDataDir, parent.resolve("absent-key.pem"));
+        assertThrows(IllegalStateException.class,
+                () -> NetworkKeyAuthority.resolve(fileAsDataDir, parent.resolve("absent-key.pem")));
+        assertEquals("occupies the dataDir path", Files.readString(fileAsDataDir));
+    }
 
-        assertEquals(NetworkKeyAuthority.Source.MINTED, resolution.source());
-        assertFalse(resolution.persisted());
-        assertNotNull(resolution.persistenceError());
+    @Test
+    void unreadableEstablishedIdentityCannotBecomeANewNetwork(@TempDir Path dataDir) throws Exception {
+        Path unreadable = Files.createDirectory(dataDir.resolve(NetworkKeyAuthority.KEY_FILENAME));
+        Files.writeString(unreadable.resolve("preserve"), "operator recovery");
+        assertThrows(java.io.UncheckedIOException.class,
+                () -> NetworkKeyAuthority.resolve(dataDir, dataDir.resolve("absent-key.pem")));
+        assertEquals("operator recovery", Files.readString(unreadable.resolve("preserve")));
     }
 }
