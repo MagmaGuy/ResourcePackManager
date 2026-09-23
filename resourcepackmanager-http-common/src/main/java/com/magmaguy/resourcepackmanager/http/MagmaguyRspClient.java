@@ -59,6 +59,8 @@ public final class MagmaguyRspClient implements AutoCloseable {
     public static final String DISABLE_REMOTE_RELAY_PROPERTY = "rspm.test.disableRemoteRelay";
 
     private static final int DEFAULT_CONNECT_TIMEOUT = 30;
+    // ResourcePackHoster config.file.maxSize: 50,000 KiB, not 50 MiB.
+    private static final long MAX_JAVA_UPLOAD_BYTES = 50_000L * 1024L;
     private static volatile String requestBaseUrl = BASE_URL;
 
     /**
@@ -279,6 +281,17 @@ public final class MagmaguyRspClient implements AutoCloseable {
     }
 
     private UploadResult doUpload(String uuid, File pack, String expectedSha1) throws IOException {
+        long size = Files.size(pack.toPath());
+        if (size > MAX_JAVA_UPLOAD_BYTES) {
+            String message = "Automatic hosting skipped: resource pack is " + size
+                    + " bytes; the limit is " + MAX_JAVA_UPLOAD_BYTES
+                    + " bytes. Reduce the pack size or configure reachable self-hosting,"
+                    + " then run /rspm reload.";
+            log.warning(message);
+            return new UploadResult(false, null,
+                    new RspError("FILE_TOO_LARGE", "VALIDATION_ERROR", message, 0));
+        }
+
         CloseableHttpClient uploadClient = buildClient(uploadSocketTimeoutSeconds);
         track(uploadClient);
         try {

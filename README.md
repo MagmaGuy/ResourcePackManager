@@ -22,6 +22,11 @@ the remote SHA-1 before uploading; Bedrock publication reuses successful artifac
 uploads during retries for up to 20 minutes. The ordinary 25-minute Bedrock renewal
 still uploads because the existing relay protocol refreshes its lease on upload.
 
+Java packs larger than the remote hoster's 51,200,000-byte limit are rejected
+locally before an upload request is created. RSPM reports the size and limit,
+tries the existing self-hosting fallback, and stops remote hosting retries for
+that pack until regeneration or reload. Self-hosted packs do not use this limit.
+
 ## Key features
 
 - **Automatic pack merging**: collects the resource packs supplied by other

@@ -37,6 +37,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -180,7 +181,8 @@ public class AutoHost {
 
     private record LifecycleRun(long generation, BooleanSupplier cancellationRequested,
                                 RetryWindow hostingRetry, RetryWindow relayRetry,
-                                Map<String, RelayReceipt> relayReceipts) {
+                                Map<String, RelayReceipt> relayReceipts,
+                                AtomicBoolean remoteUploadRejected) {
         private boolean active() {
             return lifecycleRun == this
                     && generation == LIFECYCLE_GENERATION.get()
@@ -462,7 +464,7 @@ public class AutoHost {
 
         long generation = LIFECYCLE_GENERATION.incrementAndGet();
         LifecycleRun run = new LifecycleRun(generation, cancellation,
-                new RetryWindow(), new RetryWindow(), new ConcurrentHashMap<>());
+                new RetryWindow(), new RetryWindow(), new ConcurrentHashMap<>(), new AtomicBoolean());
         lifecycleRun = run;
         if (!run.active()) {
             LIFECYCLE_GENERATION.incrementAndGet();
@@ -594,6 +596,12 @@ public class AutoHost {
 
     private static void checkFileExistence(LifecycleRun run) {
         if (!run.active()) return;
+        if (run.remoteUploadRejected().get()) {
+            // Keep retrying verified self-hosting if it was temporarily unavailable,
+            // without reopening a remote session or resending an oversized pack.
+            fallbackToSelfHost(run);
+            return;
+        }
         JavaHostingRoute route = resolveJavaHostingRoute(
                 DefaultConfig.isSelfHostForce(),
                 DefaultConfig.isPreferSelfHost(),
@@ -1452,6 +1460,10 @@ public class AutoHost {
         String code = error.code();
         if (code != null && code.equals("SESSION_NOT_FOUND")) {
             rspUUID = null; // Trigger re-initialization on next keep-alive tick
+        } else if ("FILE_TOO_LARGE".equals(code)) {
+            // Retrying cannot make this pack fit. The caller still tries the
+            // existing self-host fallback, which has no remote upload limit.
+            run.remoteUploadRejected().set(true);
         }
     }
 
