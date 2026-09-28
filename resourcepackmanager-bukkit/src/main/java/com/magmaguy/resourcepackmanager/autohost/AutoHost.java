@@ -413,8 +413,14 @@ public class AutoHost {
                         + " — hosting/URL problem, not a timing one; not retrying.");
                 settlePlayer(id);
                 return;
+            case "FAILED_RELOAD":
+                // Downloading the same pack again cannot repair a client resource reload failure.
+                Logger.warn("Client " + player.getName() + " reported FAILED_RELOAD for the resource pack."
+                        + " Check that client's latest.log for the resource reload error; not retrying.");
+                settlePlayer(id);
+                return;
             default:
-                // ACCEPTED / DOWNLOADED (in-progress), FAILED_RELOAD, etc.: no action.
+                // ACCEPTED / DOWNLOADED are still in progress.
         }
     }
 
