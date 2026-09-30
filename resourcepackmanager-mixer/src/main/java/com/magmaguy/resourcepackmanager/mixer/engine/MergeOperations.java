@@ -470,12 +470,15 @@ public final class MergeOperations {
             }
         }
 
+        int completedEntries = 0;
         if (mergedEntries.size() > 0 || targetEntriesArray || sourceEntriesArray) {
-            // Preserve the overlay objects and each entry exactly as supplied. There is no safe
-            // general rewrite for the two Minecraft metadata dialects: an author's formats and
+            // Preserve the overlay objects and each entry as supplied. There is no safe general
+            // rewrite for the two Minecraft metadata dialects: an author's formats and
             // min_format/max_format fields may intentionally describe different client eras.
-            // The only merge operation is concatenating distinct directories; duplicate paths
-            // retain the higher-priority entry because their files share one directory.
+            // The merge operations are concatenating distinct directories, where duplicate paths
+            // retain the higher-priority entry because their files share one directory, and
+            // completing the list-wide formats requirement the concatenation itself can create.
+            completedEntries = addLegacyFormatsRequiredByCombinedList(mergedEntries);
             JsonObject overlays = targetOverlays == null ? new JsonObject() : targetOverlays.deepCopy();
             if (sourceOverlays != null) {
                 for (String key : sourceOverlays.keySet()) {
@@ -506,6 +509,68 @@ public final class MergeOperations {
         }
 
         logger.collision("Merged pack.mcmeta: " + targetFile.getPath());
+        if (completedEntries > 0) {
+            logger.collision("Added the formats range to " + completedEntries
+                    + " overlay entries so the combined overlay list stays loadable: " + targetFile.getPath());
+        }
+    }
+
+    /**
+     * Minecraft 1.21.9+ validates overlay format fields across the whole list: once any overlay
+     * reaches resource-pack format 64 or lower, every overlay must also declare {@code formats},
+     * or the client rejects the pack's metadata and loads none of the merged pack. Two lists that
+     * are each valid can break that rule once concatenated, so an entry declaring only
+     * min_format/max_format gains the equivalent formats range. The range selects the same
+     * clients as the entry's own bounds, so no overlay changes meaning; entries that already
+     * declare formats, or whose bounds do not parse, stay exactly as their author wrote them.
+     */
+    private int addLegacyFormatsRequiredByCombinedList(JsonArray entries) {
+        boolean required = false;
+        for (JsonElement element : entries) {
+            if (!element.isJsonObject()) continue;
+            Integer effectiveMin = effectiveOverlayMinMajor(element.getAsJsonObject());
+            if (effectiveMin != null && effectiveMin <= LAST_PRE_MINOR_CLIENT_PACK_FORMAT) {
+                required = true;
+                break;
+            }
+        }
+        if (!required) return 0;
+
+        int completed = 0;
+        for (int index = 0; index < entries.size(); index++) {
+            JsonElement element = entries.get(index);
+            if (!element.isJsonObject() || element.getAsJsonObject().has("formats")) continue;
+            JsonObject entry = element.getAsJsonObject();
+            PackFormat min = readFormatBound(entry.get("min_format"), false);
+            PackFormat max = readFormatBound(entry.get("max_format"), true);
+            if (min == null || max == null || min.compareTo(max) > 0) continue;
+
+            // Minecraft accepts a formats maximum equal to max_format or to 64. A range that
+            // starts at 64 or lower is capped at 64 because only those clients read formats.
+            JsonObject formats = new JsonObject();
+            formats.addProperty("min_inclusive", min.major());
+            formats.addProperty("max_inclusive", min.major() <= LAST_PRE_MINOR_CLIENT_PACK_FORMAT
+                    ? Math.min(max.major(), LAST_PRE_MINOR_CLIENT_PACK_FORMAT)
+                    : max.major());
+            JsonObject completedEntry = entry.deepCopy();
+            completedEntry.add("formats", formats);
+            entries.set(index, completedEntry);
+            completed++;
+        }
+        return completed;
+    }
+
+    // Mirrors Minecraft's effective lower bound: the lower of min_format and formats.
+    private Integer effectiveOverlayMinMajor(JsonObject entry) {
+        PackFormat min = readFormatBound(entry.get("min_format"), false);
+        int[] formats;
+        try {
+            formats = parseSupportedFormatsRange(entry.get("formats"));
+        } catch (RuntimeException malformed) {
+            formats = null;
+        }
+        if (min != null) return formats == null ? min.major() : Math.min(min.major(), formats[0]);
+        return formats == null ? null : formats[0];
     }
 
     private boolean mergePackFormatDeclaration(JsonObject sourcePack, JsonObject targetPack) {

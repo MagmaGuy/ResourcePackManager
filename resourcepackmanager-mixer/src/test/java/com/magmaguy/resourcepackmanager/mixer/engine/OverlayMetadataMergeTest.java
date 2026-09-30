@@ -138,7 +138,7 @@ class OverlayMetadataMergeTest {
     }
 
     @Test
-    void mixedOverlayMetadataPreservesEachEntry(@TempDir Path tempDir) throws Exception {
+    void combinedLegacyOverlayListGivesEveryEntryAFormatsRange(@TempDir Path tempDir) throws Exception {
         Path higherPriorityPack = createPack(tempDir.resolve("higher.zip"), """
                 {
                   "pack": {"pack_format": 65},
@@ -161,8 +161,12 @@ class OverlayMetadataMergeTest {
         MixOutput output = runMix(tempDir, new RecordingLogger(), higherPriorityPack, lowerPriorityPack);
 
         JsonObject mcmeta = readJson(output.mergedDir().toPath().resolve("pack.mcmeta"));
+        // Minecraft rejects the whole overlay list when one entry reaches format 64 or lower and
+        // another lacks formats, although each source list is valid on its own.
         JsonObject stellarityEntry = overlayEntry(mcmeta, "stellarity_assets");
-        assertFalse(stellarityEntry.has("formats"));
+        JsonObject formats = stellarityEntry.getAsJsonObject("formats");
+        assertEquals(65, formats.get("min_inclusive").getAsInt());
+        assertEquals(75, formats.get("max_inclusive").getAsInt());
         assertEquals(65, stellarityEntry.get("min_format").getAsInt());
         assertEquals(75, stellarityEntry.get("max_format").getAsInt());
 
