@@ -3,9 +3,10 @@ package com.magmaguy.resourcepackmanager.mixer.engine.internal;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -34,18 +35,27 @@ public final class AsyncDirectoryCleaner {
 
     public static final String TRASH_PREFIX = ".rspm_trash_";
 
-    private static final ExecutorService CLEANER = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "RSPM-staging-cleaner");
-        // Daemon: a pending delete must never hold up server shutdown. Anything still queued is
-        // swept on the next boot by sweepTrash().
-        thread.setDaemon(true);
-        thread.setPriority(Thread.MIN_PRIORITY);
-        return thread;
-    });
+    private static final ThreadPoolExecutor CLEANER = createCleaner();
 
     private static final AtomicInteger TRASH_COUNTER = new AtomicInteger();
 
     private AsyncDirectoryCleaner() {
+    }
+
+    private static ThreadPoolExecutor createCleaner() {
+        ThreadPoolExecutor cleaner = new ThreadPoolExecutor(1, 1, 30L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(), runnable -> {
+                    Thread thread = new Thread(runnable, "RSPM-staging-cleaner");
+                    // Daemon: a pending delete must never hold up server shutdown. Anything still
+                    // queued is swept on the next boot by sweepTrash().
+                    thread.setDaemon(true);
+                    thread.setPriority(Thread.MIN_PRIORITY);
+                    return thread;
+                });
+        // An idle worker exits, so a plugin that was reloaded or updated without a restart
+        // does not leave this thread holding its previous classes.
+        cleaner.allowCoreThreadTimeOut(true);
+        return cleaner;
     }
 
     /**
