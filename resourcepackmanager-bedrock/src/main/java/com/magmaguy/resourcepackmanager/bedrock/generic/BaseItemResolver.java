@@ -1,8 +1,14 @@
 package com.magmaguy.resourcepackmanager.bedrock.generic;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -69,6 +75,15 @@ public final class BaseItemResolver {
                 merged.add(FMM_BONE_CARRIER);
                 candidates = merged;
             }
+
+            // The producer knows the real carrier (a wand YAML says BLAZE_ROD); the
+            // filename heuristic would only guess minecraft:stick from "wand".
+            List<String> declared = declaredBaseItems(def);
+            if (!declared.isEmpty()) {
+                List<String> merged = new ArrayList<>(candidates);
+                for (String base : declared) if (!merged.contains(base)) merged.add(base);
+                candidates = merged;
+            }
         }
 
         List<String> supported = candidates.stream()
@@ -85,6 +100,39 @@ public final class BaseItemResolver {
                     + "these item/block identifier mismatches safely.");
         }
         return supported;
+    }
+
+    /**
+     * Base items a producer declares for one of its item models, read from
+     * {@code assets/<ns>/rspm_item_bases/<items path>.json} holding
+     * {@code {"base_items": ["minecraft:blaze_rod"]}}. FreeMinecraftModels writes one for each
+     * custom item with the material its YAML names. These are added to the heuristic's choice,
+     * so other carriers of the same model keep working.
+     */
+    static List<String> declaredBaseItems(ItemsDefinition def) {
+        File itemsDir = def.file() == null ? null : def.file().getParentFile();
+        String relPath = def.itemsRelPath().replace('\\', '/');
+        if (relPath.contains("..")) return List.of();
+        for (int depth = relPath.split("/").length - 1; depth > 0 && itemsDir != null; depth--)
+            itemsDir = itemsDir.getParentFile();
+        if (itemsDir == null || !"items".equals(itemsDir.getName()) || itemsDir.getParentFile() == null)
+            return List.of();
+        File sidecar = new File(itemsDir.getParentFile(), "rspm_item_bases/" + relPath + ".json");
+        if (!sidecar.isFile()) return List.of();
+        try {
+            JsonObject json = JsonParser.parseString(Files.readString(sidecar.toPath(), StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+            List<String> bases = new ArrayList<>();
+            for (JsonElement element : json.getAsJsonArray("base_items")) {
+                String base = element.getAsString();
+                if (base.matches("minecraft:[a-z0-9_]+")) bases.add(base);
+            }
+            return List.copyOf(bases);
+        } catch (IOException | RuntimeException exception) {
+            BedrockLog.warn("[BedrockConverter] Ignoring unreadable base item declaration " + sidecar + ": "
+                    + exception.getMessage());
+            return List.of();
+        }
     }
 
     private static boolean isRootVanillaItemDefinition(ItemsDefinition def) {
