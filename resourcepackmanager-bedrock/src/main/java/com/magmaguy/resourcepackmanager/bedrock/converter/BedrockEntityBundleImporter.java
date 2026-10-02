@@ -46,6 +46,7 @@ public final class BedrockEntityBundleImporter {
             "animation_controllers",
             "render_controllers",
             "materials",
+            "particles",
             "textures"
     );
 

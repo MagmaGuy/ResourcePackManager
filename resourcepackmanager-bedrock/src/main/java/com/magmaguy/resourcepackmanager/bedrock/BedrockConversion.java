@@ -691,6 +691,11 @@ public class BedrockConversion {
                         + leaf.modelRef() + "; skipping");
                 return false;
             }
+            ItemParticleAttachment particles = ItemParticleAttachment.prepare(
+                    leaf.modelRef(), mergedJavaPack, animBaseId, animFileBase, bedrockDir);
+            if (particles != null) {
+                particles.addLocators(new File(bedrockDir, "models/entity/" + geometryOutputPath + ".geo.json"));
+            }
 
             String iconRel = "textures/items/" + iconKey;
             File iconFile = new File(bedrockDir, iconRel + ".png");
@@ -706,7 +711,8 @@ public class BedrockConversion {
             shared = new SharedModelAssets(
                     stitch.bedrockTexturePath(),
                     resultGeoId,
-                    animIds);
+                    animIds,
+                    particles);
             modelAssetsCache.put(leaf.modelRef(), shared);
         } else {
             shared = modelAssetsCache.get(leaf.modelRef());
@@ -725,7 +731,7 @@ public class BedrockConversion {
             String result = FmmAttachableGenerator.writeAttachable(
                     tierBedrockId, attachableOutPath,
                     shared.geometryId(), shared.bedrockTexturePath(),
-                    shared.animIds(), bedrockDir);
+                    shared.animIds(), shared.particles(), bedrockDir);
             if (result == null) continue;
 
             registry.addMapping(base, geyserEntry(
@@ -764,7 +770,8 @@ public class BedrockConversion {
     private record SharedModelAssets(
             String bedrockTexturePath,
             String geometryId,
-            FmmAnimationGenerator.AnimationIds animIds) {
+            FmmAnimationGenerator.AnimationIds animIds,
+            ItemParticleAttachment particles) {
     }
 
     private static boolean emitFlatIcon(ResolvedModel resolved, String safeId,

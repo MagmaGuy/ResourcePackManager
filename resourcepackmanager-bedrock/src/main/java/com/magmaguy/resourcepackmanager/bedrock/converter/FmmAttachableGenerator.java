@@ -150,8 +150,23 @@ public class FmmAttachableGenerator {
                                          String bedrockTexturePath,
                                          FmmAnimationGenerator.AnimationIds animIds,
                                          File bedrockPackDir) {
+        return writeAttachable(bedrockIdentifier, attachableOutputPath, geometryId, bedrockTexturePath, animIds,
+                null, bedrockPackDir);
+    }
+
+    /**
+     * As {@link #writeAttachable(String, String, String, String, FmmAnimationGenerator.AnimationIds, File)},
+     * also wiring held-item particles when {@code particles} is not null.
+     */
+    public static String writeAttachable(String bedrockIdentifier,
+                                         String attachableOutputPath,
+                                         String geometryId,
+                                         String bedrockTexturePath,
+                                         FmmAnimationGenerator.AnimationIds animIds,
+                                         ItemParticleAttachment particles,
+                                         File bedrockPackDir) {
         if (!writeAttachableInternal(bedrockIdentifier, geometryId, bedrockTexturePath,
-                animIds, attachableOutputPath, bedrockPackDir)) {
+                animIds, particles, attachableOutputPath, bedrockPackDir)) {
             BedrockLog.warn("[BedrockConverter] Failed to write attachable for " + bedrockIdentifier);
             return null;
         }
@@ -161,6 +176,7 @@ public class FmmAttachableGenerator {
     private static boolean writeAttachableInternal(String identifier, String geometryId,
                                                    String texturePath,
                                                    FmmAnimationGenerator.AnimationIds animIds,
+                                                   ItemParticleAttachment particles,
                                                    String attachableOutputPath,
                                                    File bedrockPackDir) {
         JsonObject description = new JsonObject();
@@ -203,6 +219,7 @@ public class FmmAttachableGenerator {
         JsonObject scripts = new JsonObject();
         scripts.add("animate", animate);
         description.add("scripts", scripts);
+        if (particles != null) particles.applyTo(description);
 
         JsonArray renderControllers = new JsonArray();
         renderControllers.add("controller.render.item_default");
