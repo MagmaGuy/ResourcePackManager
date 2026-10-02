@@ -27,6 +27,6 @@ public class PlayerManager implements Listener {
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        AutoHost.forgetPlayer(event.getPlayer().getUniqueId());
+        AutoHost.playerQuit(event.getPlayer());
     }
 }

@@ -88,6 +88,12 @@ public class AutoHost {
     private static final Map<UUID, BukkitTask> resendTasks = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> playerSessionGenerations = new ConcurrentHashMap<>();
     private static final AtomicLong playerSessionSequence = new AtomicLong();
+    /**
+     * Online players who were held back because no pack was published yet. Only the first
+     * publication of a lifecycle broadcasts to everyone, so a re-registration later in the
+     * lifecycle sends to these players instead of leaving them without a pack.
+     */
+    private static final Set<UUID> awaitingPack = ConcurrentHashMap.newKeySet();
 
     // Timeout settings for HTTP requests (in seconds)
     private static final int DEFAULT_SOCKET_TIMEOUT = 60;
@@ -232,6 +238,10 @@ public class AutoHost {
     }
 
     public static void sendResourcePack(Player player) {
+        sendResourcePack(player, "manual");
+    }
+
+    private static void sendResourcePack(Player player, String cause) {
         if (BedrockChecker.isBedrock(player)) {
             RSPLogger.detail("Skipping Java resource pack send for Bedrock/Floodgate player " + player.getName()
                     + "; proxy Geyser handles Bedrock pack delivery.");
@@ -257,14 +267,16 @@ public class AutoHost {
         // Bedrock can ever work, so the Java/backend warning is the root-cause
         // signal admins should see first.
         if (!done) {
+            awaitingPack.add(player.getUniqueId());
+            PackDeliveryTrace.notSent(player, cause, "pack not ready yet ("
+                    + packStateSummary() + "); it goes out when hosting finishes");
             warnPackNotReady(player);
             return;
         }
-        if (selfHostedUrl != null) {
-            url = selfHostedUrl;
-        } else if (rspUUID != null) {
-            url = MagmaguyRspClient.BASE_URL + rspUUID;
-        } else {
+        url = currentPackUrl();
+        if (url == null) {
+            awaitingPack.add(player.getUniqueId());
+            PackDeliveryTrace.notSent(player, cause, "pack marked ready but no URL is published");
             return;
         }
         hash = Mix.getFinalSHA1Bytes();
@@ -274,6 +286,7 @@ public class AutoHost {
         String prompt = DefaultConfig.getResourcePackPrompt();
         boolean force = DefaultConfig.isForceResourcePack();
 
+        awaitingPack.remove(player.getUniqueId());
         if (ServerVersionHelper.supportsMultipleResourcePacks()) {
             // 1.20.3+ supports multiple resource packs - use addResourcePack to coexist with other plugins
             player.addResourcePack(packUuid, url, hash, prompt, force);
@@ -281,6 +294,37 @@ public class AutoHost {
             // Older versions - use setResourcePack (replaces any existing packs)
             player.setResourcePack(url, hash, prompt, force);
         }
+        PackDeliveryTrace.sent(player, cause, url + ", sha1 " + shortSha1(Mix.getFinalSHA1())
+                + (ServerVersionHelper.supportsMultipleResourcePacks() ? "" : ", single-pack API"));
+    }
+
+    /** The URL players are sent right now, or null while nothing is published. */
+    static String currentPackUrl() {
+        String selfHosted = selfHostedUrl;
+        if (selfHosted != null) return selfHosted;
+        String session = rspUUID;
+        return session == null ? null : MagmaguyRspClient.BASE_URL + session;
+    }
+
+    /** One-line description of what a joining player would be sent, for delivery timelines. */
+    static String packStateSummary() {
+        File pack = Mix.getFinalResourcePack();
+        if (!done) {
+            return "not ready, mixed=" + (pack != null) + ", hosted=" + (selfHostedUrl != null || rspUUID != null);
+        }
+        String url = currentPackUrl();
+        String prompt = DefaultConfig.getResourcePackPrompt();
+        return "ready, " + (selfHostedUrl != null ? "self-hosted" : "hosted on magmaguy.com")
+                + (url == null ? ", no URL" : " at " + url)
+                + ", sha1 " + shortSha1(Mix.getFinalSHA1())
+                + ", " + (pack != null && pack.isFile() ? PackDeliveryTrace.megabytes(pack.length()) : "file missing")
+                + ", prompt " + (prompt == null || prompt.isBlank() ? "empty" : "\"" + prompt + "\"")
+                + ", force " + (DefaultConfig.isForceResourcePack() ? "on" : "off");
+    }
+
+    private static String shortSha1(String sha1) {
+        if (sha1 == null) return "none";
+        return sha1.length() > 12 ? sha1.substring(0, 12) : sha1;
     }
 
     /**
@@ -297,11 +341,15 @@ public class AutoHost {
         resendPending.remove(id);
         long session = playerSessionSequence.incrementAndGet();
         playerSessionGenerations.put(id, session);
+        if (!BedrockChecker.isBedrock(player)) PackDeliveryTrace.joined(player, packStateSummary());
         AtomicReference<BukkitTask> ownTask = new AtomicReference<>();
         BukkitTask task = Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
             try {
-                if (player.isOnline() && playerSessionGenerations.getOrDefault(id, -1L) == session) {
-                    sendResourcePack(player);
+                if (!player.isOnline()) return;
+                if (playerSessionGenerations.getOrDefault(id, -1L) == session) {
+                    sendResourcePack(player, "join");
+                } else {
+                    PackDeliveryTrace.event(player, "join send skipped: a client response or newer send superseded it");
                 }
             } finally {
                 joinSendTasks.remove(id, ownTask.get());
@@ -311,8 +359,15 @@ public class AutoHost {
         joinSendTasks.put(id, task);
     }
 
+    /** Report an unfinished delivery, then drop the player's bookkeeping. */
+    public static void playerQuit(Player player) {
+        PackDeliveryTrace.quit(player);
+        forgetPlayer(player.getUniqueId());
+    }
+
     /** Drop a player's resend bookkeeping when they leave. */
     public static void forgetPlayer(UUID playerId) {
+        awaitingPack.remove(playerId);
         playerSessionGenerations.remove(playerId);
         cancelPlayerTasks(playerId);
         resendAttempts.remove(playerId);
@@ -360,10 +415,10 @@ public class AutoHost {
         // On stacked-pack servers, ignore reports for other plugins' packs (we
         // tag ours with RESOURCE_PACK_UUID). On single-pack servers there's only
         // our pack, so every report is ours.
-        if (ServerVersionHelper.supportsMultipleResourcePacks()) {
-            UUID packId = event.getID();
-            if (packId != null && !packId.equals(RESOURCE_PACK_UUID)) return;
-        }
+        UUID packId = ServerVersionHelper.supportsMultipleResourcePacks() ? event.getID() : null;
+        boolean ours = packId == null || packId.equals(RESOURCE_PACK_UUID);
+        PackDeliveryTrace.status(player, event.getStatus().name(), packId, ours);
+        if (!ours) return;
 
         switch (event.getStatus().name()) {
             case "SUCCESSFULLY_LOADED":
@@ -380,9 +435,15 @@ public class AutoHost {
                             + attempts + "x (last status " + event.getStatus().name()
                             + "); giving up. They can retry with /rspm reload.");
                     settlePlayer(id);
+                    PackDeliveryTrace.failed(player, "delivery to " + player.getName() + " failed " + attempts
+                            + " times; RSPM stopped retrying.", java.util.List.of(
+                            "FAILED_DOWNLOAD means the client could not download the pack from the URL;"
+                                    + " DISCARDED means it dropped the pack after another pack in the same batch failed."), currentPackUrl());
                     return;
                 }
                 resendAttempts.put(id, attempts + 1);
+                PackDeliveryTrace.event(player, "resend " + (attempts + 1) + "/" + MAX_RESEND_ATTEMPTS + " scheduled in "
+                        + (RESEND_DELAY_TICKS / 20) + "s");
                 RSPLogger.detail("Resource pack " + event.getStatus().name() + " for " + player.getName()
                         + "; resending (attempt " + (attempts + 1) + "/" + MAX_RESEND_ATTEMPTS + ").");
                 long session = playerSessionGenerations.computeIfAbsent(
@@ -392,7 +453,7 @@ public class AutoHost {
                     try {
                         if (player.isOnline()
                                 && playerSessionGenerations.getOrDefault(id, -1L) == session) {
-                            sendResourcePack(player);
+                            sendResourcePack(player, "resend after " + event.getStatus().name());
                         }
                     } finally {
                         if (playerSessionGenerations.getOrDefault(id, -1L) == session) {
@@ -412,12 +473,16 @@ public class AutoHost {
                 Logger.warn("Client " + player.getName() + " reported INVALID_URL for the resource pack"
                         + " — hosting/URL problem, not a timing one; not retrying.");
                 settlePlayer(id);
+                PackDeliveryTrace.failed(player, player.getName() + "'s client rejected the pack URL.", java.util.List.of(
+                        "The client could not parse the URL it was sent; check the self-host or hosting URL settings."), currentPackUrl());
                 return;
             case "FAILED_RELOAD":
                 // Downloading the same pack again cannot repair a client resource reload failure.
                 Logger.warn("Client " + player.getName() + " reported FAILED_RELOAD for the resource pack."
                         + " Check that client's latest.log for the resource reload error; not retrying.");
                 settlePlayer(id);
+                PackDeliveryTrace.failed(player, player.getName() + "'s client downloaded the pack but failed to apply it.",
+                        java.util.List.of("The client's logs/latest.log names the file in the pack that broke its resource reload."), null);
                 return;
             default:
                 // ACCEPTED / DOWNLOADED are still in progress.
@@ -447,6 +512,7 @@ public class AutoHost {
                 DefaultConfig.isAutoHost() || DefaultConfig.isSelfHostForce();
         boolean networkModeActive = NetworkMode.isActive();
         if (!javaDeliveryEnabled && !networkModeActive) return;
+        if (javaDeliveryEnabled) PackDeliveryTrace.start();
 
         // A reload re-runs this path even when the pack did not change, and re-registering costs
         // two sequential round trips to the host (initialize, then sha1) before the second one
@@ -464,7 +530,7 @@ public class AutoHost {
                 && publishedSHA1.equals(Mix.getFinalSHA1())) {
             RSPLogger.detail("Resource pack is unchanged and already hosted; skipping re-registration.");
             LifecycleRun currentRun = lifecycleRun;
-            if (currentRun != null) broadcastResourcePackSync(currentRun);
+            if (currentRun != null) broadcastResourcePackSync(currentRun, "re-offered after a re-mix, pack unchanged");
             return;
         }
 
@@ -1020,6 +1086,8 @@ public class AutoHost {
             if (!client.stillAlive(rspUUID)) {
                 if (!run.active()) return;
                 // Non-2xx — session may have expired. Reset UUID to trigger re-initialization.
+                Logger.info("magmaguy.com no longer recognises this server's hosting session; re-registering the resource pack."
+                        + " Players who join before it is back are sent the pack once it is.");
                 rspUUID = null;
                 done = false;
             }
@@ -1083,6 +1151,8 @@ public class AutoHost {
         joinSendTasks.clear();
         resendTasks.clear();
         playerSessionGenerations.clear();
+        awaitingPack.clear();
+        PackDeliveryTrace.lifecycleStopped();
         resendAttempts.clear();
         resendPending.clear();
         // Cleared so that a re-enable does a full registration again. The skip in initialize()
@@ -1433,9 +1503,24 @@ public class AutoHost {
      * a fresh PlayerJoinEvent.
      */
     private static void sendToOnlinePlayersIfFirstUpload(LifecycleRun run) {
-        if (run.active() && firstUpload) {
-            broadcastResourcePackSync(run);
+        if (!run.active()) return;
+        if (firstUpload) {
+            broadcastResourcePackSync(run, "pack published");
             firstUpload = false;
+        } else if (!awaitingPack.isEmpty()) {
+            // Hosting was re-registered later in this lifecycle (an expired session, for one).
+            // Everyone who already had the pack keeps it; only players held back meanwhile need it.
+            Bukkit.getScheduler().runTask(ResourcePackManager.plugin, () -> {
+                if (!run.active()) return;
+                for (UUID id : Set.copyOf(awaitingPack)) {
+                    Player player = Bukkit.getPlayer(id);
+                    if (player == null || !player.isOnline()) {
+                        awaitingPack.remove(id);
+                        continue;
+                    }
+                    sendResourcePack(player, "pack became ready after they joined");
+                }
+            });
         }
     }
 
@@ -1445,12 +1530,12 @@ public class AutoHost {
      * contract; callers from async contexts (the keep-alive runnable, upload
      * error paths) must hop to the main thread before iterating online players.
      */
-    private static void broadcastResourcePackSync(LifecycleRun run) {
+    private static void broadcastResourcePackSync(LifecycleRun run, String reason) {
         if (!run.active()) return;
         Bukkit.getScheduler().runTask(ResourcePackManager.plugin, () -> {
             if (!run.active()) return;
             for (Player p : Bukkit.getOnlinePlayers()) {
-                sendResourcePack(p);
+                sendResourcePack(p, reason);
             }
         });
     }
@@ -1572,7 +1657,7 @@ public class AutoHost {
         if (!run.active()) return;
         announceDelivery(run, "self-hosting", selfHostedUrl);
         done = true;
-        broadcastResourcePackSync(run);
+        broadcastResourcePackSync(run, "self-hosting started");
     }
 
     /**
