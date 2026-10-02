@@ -2,7 +2,6 @@ package com.magmaguy.resourcepackmanager.bedrock;
 
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
-import com.magmaguy.resourcepackmanager.config.BedrockDisplayOffsetsConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
@@ -24,7 +23,6 @@ import java.util.function.BooleanSupplier;
  */
 public final class BukkitBedrockConverterContext implements BedrockConverterContext {
     private final BooleanSupplier runCancellation;
-    private final BedrockDisplayOffsets.Snapshot offsets;
 
     /**
      * Adapter exposing MagmaCore's static {@code Logger} as the converter
@@ -43,7 +41,6 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
 
     public BukkitBedrockConverterContext(BooleanSupplier runCancellation) {
         this.runCancellation = runCancellation == null ? () -> false : runCancellation;
-        this.offsets = captureDisplayOffsets();
     }
 
     @Override
@@ -150,20 +147,5 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
         File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
         BedrockOutputPublication.Snapshot publication = BedrockOutputPublication.current(outputDir);
         return publication == null ? null : publication.mappings();
-    }
-
-    @Override
-    public BedrockDisplayOffsets.Snapshot displayOffsets() {
-        return offsets;
-    }
-
-    private static BedrockDisplayOffsets.Snapshot captureDisplayOffsets() {
-        return new BedrockDisplayOffsets.Snapshot(
-                BedrockDisplayOffsetsConfig.getThirdPersonBaseRotationX(),
-                BedrockDisplayOffsetsConfig.getThirdPersonBaseRotationY(),
-                BedrockDisplayOffsetsConfig.getThirdPersonBaseRotationZ(),
-                BedrockDisplayOffsetsConfig.getThirdPersonBasePositionX(),
-                BedrockDisplayOffsetsConfig.getThirdPersonBasePositionY(),
-                BedrockDisplayOffsetsConfig.getThirdPersonBasePositionZ());
     }
 }

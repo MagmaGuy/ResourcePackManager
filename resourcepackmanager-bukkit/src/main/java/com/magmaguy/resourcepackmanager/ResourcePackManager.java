@@ -21,7 +21,6 @@ import com.magmaguy.resourcepackmanager.commands.DataComplianceRequestCommand;
 import com.magmaguy.resourcepackmanager.commands.ReloadCommand;
 import com.magmaguy.resourcepackmanager.commands.StatusCommand;
 import com.magmaguy.resourcepackmanager.commands.VerboseLoggingCommand;
-import com.magmaguy.resourcepackmanager.config.BedrockDisplayOffsetsConfig;
 import com.magmaguy.resourcepackmanager.config.BlueprintFolder;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderCommand;
 import com.magmaguy.resourcepackmanager.itemsadder.ItemsAdderDismissedConfig;
@@ -166,9 +165,6 @@ public class ResourcePackManager extends JavaPlugin {
     }
 
     private void asyncInitialization(PluginInitializationContext initializationContext) {
-        initializationContext.step("Bedrock Display Offsets Config");
-        new BedrockDisplayOffsetsConfig();
-
         initializationContext.step("Bedrock Mappings Pre-deploy");
         BedrockConversion.deployPreviousMappingsIfNeeded(new BukkitBedrockConverterContext());
 

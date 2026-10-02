@@ -521,7 +521,7 @@ public class Mix {
 
     private static String bedrockIdentity(BukkitBedrockConverterContext context) {
         return BedrockConversion.OUTPUT_REVISION + "|" + context.isBedrockConversionEnabled()
-                + "|" + context.isBedrockTargetPresent() + "|" + context.displayOffsets();
+                + "|" + context.isBedrockTargetPresent();
     }
 
     private static String verifiedJavaArchive(String inputFingerprint, File outputFolder, BooleanSupplier cancelled) {

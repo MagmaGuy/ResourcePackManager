@@ -63,7 +63,7 @@ import java.util.zip.ZipFile;
  * the {@link BedrockConverterContext}.</p>
  */
 public class BedrockConversion {
-    public static final String OUTPUT_REVISION = "first-person-rig-v1";
+    public static final String OUTPUT_REVISION = "held-item-rig-v1";
 
     public static final String BEDROCK_PACK_NAME = "ResourcePackManager_Bedrock";
     public static final String GEYSER_MAPPINGS_NAME = "rspm_geyser_mappings.json";
@@ -127,7 +127,6 @@ public class BedrockConversion {
     public static boolean generate(File mergedJavaPack, File outputDir, BedrockConverterContext ctx) {
         BedrockLog.set(ctx.logger());
         BedrockLog.setDebug(ctx.isBedrockConverterDebug());
-        BedrockDisplayOffsets.set(ctx.displayOffsets());
         File publicationStaging = new File(outputDir,
                 ".rspm-bedrock-publication-" + UUID.randomUUID());
         File pendingMappings = new File(publicationStaging, GEYSER_MAPPINGS_NAME);
@@ -298,7 +297,6 @@ public class BedrockConversion {
         } finally {
             recursivelyDelete(publicationStaging);
             BedrockLog.set(null);
-            BedrockDisplayOffsets.set(null);
         }
     }
 

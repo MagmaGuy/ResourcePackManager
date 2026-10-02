@@ -146,16 +146,6 @@ public interface BedrockConverterContext {
     }
 
     /**
-     * Snapshot of the 6 user-tunable third-person display-transform offsets passed to
-     * {@code FmmAnimationGenerator}. Backend impl reads its YAML-backed config;
-     * proxy impl returns {@link BedrockDisplayOffsets.Snapshot#defaults()}
-     * (the inherited Rainbow tuning).
-     */
-    default BedrockDisplayOffsets.Snapshot displayOffsets() {
-        return BedrockDisplayOffsets.Snapshot.defaults();
-    }
-
-    /**
      * True when the platform is shutting down and conversion should stop before
      * touching any more plugin classes or output files. Long-running conversion
      * phases poll this cooperatively so the platform can wait for a clean exit
