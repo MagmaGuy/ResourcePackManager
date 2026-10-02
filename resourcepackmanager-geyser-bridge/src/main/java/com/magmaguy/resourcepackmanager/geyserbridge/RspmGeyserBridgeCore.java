@@ -337,6 +337,22 @@ public class RspmGeyserBridgeCore {
 
             int loaded = 0;
             try (ZipFile zipFile = new ZipFile(packPath.toFile())) {
+                ControllerPropertyIndex controllers = new ControllerPropertyIndex();
+                Enumeration<? extends ZipEntry> controllerEntries = zipFile.entries();
+                while (controllerEntries.hasMoreElements()) {
+                    ZipEntry entry = controllerEntries.nextElement();
+                    String name = entry.getName();
+                    if (entry.isDirectory() || !name.endsWith(".json")
+                            || !(name.startsWith("animation_controllers/") || name.startsWith("render_controllers/"))) {
+                        continue;
+                    }
+                    try {
+                        controllers.addControllerFile(readZipEntry(zipFile, entry));
+                    } catch (RuntimeException unreadable) {
+                        // One malformed controller must not hide every other entity's properties.
+                    }
+                }
+
                 Enumeration<? extends ZipEntry> entries = zipFile.entries();
                 while (entries.hasMoreElements()) {
                     ZipEntry entry = entries.nextElement();
@@ -352,7 +368,7 @@ public class RspmGeyserBridgeCore {
                     }
 
                     BridgeEntityDefinition definition = new BridgeEntityDefinition(
-                            identifier, 1.0f, 2.0f, readPropertyDefinitions(zipFile, entry));
+                            identifier, 1.0f, 2.0f, readPropertyDefinitions(zipFile, entry, controllers));
                     BridgeEntityDefinition merged = mergeDefinition(DEFINITIONS.get(identifier), definition);
                     DEFINITIONS.put(identifier, merged);
                     loaded++;
@@ -410,16 +426,32 @@ public class RspmGeyserBridgeCore {
         }
     }
 
-    private List<BridgePropertyDefinition> readPropertyDefinitions(ZipFile zipFile, ZipEntry entityEntry) throws Exception {
+    private List<BridgePropertyDefinition> readPropertyDefinitions(ZipFile zipFile, ZipEntry entityEntry,
+                                                                   ControllerPropertyIndex controllers) throws Exception {
         String modelId = modelIdFromEntityEntry(entityEntry.getName());
         if (modelId == null) {
             return List.of();
         }
 
         Map<String, BridgePropertyDefinition> properties = new LinkedHashMap<>();
+        JsonObject description = readClientEntityDescription(zipFile, entityEntry);
+        if (description != null) {
+            for (String property : controllers.propertiesFor(description)) {
+                properties.putIfAbsent(property, new BridgePropertyDefinition(property, "INT"));
+            }
+        }
         collectIntegerPropertyReferences(zipFile, "animation_controllers/" + modelId + ".animation_controllers.json", properties);
         collectIntegerPropertyReferences(zipFile, "render_controllers/" + modelId + ".render_controllers.json", properties);
         return List.copyOf(properties.values());
+    }
+
+    private JsonObject readClientEntityDescription(ZipFile zipFile, ZipEntry entry) throws Exception {
+        try (Reader reader = new InputStreamReader(zipFile.getInputStream(entry), StandardCharsets.UTF_8)) {
+            JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
+            JsonObject clientEntity = root.has("minecraft:client_entity")
+                    ? root.getAsJsonObject("minecraft:client_entity") : null;
+            return clientEntity == null || !clientEntity.has("description") ? null : clientEntity.getAsJsonObject("description");
+        }
     }
 
     private String modelIdFromEntityEntry(String entryName) {
