@@ -86,7 +86,7 @@ public class DefaultConfig extends ConfigurationFile {
 
     @Override
     public void initializeValues() {
-        NightbreakPluginUpdater.setAutoDownloadConfigDefault(fileConfiguration);
+        NightbreakPluginUpdater.setAutoDownloadConfigDefault(fileConfiguration, false);
 
         priorityOrder = ConfigurationEngine.setList(
                 List.of(

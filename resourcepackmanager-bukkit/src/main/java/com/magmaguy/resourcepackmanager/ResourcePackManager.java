@@ -8,6 +8,7 @@ import com.magmaguy.magmacore.initialization.PluginInitializationState;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginBootstrap;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginHooks;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginSpec;
+import com.magmaguy.magmacore.nightbreak.NightbreakPluginHotSwap;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginUpdater;
 import com.magmaguy.magmacore.nightbreak.NightbreakSetupControls;
 import com.magmaguy.magmacore.util.Logger;
@@ -80,6 +81,10 @@ public class ResourcePackManager extends JavaPlugin {
                 "                                    |___/         ");
         Bukkit.getLogger().info("ResourcePackManager v." + this.getDescription().getVersion());
         plugin = this;
+        // The Geyser extension half of this jar only loads when Geyser starts, so a
+        // swapped plugin would run against the old extension until a restart.
+        NightbreakPluginHotSwap.requireRestartForUpdates(this,
+                "its Geyser extension only loads when Geyser starts.");
         pluginUpdateListener = NightbreakPluginUpdater.onPluginUpdateDownloaded(
                 this, result -> {
                     if (!BackendPluginUpdateArtifactProvider.recordDownloaded(
@@ -129,8 +134,16 @@ public class ResourcePackManager extends JavaPlugin {
         MagmaCore.createInstance(this);
     }
 
+    private volatile Metrics metrics;
+
     @Override
     public void onDisable() {
+        // bStats runs its own scheduler thread; without this every reload leaves one
+        // reporting for, and holding on to, the previous instance.
+        if (metrics != null) {
+            metrics.shutdown();
+            metrics = null;
+        }
         boolean shutdownDuringInitialization =
                 MagmaCore.getInitializationState(this.getName())
                         == PluginInitializationState.INITIALIZING;
@@ -216,7 +229,7 @@ public class ResourcePackManager extends JavaPlugin {
         commandManager.registerCommand(new StatusCommand());
 
         initializationContext.step("Metrics");
-        new Metrics(this, 22867);
+        metrics = new Metrics(this, 22867);
 
         initializationContext.step("Version Check");
         MagmaCore.checkVersionUpdate("118574", "https://nightbreak.io/plugin/resourcepackmanager/");
