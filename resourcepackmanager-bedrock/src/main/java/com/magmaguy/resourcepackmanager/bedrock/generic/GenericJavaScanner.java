@@ -14,7 +14,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -23,6 +25,8 @@ import java.util.function.BooleanSupplier;
  * such as {@code assets/minecraft/items/carrot_on_a_stick.json} are where many packs
  * define their custom-model-data branches.
  * All plugin namespaces are processed uniformly; there is no FMM-specific carve-out.
+ * A producer can leave items out of the conversion by declaring them Java-only, see
+ * {@link #JAVA_ONLY_DIR}.
  *
  * <p>This is the entry point of the generic Java→Bedrock pipeline. Subsequent phases
  * (model walker, base-item resolver, geometry/attachable emission) consume the
@@ -32,6 +36,16 @@ import java.util.function.BooleanSupplier;
  * records but no conversion is performed.
  */
 public final class GenericJavaScanner {
+
+    /**
+     * Producers declare Java-only items with {@code assets/<ns>/rspm_item_java_only/<path>.json}.
+     * The declaration leaves out {@code items/<path>.json} and every items definition under
+     * {@code items/<path>/}, so they get no Geyser mapping, icon or attachable. Only the file's
+     * presence matters; producers write {@code {}}. FreeMinecraftModels declares the sprite items
+     * of each particle effect, which only its Java item displays show while Bedrock players get
+     * the native particle.
+     */
+    static final String JAVA_ONLY_DIR = "rspm_item_java_only";
 
     private GenericJavaScanner() {}
 
@@ -53,12 +67,14 @@ public final class GenericJavaScanner {
         if (namespaceDirs == null) return result;
         Arrays.sort(namespaceDirs, Comparator.comparing(File::getName));
 
+        int javaOnlySkipped = 0;
         for (File nsDir : namespaceDirs) {
             if (isCancelled(cancellationRequested)) return result;
             String namespace = nsDir.getName();
             File itemsDir = new File(nsDir, "items");
             if (!itemsDir.isDirectory()) continue;
-            scanItemsDir(namespace, itemsDir, "", result, cancellationRequested);
+            javaOnlySkipped += scanItemsDir(namespace, itemsDir, "", javaOnlyDeclarations(nsDir),
+                    result, cancellationRequested);
         }
 
         if (isCancelled(cancellationRequested)) return result;
@@ -73,12 +89,14 @@ public final class GenericJavaScanner {
         BedrockLog.debug("[BedrockConverter] Generic scanner: discovered " + result.size()
                 + " item definitions (" + modernCount + " modern, "
                 + legacyCount + " legacy overrides) across "
-                + namespaceDirs.length + " namespace(s).");
+                + namespaceDirs.length + " namespace(s); left out " + javaOnlySkipped
+                + " Java-only path(s).");
 
         // Surface unsupported pack layouts on the console (not just debug). Legacy
         // custom_model_data overrides are supported above; this warning is reserved for
-        // packs where neither modern definitions nor convertible legacy overrides exist.
-        if (result.isEmpty() && looksLikeCustomPack(assetsDir, namespaceDirs)) {
+        // packs where neither modern definitions nor convertible legacy overrides exist,
+        // and not to items their producer declared Java-only.
+        if (result.isEmpty() && javaOnlySkipped == 0 && looksLikeCustomPack(assetsDir, namespaceDirs)) {
             BedrockLog.warn("[BedrockConverter] This resource pack contains custom models/textures but NO "
                     + "convertible item definitions were found. It is almost certainly in a legacy/unsupported "
                     + "format (e.g. an old ItemsAdder pack predating Minecraft 1.21.4). RSPM can only convert the "
@@ -88,20 +106,30 @@ public final class GenericJavaScanner {
         return result;
     }
 
-    private static void scanItemsDir(String namespace, File dir, String relPath,
-                                     List<ItemsDefinition> out,
-                                     BooleanSupplier cancellationRequested) throws IOException {
+    /** @return how many files and folders a Java-only declaration left out */
+    private static int scanItemsDir(String namespace, File dir, String relPath, Set<String> javaOnly,
+                                    List<ItemsDefinition> out,
+                                    BooleanSupplier cancellationRequested) throws IOException {
         File[] entries = dir.listFiles();
-        if (entries == null) return;
+        if (entries == null) return 0;
         Arrays.sort(entries, Comparator.comparing(File::getName));
+        int skipped = 0;
         for (File entry : entries) {
-            if (isCancelled(cancellationRequested)) return;
+            if (isCancelled(cancellationRequested)) return skipped;
             if (entry.isDirectory()) {
                 String childRel = relPath.isEmpty() ? entry.getName() : relPath + "/" + entry.getName();
-                scanItemsDir(namespace, entry, childRel, out, cancellationRequested);
+                if (javaOnly.contains(childRel)) {
+                    skipped++;
+                    continue;
+                }
+                skipped += scanItemsDir(namespace, entry, childRel, javaOnly, out, cancellationRequested);
             } else if (entry.isFile() && entry.getName().endsWith(".json")) {
                 String stem = entry.getName().substring(0, entry.getName().length() - ".json".length());
                 String fullRel = relPath.isEmpty() ? stem : relPath + "/" + stem;
+                if (javaOnly.contains(fullRel)) {
+                    skipped++;
+                    continue;
+                }
                 try (FileReader reader = new FileReader(entry, StandardCharsets.UTF_8)) {
                     JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
                     out.add(new ItemsDefinition(namespace, fullRel, entry, root));
@@ -109,6 +137,28 @@ public final class GenericJavaScanner {
                     throw new IOException("Failed to parse items definition "
                             + entry.getPath(), e);
                 }
+            }
+        }
+        return skipped;
+    }
+
+    /** The {@code <path>} of every {@link #JAVA_ONLY_DIR} declaration in a namespace. */
+    private static Set<String> javaOnlyDeclarations(File namespaceDir) {
+        Set<String> declared = new HashSet<>();
+        collectJavaOnlyDeclarations(new File(namespaceDir, JAVA_ONLY_DIR), "", declared);
+        return declared;
+    }
+
+    private static void collectJavaOnlyDeclarations(File dir, String relPath, Set<String> out) {
+        File[] entries = dir.listFiles();
+        if (entries == null) return;
+        for (File entry : entries) {
+            String name = entry.getName();
+            if (entry.isDirectory()) {
+                collectJavaOnlyDeclarations(entry, relPath.isEmpty() ? name : relPath + "/" + name, out);
+            } else if (entry.isFile() && name.endsWith(".json")) {
+                String stem = name.substring(0, name.length() - ".json".length());
+                out.add(relPath.isEmpty() ? stem : relPath + "/" + stem);
             }
         }
     }
