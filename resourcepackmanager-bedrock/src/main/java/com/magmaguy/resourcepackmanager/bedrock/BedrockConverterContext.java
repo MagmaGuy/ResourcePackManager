@@ -146,7 +146,7 @@ public interface BedrockConverterContext {
     }
 
     /**
-     * Snapshot of the 12 user-tunable display-transform offsets passed to
+     * Snapshot of the 6 user-tunable third-person display-transform offsets passed to
      * {@code FmmAnimationGenerator}. Backend impl reads its YAML-backed config;
      * proxy impl returns {@link BedrockDisplayOffsets.Snapshot#defaults()}
      * (the inherited Rainbow tuning).

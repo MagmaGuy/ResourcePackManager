@@ -63,7 +63,7 @@ import java.util.zip.ZipFile;
  * the {@link BedrockConverterContext}.</p>
  */
 public class BedrockConversion {
-    public static final String OUTPUT_REVISION = "mapping-identity-texture-aliases-v2";
+    public static final String OUTPUT_REVISION = "first-person-rig-v1";
 
     public static final String BEDROCK_PACK_NAME = "ResourcePackManager_Bedrock";
     public static final String GEYSER_MAPPINGS_NAME = "rspm_geyser_mappings.json";

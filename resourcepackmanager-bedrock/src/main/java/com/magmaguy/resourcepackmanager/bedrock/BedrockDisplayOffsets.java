@@ -4,8 +4,9 @@ package com.magmaguy.resourcepackmanager.bedrock;
  * Static snapshot of the user-tunable display-transform offsets applied during
  * Java→Bedrock animation conversion. Set once at the start of
  * {@link BedrockConversion#generate} from the {@link BedrockConverterContext} and
- * read by {@code FmmAnimationGenerator} when it computes the first-/third-person
- * base rotation+position offsets.
+ * read by {@code FmmAnimationGenerator} when it computes the third-person base
+ * rotation+position offsets. First person has no offsets: it is derived from the
+ * vanilla Bedrock first-person rig ({@code FirstPersonTransform}).
  *
  * <p>Same pattern as {@link BedrockLog}: rather than thread a snapshot parameter
  * through every animation/attachable helper, install it in a static slot for the
@@ -16,22 +17,16 @@ package com.magmaguy.resourcepackmanager.bedrock;
  * <p>The backend's Bukkit context reads from
  * {@code BedrockDisplayOffsetsConfig} (YAML-backed); the proxy context returns
  * {@link Snapshot#defaults()} because proxy admins are not expected to tweak
- * display offsets (and there's no obvious place for a 12-field YAML on the
+ * display offsets (and there's no obvious place for that YAML on the
  * proxy plugin).</p>
  */
 public final class BedrockDisplayOffsets {
 
     /**
-     * Twelve doubles, six per perspective. See
-     * {@code BedrockDisplayOffsetsConfig} for human-readable per-field docs.
+     * Six third-person doubles. See {@code BedrockDisplayOffsetsConfig} for
+     * human-readable per-field docs.
      */
     public record Snapshot(
-            double firstPersonBaseRotationX,
-            double firstPersonBaseRotationY,
-            double firstPersonBaseRotationZ,
-            double firstPersonBasePositionX,
-            double firstPersonBasePositionY,
-            double firstPersonBasePositionZ,
             double thirdPersonBaseRotationX,
             double thirdPersonBaseRotationY,
             double thirdPersonBaseRotationZ,
@@ -45,8 +40,6 @@ public final class BedrockDisplayOffsets {
          */
         public static Snapshot defaults() {
             return new Snapshot(
-                    -60.0, 123.0, 170.0,
-                    -8.0, 7.5, -5.0,
                     90.0, 0.0, 0.0,
                     0.0, 6.0, -10.0);
         }
@@ -66,12 +59,6 @@ public final class BedrockDisplayOffsets {
 
     // Getters use the `get<Field>()` prefix to match the legacy
     // BedrockDisplayOffsetsConfig public API the call sites already depend on.
-    public static double getFirstPersonBaseRotationX() { return current.firstPersonBaseRotationX(); }
-    public static double getFirstPersonBaseRotationY() { return current.firstPersonBaseRotationY(); }
-    public static double getFirstPersonBaseRotationZ() { return current.firstPersonBaseRotationZ(); }
-    public static double getFirstPersonBasePositionX() { return current.firstPersonBasePositionX(); }
-    public static double getFirstPersonBasePositionY() { return current.firstPersonBasePositionY(); }
-    public static double getFirstPersonBasePositionZ() { return current.firstPersonBasePositionZ(); }
     public static double getThirdPersonBaseRotationX() { return current.thirdPersonBaseRotationX(); }
     public static double getThirdPersonBaseRotationY() { return current.thirdPersonBaseRotationY(); }
     public static double getThirdPersonBaseRotationZ() { return current.thirdPersonBaseRotationZ(); }

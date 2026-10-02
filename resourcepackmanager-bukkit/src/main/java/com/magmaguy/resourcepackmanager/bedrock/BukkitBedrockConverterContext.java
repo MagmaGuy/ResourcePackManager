@@ -159,12 +159,6 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
 
     private static BedrockDisplayOffsets.Snapshot captureDisplayOffsets() {
         return new BedrockDisplayOffsets.Snapshot(
-                BedrockDisplayOffsetsConfig.getFirstPersonBaseRotationX(),
-                BedrockDisplayOffsetsConfig.getFirstPersonBaseRotationY(),
-                BedrockDisplayOffsetsConfig.getFirstPersonBaseRotationZ(),
-                BedrockDisplayOffsetsConfig.getFirstPersonBasePositionX(),
-                BedrockDisplayOffsetsConfig.getFirstPersonBasePositionY(),
-                BedrockDisplayOffsetsConfig.getFirstPersonBasePositionZ(),
                 BedrockDisplayOffsetsConfig.getThirdPersonBaseRotationX(),
                 BedrockDisplayOffsetsConfig.getThirdPersonBaseRotationY(),
                 BedrockDisplayOffsetsConfig.getThirdPersonBaseRotationZ(),

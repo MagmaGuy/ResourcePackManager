@@ -19,8 +19,9 @@ import java.nio.file.Files;
  * Generates per-item Bedrock animation JSON containing the three Rainbow-style
  * animations (hold_first_person, hold_third_person, head) for one model bone.
  *
- * Uses the axis mapping from org.geysermc.rainbow.mapping.animation.AnimationMapper
- * with community-tuned FMM held-item base transforms.
+ * First person is derived from the vanilla Bedrock first-person rig so the held model matches
+ * Java (see {@link FirstPersonTransform}). Third person uses the axis mapping from
+ * org.geysermc.rainbow.mapping.animation.AnimationMapper with community-tuned base transforms.
  *
  * Layout: one file per identifier at animations/&lt;modelName&gt;__&lt;boneName&gt;.animation.json
  * containing three animation entries:
@@ -31,7 +32,6 @@ import java.nio.file.Files;
  * Each entry: loop=true, single bone "bone" with position/rotation/scale arrays.
  *
  * Default held-item transforms:
- *   First person base: rotation (-60, 123, 170), position (-8, 7.5, -5)
  *   Third person base: rotation (+90, 0, 0), position (0, 6, -10)
  *   Head base:         position (0, 20, 0), scale 0.655
  * If a Java display.head transform is provided, the formula in Rainbow's
@@ -49,7 +49,7 @@ public final class FmmAnimationGenerator {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
-    // First/third-person base values are user-tunable via BedrockDisplayOffsets.
+    // Third-person base values are user-tunable via BedrockDisplayOffsets.
     // Head values stay as compile-time constants — they belong to a separate render
     // path (head-slot display, not held-in-hand) and aren't part of the offset-tuning
     // workflow the user-facing config exposes.
@@ -61,16 +61,16 @@ public final class FmmAnimationGenerator {
     private FmmAnimationGenerator() {}
 
     /**
-     * Optional Java display.head transform input. When null, identity is used,
-     * yielding Rainbow's base values: position (0, 20, 0), rotation (0, 0, 0),
+     * One Java {@code display.<slot>} transform. When a slot is null, identity is used;
+     * for the head that yields Rainbow's base values: position (0, 20, 0), rotation (0, 0, 0),
      * scale (0.655, 0.655, 0.655).
      */
     public static final class JavaDisplay {
-        public final double[] translation; // 3-element
+        public final double[] translation; // 3-element, pixels
         public final double[] rotation;    // 3-element, degrees
-        public final double scale;         // uniform scale
+        public final double[] scale;       // 3-element; head and third person use the X component
 
-        public JavaDisplay(double[] translation, double[] rotation, double scale) {
+        public JavaDisplay(double[] translation, double[] rotation, double[] scale) {
             this.translation = translation;
             this.rotation = rotation;
             this.scale = scale;
@@ -84,28 +84,26 @@ public final class FmmAnimationGenerator {
      * Writes one animation file containing all three Rainbow-style animations.
      *
      * <p>Each of the three display arguments is optional; when null, the corresponding
-     * pose falls back to the configured base values. The first/third-person formulas
-     * (when displays are provided) retain Rainbow's axis mapping while adding the
+     * pose uses Java's identity transform (first person) or the configured base values.
+     * First person is solved by {@link FirstPersonTransform}. The third-person formula
+     * (when a display is provided) retains Rainbow's axis mapping while adding the
      * community-tuned defaults shown here:
      * <pre>
-     *   FIRST-PERSON
-     *   fp_rot = (-60 + jr.y, 123 - jr.z, 170 + jr.x)
-     *   fp_pos = (-8 - jt.y, 7.5 + jt.z, -5 + jt.x)
-     *
-     *   THIRD-PERSON
      *   tp_rot = (+90 + jr.x, -jr.z, -jr.y)
      *   tp_pos = (-jt.x, 6 + jt.z, -10 - jt.y)
      * </pre>
      *
      * <p>Critical: the {@code /0.0625} step Rainbow does is SKIPPED. RSPM reads the bone
      * JSON directly so translations are already in pixel units (same reason as the
-     * existing head-display fix, see lines 117-122 below).
+     * existing head-display fix below).
      *
      * @param animBaseId             identifier base (without "animation." prefix)
      * @param fileBaseName           filename base; output is animations/&lt;fileBaseName&gt;.animation.json
      * @param javaHeadDisplay        optional Java display.head transform; null = identity
      * @param javaFirstPersonDisplay optional Java display.firstperson_righthand transform; null = identity
      * @param javaThirdPersonDisplay optional Java display.thirdperson_righthand transform; null = identity
+     * @param bonePivot              pivot of the geometry bone the animations drive, in Bedrock file
+     *                               coordinates ({@code FmmGeometryConverter.bonePivot})
      * @param bedrockPackDir         pack root
      * @return the three fully-qualified animation identifiers, or null on failure
      */
@@ -114,56 +112,16 @@ public final class FmmAnimationGenerator {
                                         JavaDisplay javaHeadDisplay,
                                         JavaDisplay javaFirstPersonDisplay,
                                         JavaDisplay javaThirdPersonDisplay,
+                                        double[] bonePivot,
                                         File bedrockPackDir) {
         String fpId = "animation." + animBaseId + ".hold_first_person";
         String tpId = "animation." + animBaseId + ".hold_third_person";
         String hdId = "animation." + animBaseId + ".head";
 
-        // First-person base offsets — user-tunable via bedrock_display_offsets.yml.
-        // Defaults use the community-tuned FMM pose: rotation (-60, 123, 170),
-        // position (-8, 7.5, -5). The base offsets are added on every axis so a
-        // user reporting "the model floats too high in first person" can adjust
-        // firstPersonBasePositionX directly without touching code.
-        double fpBaseRotX = BedrockDisplayOffsets.getFirstPersonBaseRotationX();
-        double fpBaseRotY = BedrockDisplayOffsets.getFirstPersonBaseRotationY();
-        double fpBaseRotZ = BedrockDisplayOffsets.getFirstPersonBaseRotationZ();
-        double fpBasePosX = BedrockDisplayOffsets.getFirstPersonBasePositionX();
-        double fpBasePosY = BedrockDisplayOffsets.getFirstPersonBasePositionY();
-        double fpBasePosZ = BedrockDisplayOffsets.getFirstPersonBasePositionZ();
-
-        // First-person: identity defaults, then layer Java display.firstperson_righthand if provided.
-        double[] fpPos;
-        double[] fpRot;
-        double[] fpScale;
-        if (javaFirstPersonDisplay == null) {
-            fpPos = new double[]{fpBasePosX, fpBasePosY, fpBasePosZ};
-            fpRot = new double[]{fpBaseRotX, fpBaseRotY, fpBaseRotZ};
-            fpScale = new double[]{1.0, 1.0, 1.0};
-        } else {
-            // fp_rot = (base_x + jr.y, base_y + -jr.z, base_z + jr.x)
-            fpRot = new double[]{
-                    fpBaseRotX + javaFirstPersonDisplay.rotation[1],
-                    fpBaseRotY + -javaFirstPersonDisplay.rotation[2],
-                    fpBaseRotZ + javaFirstPersonDisplay.rotation[0]
-            };
-            // fp_pos = (base_x + -jt.y, base_y + jt.z, base_z + jt.x)
-            // Skip Rainbow's /0.0625 step — RSPM reads pixel-unit JSON directly.
-            double jtx = javaFirstPersonDisplay.translation[0];
-            double jty = javaFirstPersonDisplay.translation[1];
-            double jtz = javaFirstPersonDisplay.translation[2];
-            fpPos = new double[]{
-                    fpBasePosX + -jty,
-                    fpBasePosY + jtz,
-                    fpBasePosZ + jtx
-            };
-            double s = javaFirstPersonDisplay.scale;
-            fpScale = new double[]{s, s, s};
-        }
+        FirstPersonTransform.BoneTransform firstPerson =
+                FirstPersonTransform.fromJava(javaFirstPersonDisplay, bonePivot);
 
         // Third-person base offsets — user-tunable via bedrock_display_offsets.yml.
-        // First- and third-person are independent Bedrock render paths with their
-        // own rest poses, so they get fully independent knob sets. Adjusting one
-        // does not affect the other.
         double tpBaseRotX = BedrockDisplayOffsets.getThirdPersonBaseRotationX();
         double tpBaseRotY = BedrockDisplayOffsets.getThirdPersonBaseRotationY();
         double tpBaseRotZ = BedrockDisplayOffsets.getThirdPersonBaseRotationZ();
@@ -203,7 +161,7 @@ public final class FmmAnimationGenerator {
                     tpBasePosY + jtz,
                     tpBasePosZ + -jty
             };
-            double s = javaThirdPersonDisplay.scale;
+            double s = javaThirdPersonDisplay.scale[0];
             tpScale = new double[]{s, s, s};
         }
 
@@ -237,12 +195,12 @@ public final class FmmAnimationGenerator {
                     javaHeadDisplay.rotation[2]
             };
             // headScale = Java.scale * 0.655
-            double s = javaHeadDisplay.scale * HEAD_SCALE_FACTOR;
+            double s = javaHeadDisplay.scale[0] * HEAD_SCALE_FACTOR;
             headScale = new double[]{s, s, s};
         }
 
         JsonObject animations = new JsonObject();
-        animations.add(fpId, buildAnim(fpPos, fpRot, fpScale));
+        animations.add(fpId, buildAnim(firstPerson.position(), firstPerson.rotation(), firstPerson.scale()));
         animations.add(tpId, buildAnim(tpPos, tpRot, tpScale));
         animations.add(hdId, buildAnim(headPos, headRot, headScale));
 

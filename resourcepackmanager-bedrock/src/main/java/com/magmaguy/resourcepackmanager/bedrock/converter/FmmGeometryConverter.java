@@ -69,9 +69,6 @@ public class FmmGeometryConverter {
         String geometryId = geometryIdentifier;
 
         JsonArray cubes = new JsonArray();
-        double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE, minZ = Double.MAX_VALUE;
-        double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
-
         for (JsonElement el : elements) {
             if (!el.isJsonObject()) continue;
             JsonObject element = el.getAsJsonObject();
@@ -80,42 +77,19 @@ public class FmmGeometryConverter {
             JsonObject cube = convertElement(element, spriteMap, atlasWidth, atlasHeight);
             if (cube == null) continue;
             cubes.add(cube);
-
-            // Track bounding box in centred coordinates
-            JsonArray from = element.getAsJsonArray("from");
-            JsonArray to = element.getAsJsonArray("to");
-            double fx = from.get(0).getAsDouble() - CENTRE_X;
-            double fy = from.get(1).getAsDouble() - CENTRE_Y;
-            double fz = from.get(2).getAsDouble() - CENTRE_Z;
-            double tx = to.get(0).getAsDouble() - CENTRE_X;
-            double ty = to.get(1).getAsDouble() - CENTRE_Y;
-            double tz = to.get(2).getAsDouble() - CENTRE_Z;
-            minX = Math.min(minX, Math.min(fx, tx));
-            minY = Math.min(minY, Math.min(fy, ty));
-            minZ = Math.min(minZ, Math.min(fz, tz));
-            maxX = Math.max(maxX, Math.max(fx, tx));
-            maxY = Math.max(maxY, Math.max(fy, ty));
-            maxZ = Math.max(maxZ, Math.max(fz, tz));
         }
 
         if (cubes.isEmpty()) return null;
 
-        // Bone pivot = center of bounding box, X inverted. The visual Y offset
-        // needed to compensate for FMM's Bedrock-only entity Y-lift is applied as
-        // an animation translation in FmmAnimationGenerator (HEAD_BASE_POS_Y), NOT
-        // as a pivot offset here — moving the pivot away from cube centre breaks
-        // rotations.
-        double pivotX = -((minX + maxX) / 2.0);
-        double pivotY = (minY + maxY) / 2.0;
-        double pivotZ = (minZ + maxZ) / 2.0;
+        double[] pivot = bonePivot(javaModel);
 
         // Build bone — field order matches Rainbow's Bone.CODEC: name, binding, pivot, cubes
         JsonObject bone = new JsonObject();
         bone.addProperty("name", "bone");
         bone.addProperty("binding", "q.item_slot_to_bone_name(context.item_slot)");
         // Rainbow's codec omits pivot when it's (0,0,0); mirror that behavior.
-        if (pivotX != 0 || pivotY != 0 || pivotZ != 0) {
-            bone.add("pivot", toArray(pivotX, pivotY, pivotZ));
+        if (pivot[0] != 0 || pivot[1] != 0 || pivot[2] != 0) {
+            bone.add("pivot", toArray(pivot[0], pivot[1], pivot[2]));
         }
         bone.add("cubes", cubes);
 
@@ -156,6 +130,46 @@ public class FmmGeometryConverter {
             BedrockLog.warn("[BedrockConverter] Failed to write geometry " + geoFile.getPath() + ": " + e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Pivot of the single geometry bone, in Bedrock geometry coordinates: the centre of the
+     * elements' bounding box with X inverted. The visual Y offset needed to compensate for
+     * FMM's Bedrock-only entity Y-lift is applied as an animation translation in
+     * FmmAnimationGenerator (HEAD_BASE_POS_Y), NOT as a pivot offset here — moving the pivot
+     * away from cube centre breaks rotations. The held-item animations read this pivot so
+     * they can place the model independently of it.
+     *
+     * @return {x, y, z}; (0, 0, 0) when the model has no elements with {@code from}/{@code to}
+     */
+    static double[] bonePivot(JsonObject javaModel) {
+        double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE, minZ = Double.MAX_VALUE;
+        double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
+        boolean found = false;
+        if (javaModel != null && javaModel.has("elements") && javaModel.get("elements").isJsonArray()) {
+            for (JsonElement el : javaModel.getAsJsonArray("elements")) {
+                if (!el.isJsonObject()) continue;
+                JsonObject element = el.getAsJsonObject();
+                if (!element.has("from") || !element.has("to")) continue;
+                JsonArray from = element.getAsJsonArray("from");
+                JsonArray to = element.getAsJsonArray("to");
+                double fx = from.get(0).getAsDouble() - CENTRE_X;
+                double fy = from.get(1).getAsDouble() - CENTRE_Y;
+                double fz = from.get(2).getAsDouble() - CENTRE_Z;
+                double tx = to.get(0).getAsDouble() - CENTRE_X;
+                double ty = to.get(1).getAsDouble() - CENTRE_Y;
+                double tz = to.get(2).getAsDouble() - CENTRE_Z;
+                minX = Math.min(minX, Math.min(fx, tx));
+                minY = Math.min(minY, Math.min(fy, ty));
+                minZ = Math.min(minZ, Math.min(fz, tz));
+                maxX = Math.max(maxX, Math.max(fx, tx));
+                maxY = Math.max(maxY, Math.max(fy, ty));
+                maxZ = Math.max(maxZ, Math.max(fz, tz));
+                found = true;
+            }
+        }
+        if (!found) return new double[]{0, 0, 0};
+        return new double[]{-((minX + maxX) / 2.0), (minY + maxY) / 2.0, (minZ + maxZ) / 2.0};
     }
 
     private static JsonObject convertElement(JsonObject element, Map<String, SpriteInfo> spriteMap,

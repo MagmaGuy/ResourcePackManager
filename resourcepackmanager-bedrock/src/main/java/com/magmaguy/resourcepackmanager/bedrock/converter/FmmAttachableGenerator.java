@@ -108,8 +108,10 @@ public class FmmAttachableGenerator {
      * @param animFileBase    filename stem for the animation file (no extension), e.g.
      *                        {@code "elitemobs__gear_bronze_sword"} writes to
      *                        {@code animations/<animFileBase>.animation.json}
-     * @param javaModel       parsed Java model JSON; {@code display.head} (if present) is
-     *                        forwarded to the animation generator for head-slot transform
+     * @param javaModel       parsed Java model JSON, the same one passed to
+     *                        {@link FmmGeometryConverter}; its {@code display.head},
+     *                        {@code firstperson_righthand} and {@code thirdperson_righthand}
+     *                        slots and its geometry bone pivot drive the three poses
      * @param bedrockPackDir  output pack root
      * @return the animation identifier triple on success, {@code null} on failure
      */
@@ -121,7 +123,8 @@ public class FmmAttachableGenerator {
         FmmAnimationGenerator.JavaDisplay firstPersonDisplay = parseFirstPersonDisplay(javaModel);
         FmmAnimationGenerator.JavaDisplay thirdPersonDisplay = parseThirdPersonDisplay(javaModel);
         return FmmAnimationGenerator.generate(animBaseId, animFileBase,
-                headDisplay, firstPersonDisplay, thirdPersonDisplay, bedrockPackDir);
+                headDisplay, firstPersonDisplay, thirdPersonDisplay,
+                FmmGeometryConverter.bonePivot(javaModel), bedrockPackDir);
     }
 
     /**
@@ -257,8 +260,7 @@ public class FmmAttachableGenerator {
      * Reads {@code display.firstperson_righthand} from the model JSON. Bronze-sword-style
      * source models (handheld weapons) populate this slot with the first-person rig pose;
      * FMM bones leave it absent (their only display slot is {@code head}). Returns null
-     * when the block is absent or all-identity so the caller can fall through to identity
-     * base values.
+     * when the block is absent or all-identity; first person then uses Java's identity pose.
      */
     private static FmmAnimationGenerator.JavaDisplay parseFirstPersonDisplay(JsonObject javaModel) {
         return parseDisplaySlot(javaModel, "firstperson_righthand");
@@ -276,9 +278,9 @@ public class FmmAttachableGenerator {
      * Shared parser for any {@code display.<slot>} block. Returns null when:
      *   - the model has no {@code display} object,
      *   - the named slot is absent or not a JSON object, or
-     *   - every field is identity (translation 0/0/0, rotation 0/0/0, scale 1).
+     *   - every field is identity (translation 0/0/0, rotation 0/0/0, scale 1/1/1).
      * Scale accepts either a 3-element array (FMM convention) or a scalar (vanilla
-     * pre-1.20.5 minecraft model convention).
+     * pre-1.20.5 minecraft model convention); a scalar applies to all three axes.
      */
     private static FmmAnimationGenerator.JavaDisplay parseDisplaySlot(JsonObject javaModel, String slotName) {
         if (javaModel == null || !javaModel.has("display") || !javaModel.get("display").isJsonObject()) {
@@ -298,22 +300,21 @@ public class FmmAttachableGenerator {
             JsonArray a = slot.getAsJsonArray("rotation");
             for (int i = 0; i < 3 && i < a.size(); i++) rotation[i] = a.get(i).getAsDouble();
         }
-        double scale = 1.0;
+        double[] scale = {1.0, 1.0, 1.0};
         if (slot.has("scale")) {
             JsonElement s = slot.get("scale");
             if (s.isJsonArray()) {
-                // Rainbow uses a uniform scale; both FMM and vanilla weapon models emit
-                // a 3-element array. Take the X component (all three are the same).
                 JsonArray arr = s.getAsJsonArray();
-                if (arr.size() > 0) scale = arr.get(0).getAsDouble();
+                for (int i = 0; i < 3 && i < arr.size(); i++) scale[i] = arr.get(i).getAsDouble();
             } else if (s.isJsonPrimitive()) {
-                scale = s.getAsDouble();
+                double uniform = s.getAsDouble();
+                scale = new double[]{uniform, uniform, uniform};
             }
         }
         // Early-out for identity to avoid emitting redundant non-trivial transforms.
         if (translation[0] == 0 && translation[1] == 0 && translation[2] == 0
                 && rotation[0] == 0 && rotation[1] == 0 && rotation[2] == 0
-                && scale == 1.0) {
+                && scale[0] == 1.0 && scale[1] == 1.0 && scale[2] == 1.0) {
             return null;
         }
         return new FmmAnimationGenerator.JavaDisplay(translation, rotation, scale);
