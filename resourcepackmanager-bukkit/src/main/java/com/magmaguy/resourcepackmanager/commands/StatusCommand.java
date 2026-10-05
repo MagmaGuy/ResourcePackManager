@@ -228,6 +228,9 @@ public class StatusCommand extends AdvancedCommand {
         int selfPort = DefaultConfig.getSelfHostPort();
         Logger.sendMessage(sender, "&7selfHostPort: &f"
                 + (selfPort < 0 ? "auto (MC port + " + DefaultConfig.getNetworkHttpOffset() + ")" : String.valueOf(selfPort)));
+        String lastSelfHostCheck = AutoHost.getLastSelfHostCheck();
+        Logger.sendMessage(sender, "&7Last self-host check: &f"
+                + (lastSelfHostCheck == null ? "&8(not run since startup)" : lastSelfHostCheck));
         Logger.sendMessage(sender, "");
 
         // ---------- Proxy deployment ----------

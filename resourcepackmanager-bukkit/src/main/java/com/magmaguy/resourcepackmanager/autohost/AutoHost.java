@@ -118,6 +118,12 @@ public class AutoHost {
     private static volatile PackHttpServer.FileRouteDescriptor bedrockMappingsRouteDescriptor = null;
     @Getter
     private static volatile String selfHostedUrl = null;
+    /**
+     * Result of the latest self-host check, shown by /rspm status. A failed check is the normal path on
+     * hosts without an open port, so the console only narrates it with verboseLogging on.
+     */
+    @Getter
+    private static volatile String lastSelfHostCheck = null;
     /** Ensures the delivery outcome is announced once, not on every keep-alive tick. */
     private static boolean announcedDelivery = false;
 
@@ -728,8 +734,11 @@ public class AutoHost {
      * remote-upload path doesn't announce a stale URL.
      */
     private static boolean tryVerifiedSelfHost(LifecycleRun run) {
-        if (!run.active() || !DefaultConfig.isSelfHostEnabled()
-                || Mix.getFinalResourcePack() == null) return false;
+        if (!run.active() || Mix.getFinalResourcePack() == null) return false;
+        if (!DefaultConfig.isSelfHostEnabled()) {
+            lastSelfHostCheck = "not attempted, selfHostEnabled is false";
+            return false;
+        }
 
         // Layer 1: heuristic check on resolved external host.
         String host;
@@ -738,12 +747,15 @@ public class AutoHost {
             host = externalUrl == null ? resolveExternalHost(run) : externalUrl.getHost();
         } catch (IllegalArgumentException exception) {
             Logger.warn(exception.getMessage());
+            lastSelfHostCheck = "failed: " + exception.getMessage();
             return false;
         }
         if (!run.active()) return false;
         if (host == null || isNonRoutableHost(host)) {
             RSPLogger.detail("Self-host check: local pack link is not public"
                     + formatOptionalDetail(host) + ". This is OK.");
+            lastSelfHostCheck = "failed: no public address for the pack link" + formatOptionalDetail(host)
+                    + ". Set selfHostExternalHost or selfHostExternalUrl.";
             return false;
         }
 
@@ -756,16 +768,23 @@ public class AutoHost {
         // players receive. A public probe alone cannot detect broken NAT loopback.
         int port = (selfHostServer != null) ? selfHostServer.port() : -1;
         File pack = Mix.getFinalResourcePack();
-        if (port <= 0 || !packDownloadProbe("http://127.0.0.1:" + port + "/rspm.zip", pack)) {
+        String localFailure = port <= 0 ? "no port is bound"
+                : packDownloadFailure("http://127.0.0.1:" + port + "/rspm.zip", pack);
+        if (localFailure != null) {
             if (!run.active()) return false;
             RSPLogger.detail("Self-host check: local pack server did not answer correctly. This is OK.");
+            lastSelfHostCheck = "failed: the pack web server on port " + port
+                    + " did not serve the pack locally (" + localFailure + ").";
             tearDownSelfHost();
             return false;
         }
         if (!run.active()) return false;
-        if (!packDownloadProbe(selfHostedUrl, pack)) {
+        String advertisedFailure = packDownloadFailure(selfHostedUrl, pack);
+        if (advertisedFailure != null) {
             if (!run.active()) return false;
             RSPLogger.detail("Self-host check: the advertised pack URL failed a download from this server.");
+            lastSelfHostCheck = "failed: this server could not download the pack from " + selfHostedUrl
+                    + " (" + advertisedFailure + ").";
             tearDownSelfHost();
             return false;
         }
@@ -790,6 +809,7 @@ public class AutoHost {
         if (!run.active()) return false;
         commitSelfHost(run);
         RSPLogger.detail("Self-host sanity checks passed; using self-hosting at " + selfHostedUrl);
+        lastSelfHostCheck = "passed, self-hosting at " + selfHostedUrl;
         return true;
     }
 
@@ -819,6 +839,7 @@ public class AutoHost {
         MagmaguyRspClient c = client;
         if (c == null) {
             RSPLogger.detail("Self-host check: external verification is unavailable.");
+            lastSelfHostCheck = "failed: the magmaguy.com reachability check is unavailable.";
             return false;
         }
         try {
@@ -833,11 +854,15 @@ public class AutoHost {
             }
             RSPLogger.detail("Self-host check: external pack request was not successful (HTTP "
                     + result.status() + ")" + formatOptionalDetail(result.reasonOrNull()) + ".");
+            lastSelfHostCheck = "failed: magmaguy.com could not download the pack from " + url + " (HTTP "
+                    + result.status() + ")" + formatOptionalDetail(result.reasonOrNull()) + ".";
             return false;
         } catch (java.io.IOException e) {
             if (!run.active()) return false;
             RSPLogger.detail("External reachability probe via magmaguy.com failed to "
                     + "communicate (" + e.getMessage() + "); self-hosting was not verified.");
+            lastSelfHostCheck = "failed: could not reach magmaguy.com to verify " + url
+                    + formatOptionalDetail(e.getMessage()) + ".";
             return false;
         }
     }
@@ -852,17 +877,19 @@ public class AutoHost {
      * HEAD response or an HTML error page as proof of delivery. Range-aware
      * proxies may return 206; servers ignoring Range may return 200. Neither
      * path reads the whole pack. Redirects are rejected conservatively.
+     *
+     * @return {@code null} when the URL served the pack, otherwise why it didn't
      */
-    private static boolean packDownloadProbe(String url, File pack) {
+    private static String packDownloadFailure(String url, File pack) {
         java.net.HttpURLConnection conn = null;
         try {
-            if (pack == null || !pack.isFile() || pack.length() == 0) return false;
+            if (pack == null || !pack.isFile() || pack.length() == 0) return "the merged pack file is missing";
             long packLength = pack.length();
             byte[] expected;
             try (InputStream input = Files.newInputStream(pack.toPath())) {
                 expected = input.readNBytes((int) Math.min(1024, packLength));
             }
-            if (expected.length == 0) return false;
+            if (expected.length == 0) return "the merged pack file is empty";
             java.net.URI uri = new java.net.URI(url);
             conn = (java.net.HttpURLConnection) uri.toURL().openConnection();
             conn.setRequestMethod("GET");
@@ -876,14 +903,14 @@ public class AutoHost {
             long length = conn.getContentLengthLong();
             if (code != 200 && code != 206) {
                 RSPLogger.detail("Self-host download check returned HTTP " + code + ".");
-                return false;
+                return "HTTP " + code;
             }
             long expectedLength = code == 206 ? expected.length : packLength;
             String expectedRange = "bytes 0-" + (expected.length - 1) + "/" + packLength;
             if ((length >= 0 && length != expectedLength)
                     || (code == 206 && !expectedRange.equals(conn.getHeaderField("Content-Range")))) {
                 RSPLogger.detail("Self-host download check returned an unexpected pack size or byte range.");
-                return false;
+                return "unexpected pack size or byte range";
             }
             byte[] actual = new byte[expected.length];
             long deadline = System.nanoTime() + 3_000_000_000L;
@@ -891,22 +918,23 @@ public class AutoHost {
                 int offset = 0;
                 while (offset < actual.length) {
                     long remaining = deadline - System.nanoTime();
-                    if (remaining <= 0) return false;
+                    if (remaining <= 0) return "timed out reading the pack";
                     conn.setReadTimeout((int) Math.max(1, remaining / 1_000_000L));
                     int read = input.read(actual, offset, actual.length - offset);
-                    if (read < 0) return false;
+                    if (read < 0) return "the connection closed before the pack arrived";
                     offset += read;
                 }
             }
             if (!Arrays.equals(expected, actual)) {
                 RSPLogger.detail("Self-host download check returned different data from the resource pack.");
-                return false;
+                return "it served different data from the pack";
             }
-            return true;
+            return null;
         } catch (java.io.IOException | java.net.URISyntaxException e) {
             RSPLogger.detail("Self-host download check failed"
                     + formatOptionalDetail(e.getMessage()) + ".");
-            return false;
+            return e.getMessage() == null || e.getMessage().isBlank()
+                    ? e.getClass().getSimpleName() : e.getMessage();
         } finally {
             if (conn != null) conn.disconnect();
         }
@@ -1154,6 +1182,7 @@ public class AutoHost {
             selfHostServer = null;
             selfHostedUrl = null;
         }
+        lastSelfHostCheck = null;
         javaPackRouteDescriptor = null;
         bedrockPackRouteDescriptor = null;
         bedrockMappingsRouteDescriptor = null;
@@ -1520,6 +1549,7 @@ public class AutoHost {
         if (!run.active() || !ensureSelfHostServer(run)) return false;
         if (!run.active()) return false;
         commitSelfHost(run);
+        lastSelfHostCheck = "skipped because selfHostForce is on, self-hosting unverified at " + selfHostedUrl;
         return true;
     }
 
@@ -1579,6 +1609,7 @@ public class AutoHost {
             return true;
         } catch (IOException e) {
             Logger.warn("Self-host fallback failed: " + e.getMessage());
+            lastSelfHostCheck = "failed: could not start the pack web server" + formatOptionalDetail(e.getMessage()) + ".";
             return false;
         }
     }
