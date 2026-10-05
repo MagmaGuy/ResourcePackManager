@@ -61,6 +61,8 @@ public final class MagmaguyRspClient implements AutoCloseable {
     private static final int DEFAULT_CONNECT_TIMEOUT = 30;
     // ResourcePackHoster config.file.maxSize: 50,000 KiB, not 50 MiB.
     private static final long MAX_JAVA_UPLOAD_BYTES = 50_000L * 1024L;
+    // Vanilla clients refuse to download a server pack above 250 MiB (DownloadedPackSource), whoever hosts it.
+    private static final long CLIENT_MAX_PACK_BYTES = 250L * 1024L * 1024L;
     private static volatile String requestBaseUrl = BASE_URL;
 
     /**
@@ -283,7 +285,12 @@ public final class MagmaguyRspClient implements AutoCloseable {
     private UploadResult doUpload(String uuid, File pack, String expectedSha1) throws IOException {
         long size = Files.size(pack.toPath());
         if (size > MAX_JAVA_UPLOAD_BYTES) {
-            String message = "Automatic hosting skipped: resource pack is " + size
+            String message = size > CLIENT_MAX_PACK_BYTES
+                    ? "Automatic hosting skipped: resource pack is " + size + " bytes. Minecraft clients refuse"
+                    + " server resource packs over " + CLIENT_MAX_PACK_BYTES + " bytes (250 MiB), so no host,"
+                    + " self-hosting included, can deliver it. Reduce the pack below that size, or below "
+                    + MAX_JAVA_UPLOAD_BYTES + " bytes for automatic hosting, then run /rspm reload."
+                    : "Automatic hosting skipped: resource pack is " + size
                     + " bytes; the limit is " + MAX_JAVA_UPLOAD_BYTES
                     + " bytes. Reduce the pack size or configure reachable self-hosting,"
                     + " then run /rspm reload.";
