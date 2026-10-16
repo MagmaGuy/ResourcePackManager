@@ -301,6 +301,15 @@ final class BlocksAtlasSanitizer {
             boolean requiresSafeResource = false;
             for (TextureVariant variant : variants) {
                 AnalyzedVariant analyzed = analyze(variant);
+                if (analyzed == null) {
+                    // One unreadable texture used to abort the whole merge. Minecraft skips a sprite it cannot
+                    // decode and still loads the atlas, so keep this reference as the pack shipped it.
+                    logger.warn("Left blocks-atlas texture " + resource + " unchanged because "
+                            + variant.png().toAbsolutePath() + " is not a readable PNG. Minecraft will skip this"
+                            + " sprite. Replace the file in the resource pack that ships it.");
+                    resolutions.put(resource, resource);
+                    return resource;
+                }
                 analyzedVariants.add(analyzed);
                 requiresSafeResource |= analyzed.resize().required();
             }
@@ -317,18 +326,15 @@ final class BlocksAtlasSanitizer {
             return safeResource;
         }
 
+        /** Returns null when the file is not a PNG that Java can decode. */
         private AnalyzedVariant analyze(TextureVariant variant) throws IOException {
             BufferedImage image;
             try {
                 image = ImageIO.read(variant.png().toFile());
-            } catch (IOException exception) {
-                throw new IOException("Unable to decode emitted blocks-atlas PNG: "
-                        + variant.png().toAbsolutePath(), exception);
+            } catch (IOException | RuntimeException exception) {
+                return null;
             }
-            if (image == null) {
-                throw new IOException("Unable to decode emitted blocks-atlas PNG: "
-                        + variant.png().toAbsolutePath());
-            }
+            if (image == null) return null;
 
             JsonObject metadata = readOptionalMetadata(variant.metadata());
             FrameSize frame = effectiveFrameSize(image, metadata, variant.metadata());

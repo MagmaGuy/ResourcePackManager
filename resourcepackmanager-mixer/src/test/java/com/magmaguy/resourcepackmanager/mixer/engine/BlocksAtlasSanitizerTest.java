@@ -443,13 +443,20 @@ class BlocksAtlasSanitizerTest {
     }
 
     @Test
-    void undecodableEmittedPngFailsWithItsExactPath(@TempDir Path tempDir) throws Exception {
+    void undecodableEmittedPngKeepsItsAtlasReferenceAndTheMergeSucceeds(@TempDir Path tempDir) throws Exception {
         Map<String, byte[]> entries = minimalUiDirectoryPack();
         entries.put("assets/custom/textures/ui/broken.png", new byte[]{0x13, 0x37});
-        Path pack = createPack(tempDir.resolve("broken-png.zip"), entries);
+        entries.put("assets/custom/textures/ui/icon.png", png(16, 16));
+        MixOutput output = runMix(tempDir, createPack(tempDir.resolve("broken-png.zip"), entries));
 
-        IOException error = assertThrows(IOException.class, () -> runMix(tempDir, pack));
-        assertTrue(normalizedMessage(error).contains("assets/custom/textures/ui/broken.png"), error::getMessage);
+        JsonArray sources = readJson(output.mergedDir().toPath()
+                .resolve("assets/minecraft/atlases/blocks.json")).getAsJsonArray("sources");
+        assertEquals(JsonParser.parseString("""
+                [
+                  {"type":"minecraft:single","resource":"custom:ui/broken"},
+                  {"type":"minecraft:single","resource":"custom:ui/icon"}
+                ]
+                """).getAsJsonArray(), sources);
     }
 
     @Test
