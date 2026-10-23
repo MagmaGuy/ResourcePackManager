@@ -640,7 +640,7 @@ public class AutoHost {
         // to remote upload when any layer fails. See resolveJavaHostingRoute for
         // why proxy topology deliberately plays no part in this decision.
         if (route == JavaHostingRoute.SELF_HOST_FIRST) {
-            if (tryVerifiedSelfHost(run)) {
+            if (tryVerifiedSelfHost(run, false)) {
                 return; // Self-host passed the reachability checks — we're done.
             }
             // Either the host looked non-routable, or the local HTTP server didn't
@@ -728,12 +728,16 @@ public class AutoHost {
      * They cannot establish reachability from every player's network, or validate
      * a complete client download. Forced self-hosting explicitly bypasses them.</p>
      *
+     * @param remoteUnavailable {@code true} when remote hosting has already failed.
+     *                          If magmaguy.com then can't run Layer 3 either, the pack
+     *                          is self-hosted on the strength of Layers 1 and 2, since
+     *                          the alternative is no pack at all.
      * @return {@code true} when all checks pass and self-host is now active.
      * {@code false} when the caller should fall through to remote hosting. On
      * {@code false}, the self-host server is torn down so the subsequent
      * remote-upload path doesn't announce a stale URL.
      */
-    private static boolean tryVerifiedSelfHost(LifecycleRun run) {
+    private static boolean tryVerifiedSelfHost(LifecycleRun run, boolean remoteUnavailable) {
         if (!run.active() || Mix.getFinalResourcePack() == null) return false;
         if (!DefaultConfig.isSelfHostEnabled()) {
             lastSelfHostCheck = "not attempted, selfHostEnabled is false";
@@ -796,7 +800,9 @@ public class AutoHost {
         // what actually matters for the clients we'll announce it to. Catches
         // the very common "public IP detected, port not forwarded at router"
         // failure mode that the previous two-layer check committed to silently.
-        if (!externalReachabilityProbe(run, selfHostedUrl)) {
+        ExternalProbe probe = externalReachabilityProbe(run, selfHostedUrl);
+        boolean unverifiedFallback = probe == ExternalProbe.UNVERIFIED && remoteUnavailable;
+        if (probe != ExternalProbe.REACHABLE && !unverifiedFallback) {
             if (!run.active()) return false;
             // externalReachabilityProbe logs the specific reason; teardown stops
             // the unreachable URL from being announced (see tearDownSelfHost for
@@ -808,10 +814,21 @@ public class AutoHost {
         // All checks passed — NOW commit and push the verified URL to players.
         if (!run.active()) return false;
         commitSelfHost(run);
+        if (unverifiedFallback) {
+            Logger.warn("magmaguy.com can't be reached, so the resource pack is self-hosted at " + selfHostedUrl
+                    + " after this server downloaded it from that address. Players outside your network can't"
+                    + " download it if the port isn't open to them.");
+            lastSelfHostCheck = "passed locally, self-hosting at " + selfHostedUrl
+                    + ". magmaguy.com was unreachable, so outside access is unverified.";
+            return true;
+        }
         RSPLogger.detail("Self-host sanity checks passed; using self-hosting at " + selfHostedUrl);
         lastSelfHostCheck = "passed, self-hosting at " + selfHostedUrl;
         return true;
     }
+
+    /** Layer 3 outcome. UNVERIFIED means magmaguy.com could not run the check. */
+    private enum ExternalProbe {REACHABLE, UNREACHABLE, UNVERIFIED}
 
     /**
      * Layer 3 reachability check: ask the magmaguy.com hoster to fetch
@@ -828,42 +845,43 @@ public class AutoHost {
      *       Tear down self-host so the caller falls through to the
      *       magmaguy.com upload path.</li>
      *   <li>Probe communication fails: reachability is unverified. Try remote
-     *       hosting; failure of the probe does not establish that uploading will
-     *       fail too. Only forced self-hosting may bypass verification.</li>
+     *       hosting first; failure of the probe does not establish that uploading
+     *       will fail too. Once remote hosting has failed as well, the caller
+     *       self-hosts on the local checks alone (see tryVerifiedSelfHost).</li>
      * </ul>
      *
-     * @return {@code true} only when the probe confirmed external reachability.
+     * @return {@link ExternalProbe#REACHABLE} only when the probe confirmed external reachability.
      */
-    private static boolean externalReachabilityProbe(LifecycleRun run, String url) {
-        if (!run.active()) return false;
+    private static ExternalProbe externalReachabilityProbe(LifecycleRun run, String url) {
+        if (!run.active()) return ExternalProbe.UNREACHABLE;
         MagmaguyRspClient c = client;
         if (c == null) {
             RSPLogger.detail("Self-host check: external verification is unavailable.");
             lastSelfHostCheck = "failed: the magmaguy.com reachability check is unavailable.";
-            return false;
+            return ExternalProbe.UNVERIFIED;
         }
         try {
             MagmaguyRspClient.ProbeResult result = c.probe(url);
-            if (!run.active()) return false;
+            if (!run.active()) return ExternalProbe.UNREACHABLE;
             if (result.reachable() && (result.status() == 200 || result.status() == 206)) {
                 RSPLogger.detail("External reachability probe via magmaguy.com: " + url
                         + " is reachable from the public internet (HTTP "
                         + result.status() + ", " + result.durationMs() + " ms). "
                         + "Committing to self-host.");
-                return true;
+                return ExternalProbe.REACHABLE;
             }
             RSPLogger.detail("Self-host check: external pack request was not successful (HTTP "
                     + result.status() + ")" + formatOptionalDetail(result.reasonOrNull()) + ".");
             lastSelfHostCheck = "failed: magmaguy.com could not download the pack from " + url + " (HTTP "
                     + result.status() + ")" + formatOptionalDetail(result.reasonOrNull()) + ".";
-            return false;
+            return ExternalProbe.UNREACHABLE;
         } catch (java.io.IOException e) {
-            if (!run.active()) return false;
+            if (!run.active()) return ExternalProbe.UNREACHABLE;
             RSPLogger.detail("External reachability probe via magmaguy.com failed to "
                     + "communicate (" + e.getMessage() + "); self-hosting was not verified.");
             lastSelfHostCheck = "failed: could not reach magmaguy.com to verify " + url
                     + formatOptionalDetail(e.getMessage()) + ".";
-            return false;
+            return ExternalProbe.UNVERIFIED;
         }
     }
 
@@ -1532,8 +1550,10 @@ public class AutoHost {
      * Start a local HTTP server (or reuse an already-running one) that serves
      * the current {@link Mix#getFinalResourcePack()} zip. Called from any
      * upload-error path and from the {@code selfHostForce} short-circuit.
-     * Automatic fallback uses the same verification as self-host-first;
-     * only the explicit force setting may publish an unverified URL.
+     * Automatic fallback uses the same verification as self-host-first, except
+     * that a magmaguy.com outage cannot block it: remote hosting has just failed,
+     * so the local download checks are enough. Only the explicit force setting
+     * may skip those too.
      *
      * <p>The server is started once and left running for the plugin's lifetime;
      * {@code PackHttpServer} reads the file per-request, so a re-mix that
@@ -1545,7 +1565,7 @@ public class AutoHost {
      * the pack file is missing, the port is unavailable, or verification fails.
      */
     private static boolean fallbackToSelfHost(LifecycleRun run) {
-        if (!DefaultConfig.isSelfHostForce()) return tryVerifiedSelfHost(run);
+        if (!DefaultConfig.isSelfHostForce()) return tryVerifiedSelfHost(run, true);
         if (!run.active() || !ensureSelfHostServer(run)) return false;
         if (!run.active()) return false;
         commitSelfHost(run);
