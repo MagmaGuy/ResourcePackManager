@@ -65,6 +65,16 @@ public record ItemsDefinition(
         return !explicitBaseItems.isEmpty();
     }
 
+    /**
+     * True for {@code assets/minecraft/items/<item>.json}, which names the vanilla Java item
+     * it redefines rather than a custom item model.
+     */
+    public boolean isRootVanillaItem() {
+        return "minecraft".equals(namespace)
+                && !itemsRelPath.contains("/")
+                && !itemsRelPath.contains("\\");
+    }
+
     public boolean isLegacyCustomModelData() {
         return legacyCustomModelData != null;
     }

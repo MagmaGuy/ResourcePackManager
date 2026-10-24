@@ -55,7 +55,9 @@ public final class BaseItemResolver {
         List<String> candidates;
         if (def.hasExplicitBaseItems()) {
             candidates = def.explicitBaseItems();
-        } else if (isRootVanillaItemDefinition(def)) {
+        } else if (def.isRootVanillaItem()) {
+            // assets/minecraft/items/<item>.json names the actual Java base item. Using
+            // the filename heuristic here would misroute carrot_on_a_stick to minecraft:stick.
             candidates = List.of(def.itemIdentifier());
         } else {
             candidates = resolveHeuristic(def, resolver);
@@ -133,14 +135,6 @@ public final class BaseItemResolver {
                     + exception.getMessage());
             return List.of();
         }
-    }
-
-    private static boolean isRootVanillaItemDefinition(ItemsDefinition def) {
-        // assets/minecraft/items/<item>.json names the actual Java base item. Using
-        // the filename heuristic here would misroute carrot_on_a_stick to minecraft:stick.
-        return "minecraft".equals(def.namespace())
-                && !def.itemsRelPath().contains("/")
-                && !def.itemsRelPath().contains("\\");
     }
 
     private static List<String> resolveHeuristic(ItemsDefinition def, AssetResolver resolver) {

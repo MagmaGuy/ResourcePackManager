@@ -35,6 +35,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -516,10 +517,22 @@ public class BedrockConversion {
             // every (model × base item) attachable emission.
             Map<String, SharedModelAssets> modelAssetsCache = new LinkedHashMap<>();
             ExactTextureFileCache exactAtlasCache = new ExactTextureFileCache();
+            List<String> vanillaRetextures = new ArrayList<>();
 
             for (ItemsDefinition def : generic) {
                 if (ctx.isCancellationRequested()) return;
                 List<ResolvedLeaf> leaves = ItemModelTreeWalker.walk(def, assetResolver);
+                // assets/minecraft/items/<item>.json is scanned for the custom-model-data
+                // branches packs put there. Its branch without predicates is the vanilla
+                // item's own look; mapped to Geyser it would replace that item for every
+                // Bedrock player ("overrides the vanilla item model without additional
+                // predicates"), untinted, while placed blocks stay vanilla. Bedrock keeps
+                // its own item instead, as for legacy overrides and plain retextures.
+                if (def.isRootVanillaItem() && leaves.stream().anyMatch(leaf -> leaf.predicates().isEmpty())) {
+                    vanillaRetextures.add(def.itemIdentifier());
+                    leaves = leaves.stream().filter(leaf -> !leaf.predicates().isEmpty()).toList();
+                }
+                if (leaves.isEmpty()) continue;
                 List<String> baseItems = BaseItemResolver.resolve(def, assetResolver);
                 if (baseItems.isEmpty()) continue;
 
@@ -601,6 +614,14 @@ public class BedrockConversion {
                         threeEmitted++;
                     }
                 }
+            }
+
+            if (!vanillaRetextures.isEmpty()) {
+                BedrockLog.info("[BedrockConverter] Bedrock keeps its own look for " + vanillaRetextures.size()
+                        + " vanilla item(s) the Java pack restyles without custom model data: "
+                        + String.join(", ", vanillaRetextures.subList(0, Math.min(8, vanillaRetextures.size())))
+                        + (vanillaRetextures.size() > 8 ? " and " + (vanillaRetextures.size() - 8) + " more" : "")
+                        + ". Their conditional variants, such as custom model data, still convert.");
             }
 
             // Per-pipeline emission counts are folded into the final
