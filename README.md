@@ -1,297 +1,222 @@
-# ResourcePackManager
+<p align="center">
+  <a href="https://discord.gg/GKyzTgT">
+    <img src="https://imgur.com/mvyJwOf.png" alt="Discord" width="140"/>
+  </a>
+  <a href="https://nightbreak.io/plugin/resourcepackmanager/">
+    <img src="https://imgur.com/OLYJlM8.png" alt="Nightbreak" width="140"/>
+  </a>
+  <a href="https://www.patreon.com/magmaguy">
+    <img src="https://imgur.com/rWCe9W9.png" alt="Patreon" width="140"/>
+  </a>
+  <a href="https://wiki.nightbreak.io/ResourcePackManager/info">
+    <img src="https://imgur.com/M48vTUC.png" alt="Wiki" width="140"/>
+  </a>
+</p>
 
-[Download](https://nightbreak.io/plugin/resourcepackmanager/) · [Modrinth](https://modrinth.com/plugin/resourcepackmanager) · [Documentation](https://wiki.nightbreak.io/) · [Support](https://discord.gg/nightbreak)
+<div align="center">
+  <iframe width="560" height="315" src="https://www.youtube.com/embed/5qHSecOv5Tg" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+  <p><strong>This dev log is the only video I have right now, a dedicated one will (hopefully) come soon!</strong></p>
+</div>
 
-ResourcePackManager (RSPM) is a universal Bukkit/Paper, Velocity, and
-BungeeCord plugin. On backend servers it merges the resource packs of
-every plugin into a single pack, hosts it, and pushes it to players
-automatically. On proxies it runs the network-side pack delivery bridge for
-Bedrock players through GeyserMC. The same release jar also contains RSPM's
-Geyser extension entrypoint; there is no separately versioned bridge jar.
+# 🟠 How it Works
 
-By default the merged pack is hosted on a local HTTP server embedded in the
-plugin; if that is not reachable it falls back to uploading the pack to
-magmaguy.com and pushing that URL to clients. Either way, players receive the
-combined pack without you having to host or stitch anything together by hand.
+**Got more than one plugin that uses resource packs?**
+**Tired of manually merging them, recalculating SHA1, and rehosting?**
+**Want drag & drop support where players instantly get custom models?**
+This plugin is the solution!
 
-Remote hosting and Bedrock relay failures use randomized exponential backoff.
-Each flow permits one in-flight attempt and five retries, then waits 15–30 minutes
-before trying a new burst. A successful operation resets its retry budget.
-The HTTP library does not add retries underneath that budget. Java hosting checks
-the remote SHA-1 before uploading; Bedrock publication reuses successful artifact
-uploads during retries for up to 20 minutes. The ordinary 25-minute Bedrock renewal
-still uploads because the existing relay protocol refreshes its lease on upload.
+ResourcePackManager automatically grabs the resource packs from automerge-compatible plugins, merges them based on config priorities, and hosts them directly from your server. Players automatically receive the merged pack. You can also add manual packs in the mixer folder.
 
-Java packs larger than the remote hoster's 51,200,000-byte limit are rejected
-locally before an upload request is created. RSPM reports the size and limit,
-tries the existing self-hosting fallback, and stops remote hosting retries for
-that pack until regeneration or reload. Self-hosted packs do not use this limit.
+# 🟠 Main Features
 
-## Key features
+* **Automatically merges all of your server's resource packs!**
+* **Self-hosts your resource pack directly from your server!** Falls back to free remote hosting if self-hosting is unavailable.
+* **Automatically sends the resource pack to players when they log in!**
+* **Rebuilds the merged pack by itself** when another plugin's resource pack changes. [How it works](https://wiki.nightbreak.io/ResourcePackManager/faq#does-resourcepackmanager-rebuild-automatically-when-packs-change)
+* **Bedrock support!** Automatically converts your merged Java pack into a Bedrock-compatible pack for GeyserMC.
+* **Custom Bedrock entities!** FreeMinecraftModels and EliteMobs models render and animate for Bedrock players through the Geyser extension built into the same jar. [Geyser extension](https://wiki.nightbreak.io/ResourcePackManager/geyser-extension)
+* **Proxy network support!** Works with Velocity, BungeeCord, and Waterfall — Bedrock players receive a single merged pack across all servers.
+* **No network key to copy.** The proxy links each backend the first time a player joins it, and passes RSPM updates from your backends to the proxy. [Proxy networks](https://wiki.nightbreak.io/ResourcePackManager/proxy-networks#network-key)
+* **Supports manual additions in the mixer folder.**
+* **Turn off any plugin's pack** with one setting in its `compatible_plugins/` file. [How](https://wiki.nightbreak.io/ResourcePackManager/faq#how-do-i-exclude-one-automatic-plugin-integration)
+* **Works behind an HTTPS reverse proxy** with `selfHostExternalUrl`. [Self-hosting](https://wiki.nightbreak.io/ResourcePackManager/self-hosting#https-and-reverse-proxies)
+* **`/rspm status` shows the pack, hosting, Bedrock and network state in one command.** [Troubleshooting](https://wiki.nightbreak.io/ResourcePackManager/troubleshooting)
+* **[24/7 Discord support](https://discord.gg/9f5QSka).**
+* **No setup or maintenance required!**
+* **Want an even better experience?** Works best with [Free Minecraft Models](https://nightbreak.io/plugin/freeminecraftmodels) and [EternalTD](https://nightbreak.io/plugin/eternaltd) — both free!
 
-- **Automatic pack merging**: collects the resource packs supplied by other
-  installed plugins and merges them into one pack, resolving file conflicts by a
-  configurable `priorityOrder`.
-- **Self-host first, remote fallback**: serves the pack from an embedded HTTP
-  server when reachable, otherwise uploads to magmaguy.com and pushes that URL.
-- **Bedrock conversion**: converts the merged Java pack to a Bedrock pack and
-  hands it to Geyser (`GeyserPackProvider`), optionally auto-deploying it to the
-  Geyser packs folder.
-- **Network mode**: on a Velocity/BungeeCord network the proxy module pulls each
-  backend's Bedrock pack over HTTP and serves it to Bedrock players network-wide.
-- **Custom mixer input**: drop additional `.zip` packs into the `mixer/` folder
-  to have them merged in alongside plugin packs.
-- **Per-integration exclusion**: disable an automatically discovered plugin
-  pack without affecting manually managed mixer inputs.
-- **Verified universal updates**: update candidates are checked as complete
-  universal jars before being staged for a backend, proxy, or Geyser restart.
-- **Operator diagnostics**: `/rspm status` dumps pack state, hosting mode,
-  resolved external host, and integration presence in one shot.
-- **Data compliance**: `/rspm data_compliance_request` packages all data the
-  autohost holds for your server (see the bundled `ReadMe.txt` data policy).
+# 🟠 How to Setup
 
-## Modules
+1. Drop `ResourcePackManager.jar` into your `plugins/` folder.
+2. Restart your server.
 
-This is a multi-module Maven project (parent artifact `ResourcePackManager-parent`).
+That's it! The plugin works with recommended defaults out of the box. You can tweak settings in the config files. The [setup guide](https://wiki.nightbreak.io/ResourcePackManager/setup) explains every folder and option.
 
-| Module | Purpose |
-| --- | --- |
-| `resourcepackmanager-bukkit` | Bukkit/Paper entrypoint and final assembly module. Produces the one universal deployable jar and shades MagmaCore plus the internal modules below. |
-| `resourcepackmanager-bridge-common` | Platform-neutral inspection, version validation, and durable publication of the universal jar. |
-| `resourcepackmanager-bedrock` | Java → Bedrock resource pack conversion pipeline. |
-| `resourcepackmanager-mixer` | Platform-neutral Java/Bedrock pack merging, conflict resolution, deterministic proxy merging, and exact-texture optimization. |
-| `resourcepackmanager-geyser-bridge` | Internal Geyser extension entrypoint included in the universal jar. |
-| `resourcepackmanager-http-common` | Shared HTTP server/client code used for self-hosting and proxy fetches. |
-| `resourcepackmanager-proxy-common` | Shared proxy logic for network sync, Geyser deployment, and verified proxy updates. |
-| `resourcepackmanager-velocity` | Internal Velocity adapter included in the universal jar. |
-| `resourcepackmanager-bungee` | Internal BungeeCord adapter included in the universal jar. |
-| `resourcepackmanager-system-tests` | Real-proxy system-test procedures and fixtures; not a Maven module. |
+# 🟠 Bedrock Support (GeyserMC)
 
-### One universal artifact
+ResourcePackManager automatically converts your merged Java resource pack into a Bedrock-compatible pack for GeyserMC, so Bedrock and Java players see the same custom content. This is enabled by default and requires no additional setup. It converts custom items, 3D held items and custom armor from any plugin whose pack uses Minecraft 1.21.4+ item definitions, such as FreeMinecraftModels, EliteMobs, Oraxen and Nexo. See the [Bedrock conversion guide](https://wiki.nightbreak.io/ResourcePackManager/bedrock).
 
-`ResourcePackManager.jar` contains all four platform descriptors and
-entrypoints:
+# 🟠 Proxy Network Setup (Bedrock)
 
-- `plugin.yml` for Bukkit/Paper;
-- `velocity-plugin.json` for Velocity;
-- `bungee.yml` for BungeeCord; and
-- `extension.yml` for Geyser.
+Running multiple Geyser/Floodgate servers behind a proxy? Bedrock clients are limited to one resource pack per network connection. ResourcePackManager works around this by merging all the resource packs across your network into a single pack, which is then sent to Bedrock clients when they log in.
 
-The internal Maven modules remain separate source and test boundaries, but they
-are not separate public downloads. The final jar contains no nested adapter
-jars. Installation and update code validates the descriptors, entrypoints,
-version, size, and SHA-256 before publishing executable bytes. Proxy updates
-stage the exact same candidate for the proxy root and Geyser instead of
-building or downloading a secondary bridge artifact.
+To set this up, just install ResourcePackManager both on your proxy server and the backend server (same ResourcePackManager.jar file). Once everything is set up, restart the proxy twice for the geyser mappings to get saved properly!
 
-### Merge guarantees
+Java players receive their packs directly from each backend on server switch. Full guide: [Proxy networks](https://wiki.nightbreak.io/ResourcePackManager/proxy-networks).
 
-- The configured priority order remains authoritative. When complete input
-  archives are byte-identical, RSPM keeps the first/highest-priority copy and
-  skips only the redundant extraction and collision work.
-- Bedrock converter interchange files stay in the merged staging tree for
-  conversion but are omitted from the Java-client download.
-- Exact duplicate Bedrock textures may share one file only after structural
-  JSON references are rewritten. Ambiguous, embedded, malformed, or opaque
-  references keep their original alias.
-- Resource-pack rerouting copies the already completed Java archive rather than
-  recompressing a second, potentially different archive.
+# 🟠 Limitations & Compatibility
 
-## Requirements
+**Limitations:**
 
-- Build with JDK 21. Run the Java version required by your backend or proxy. The Maven build emits Java 17-compatible plugin bytecode; that does not lower the Minecraft server's own Java requirement.
-- A Bukkit/Paper server. `plugin.yml` declares `api-version: 1.21.4`.
-- MagmaCore (shaded into the Bukkit jar; no separate install).
-- For Bedrock support: **GeyserMC** on the backend or proxy where Bedrock players connect.
-  Floodgate handles Bedrock authentication where configured. RSPM separately owns
-  a persisted proxy `network-key` and provisions each backend's `data.yml` `networkKey`
-  on a player connection. Floodgate's key may seed the initial RSPM identity; copying
-  it does not replace established RSPM identities. Modern Velocity forwarding must
-  use the same forwarding secret on proxy and backend for signed provisioning.
+ResourcePackManager merges where possible but cannot fix fundamental conflicts (e.g. GUI unicode spacing clashes or duplicate item model IDs). In conflicts, the higher‑priority pack is chosen.
 
-All other plugin integrations are soft dependencies: RSPM merges their packs if
-present and does nothing if absent (e.g. EliteMobs, FreeMinecraftModels,
-ModelEngine, Nova, Oraxen, ItemsAdder, Nexo, BetterHUD, ValhallaMMO,
-RealisticSurvival, and others listed in `plugin.yml`).
+<details>
+<summary><strong>Automerge-compatible plugins</strong></summary>
 
-## Installation
+* [FreeMinecraftModels](https://nightbreak.io/plugin/freeminecraftmodels) (recommended models plugin!)
+* [EliteMobs](https://nightbreak.io/plugin/elitemobs) (recommended bosses plugin!)
+* [EternalTD](https://nightbreak.io/plugin/eternaltd) (recommended minigame plugin!)
+* [BetterStructures](https://nightbreak.io/plugin/betterstructures)
+* [CannonRTP](https://nightbreak.io/plugin/cannonrtp)
+* [ResurrectionChest](https://nightbreak.io/plugin/resurrectionchest)
+* BetterHUD
+* ItemsAdder (requires unencrypting & disabling hosting; `/rspm itemsadder configure` does this for you)
+* InfiniteVehicles
+* MMOInventory
+* ModelEngine
+* Nexo
+* Nova
+* Oraxen
+* ValhallaMMO (requires `/valhalla resourcepack download`)
+* BackpackPlus
+* RealisticSurvival
+* Vane-Core
 
-1. Put `ResourcePackManager.jar` in the `plugins/` folder of **each backend**
-   (game) server and start it once to generate `plugins/ResourcePackManager/config.yml`.
-2. For Bedrock delivery on a single server, install Geyser on that backend. On a proxy network, install Geyser on the proxy and configure Floodgate identity/key forwarding for the network.
-3. **Network mode only**: also put the same `ResourcePackManager.jar` in the
-   proxy's `plugins/` folder. It detects Velocity vs BungeeCord from
-   the platform loader. The proxy generates its own `config.yml` on first start.
+*Have a plugin you'd like supported? Let me know on the [Discord](https://discord.gg/9f5QSka)!*
 
-A single (non-networked) backend server needs only that same jar. Do not install
-or distribute a separate RSPM Geyser bridge; RSPM installs/stages its universal
-artifact for Geyser when required.
+</details>
 
-On network upgrades, an authenticated proxy can fetch the public universal
-artifact offered by an updated backend, verify its version, size, and SHA-256
-against Nightbreak, and apply that exact jar to both the proxy plugin and
-Geyser's extension update queue during shutdown. Geyser removes any legacy
-`ResourcePackManager-GeyserBridge.jar` with the same extension ID before loading
-the universal replacement on the next start.
+# 🟠 Commands
 
-## Configuration
+* `/resourcepackmanager reload` - reloads the plugin.
+* `/resourcepackmanager data_compliance_request` - downloads all hosted data for inspection.
+* `/resourcepackmanager status` - gives the current status of RSPM.
+* `/rspm setup` - opens the in-game setup menu for plugin updates and recommended plugins.
+* `/rspm verbose [on|off]` - turns detailed console logging on or off.
+* `/rspm itemsadder configure` - sets up ItemsAdder for ResourcePackManager.
 
-Backend config lives at `plugins/ResourcePackManager/config.yml`. Selected keys
-(all generated with inline comments by the plugin):
+`/rspm` is short for `/resourcepackmanager`. See the [full command and permission list](https://wiki.nightbreak.io/ResourcePackManager/setup#core-commands).
 
-| Key | Default | Description |
-| --- | --- | --- |
-| `priorityOrder` | plugin list | Merge order, highest priority first. Add a mixer `.zip` filename to position it. |
-| `autoHost` | `true` | Upload the pack to magmaguy.com when self-hosting is not used. |
-| `forceResourcePack` | `false` | Force clients to accept the pack. |
-| `resourcePackPrompt` | text | Prompt shown to clients. |
-| `resourcePackRerouting` | `""` | Optional: copy the merged pack to a custom directory (e.g. to host with another plugin). |
-| `bedrockConversionEnabled` | `true` | Convert the merged Java pack to Bedrock for Geyser. |
-| `geyserExtensionAutoInstall` | `true` | Install/update the universal RSPM jar as a Geyser extension for custom Bedrock entity models. Set `false` to prevent future staging; remove existing extension jars while Geyser is stopped. |
-| `bedrockAutoDeployToGeyser` | `true` | Auto-deploy the Bedrock pack to the Geyser packs folder. |
-| `bedrockGeyserFolder` | `""` | Path to the Geyser packs folder; empty = auto-detect. |
-| `bedrockConverterDebug` | `false` | Verbose per-item conversion logging. |
-| `selfHostEnabled` | `true` | Start a local HTTP server to serve the pack instead of uploading. |
-| `selfHostPort` | `-1` | HTTP port; `-1` = Minecraft port + `networkHttpOffset-v2`. |
-| `networkHttpOffset-v2` | `1` | Fallback offset used when `selfHostPort` is auto-derived; the backend announces its actual HTTP port to proxies automatically. |
-| `selfHostExternalHost` | `""` | Public host/IP clients use to reach the self-host server; empty = auto-detect. |
-| `selfHostExternalUrl` | `""` | Complete public HTTP(S) pack URL for self-hosting behind a reverse proxy; include the path clients must request. |
-| `selfHostForce` | `false` | Force self-hosting, bypassing all other delivery paths (testing). |
-| `preferSelfHost` | `true` | Try self-host first and fall back to remote upload only if reachability checks fail. |
+# 🟠 Hosting
 
-### Adding and troubleshooting a manual pack
+ResourcePackManager attempts to self-host the resource packs directly from your server by default. This requires your server ports to be accessible to players. If you can't forward ports or prefer not to self-host, RSPM automatically falls back to free remote hosting on Nightbreak servers, made possible by [Patreon supporters](https://www.patreon.com/magmaguy). You can configure hosting mode in `config.yml`.
 
-1. Confirm the pack works by itself on the same Minecraft client version. If it
-   relies on client features such as OptiFine CEM/CIT or equivalent client mods,
-   every player still needs that support; RSPM merges and distributes pack files
-   but does not add client-side rendering features.
-2. Put the original `.zip` in `plugins/ResourcePackManager/mixer/`. The archive
-   must be a normal resource-pack ZIP: `pack.mcmeta`, `pack.png` (if present),
-   and `assets/` belong at the archive root, not inside an extra wrapper folder.
-3. Add the exact ZIP filename, including `.zip`, to `priorityOrder` in
-   `plugins/ResourcePackManager/config.yml`. The first entry has the highest
-   priority. Manual ZIPs omitted from the list are still merged, at the lowest
-   priority (ties use a stable filename order).
-4. Run `/rspm reload`, then inspect
-   `plugins/ResourcePackManager/output/ResourcePackManager_RSP.zip` and
-   `plugins/ResourcePackManager/collision_log.txt` (created when collisions occur).
+Free remote hosting accepts packs up to 51.2 MB; bigger packs need self-hosting. If players reach your server through an HTTPS reverse proxy, set `selfHostExternalUrl`. See [Self-hosting](https://wiki.nightbreak.io/ResourcePackManager/self-hosting) for ports and reachability checks.
 
-For ordinary files and non-mergeable JSON (models, blockstates, equipment, and
-similar fixed structures), the higher-priority pack's complete file wins.
-RSPM only combines JSON formats that can be merged safely, such as language,
-sound, font, atlas, and supported item-definition files. Two packs that replace
-the same entity model or texture therefore need the intended winner above the
-other pack, or a compatibility pack authored for those two packs.
+<details>
+<summary><strong>Remote hosting data policy & TOS</strong></summary>
 
-For diagnosis, set `verboseLogging: true`, run `/rspm reload`, and include the
-two input ZIPs, `config.yml`, `collision_log.txt`, and the generated
-`ResourcePackManager_RSP.zip` with a report. A server log can establish the RSPM
-version and whether the mix completed, but it cannot by itself identify a
-file-level content conflict.
+### ResourcePackManager Data Policy and Compliance
 
-### Excluding a plugin's resource pack
+**ResourcePackManager**, developed by MagmaGuy for the Nightbreak game studio, includes an optional auto-host feature that temporarily hosts resource pack data on a remote server.
 
-Every automatically discovered compatible plugin has its own file under
-`plugins/ResourcePackManager/compatible_plugins/`. To exclude that plugin's
-entire resource pack, set `isEnabled: false` in its file and then run
-`/rspm reload` or restart the server. For example:
+As of this writing, the hosted data is fully anonymous and serves the sole purpose of simplifying the distribution of resource packs to clients of servers utilizing this service. Future versions of this document may be updated to reflect any changes in data policy and other related matters.
 
-```yaml
-# plugins/ResourcePackManager/compatible_plugins/elitemobs.yml
-isEnabled: false
-```
+This system complies with:
+- **Directive 2000/31/EC** of the European Parliament and of the Council of 8 June 2000
+- **Regulation (EU) 2022/2065** of the European Parliament and of the Council of 19 October 2022
 
-Disabling an integration prevents its local, remote, shared, and API-registered
-pack sources from being watched, downloaded, staged, or merged. RSPM also
-removes generated mixer artifacts left by an earlier enabled run. Removing a
-plugin from `priorityOrder` does **not** exclude it; that setting only decides
-which pack wins file conflicts. For a pack you manually placed in the `mixer/`
-folder, remove or move that ZIP instead.
+For data hosting transparency and compliance with these and other European norms, it is possible to obtain all data related to a server via the `/resourcepackmanager data_compliance_request` command. This command packages a full copy of all files and data associated with the requesting server.
 
-RSPM does not currently support keeping one source pack in the Java merge while
-excluding only that source from Bedrock conversion. The converter consumes the
-complete merged Java pack, after source packs have already been combined. This
-is the same on a single server and in network mode; proxy configuration does not
-change source-pack exclusion. To maintain different Java and Bedrock contents,
-disable RSPM's Bedrock conversion and install a separately maintained Bedrock
-pack through Geyser.
+To request the takedown of your server's data, contact MagmaGuy at `magmaguy/at\nightbreak.io` (replace `/at\ ` with `@`). However, due to the system's design, data is only retained for up to 24h after a server using ResourcePackManager shuts down, making email requests largely unnecessary. Nonetheless, the option remains available to ensure full compliance with European norms.
 
-Proxy config (`config.yml` in the proxy plugin's data folder):
+### Data Handling by ResourcePackManager and Nightbreak Servers
 
-Only backends running RSPM participate in pack synchronization. Other registered
-servers are checked periodically with lightweight, asynchronous discovery requests;
-they do not delay pack merging or require RSPM to be installed. Newly discovered
-participants join automatically. `/rspm status` distinguishes confirmed participants
-from servers awaiting discovery, and reports failures of known participants even
-when a cached pack remains available.
+1. **Resource Pack Creation**
+- ResourcePackManager aggregates resource packs on your server into a single zipped file containing all custom content.
 
-| Key | Default | Description |
-| --- | --- | --- |
-| `network-http-offset-v2` | `1` | Fallback offset used only before a backend endpoint announcement is available. In normal operation the backend announces the exact HTTP port it bound. |
-| `geyser-extension-auto-install` | `true` | Install/update the universal RSPM jar as a Geyser extension. Set `false` to prevent both startup installation and update staging. |
+2. **Initialization Request**
+- An initialization request is sent to remote servers, creating a `.txt` file with a random UUID. This file can be obtained via the `/resourcepackmanager data_compliance_request`.
 
-The proxy persists its RSPM identity in `network-key` and provisions backend
-`data.yml` `networkKey` entries automatically. Compare fingerprints with `/rspm status`.
-For a confirmed stale backend identity, stop that backend, retain a recovery copy of
-`data.yml`, remove only its `networkKey` entry, restart and join through the intended
-proxy. Resolve any signed-grant warnings before retrying. Preserve the proxy's
-`network-key` and Floodgate credentials; never publish secret contents.
-RSPM's proxy plugin does not control pack acceptance:
-the backend `forceResourcePack` option applies only to Java pack offers sent by
-Bukkit, while Geyser owns Bedrock acceptance through its
-`force-resource-packs` setting.
+3. **SHA1 Request**
+- ResourcePackManager transmits the SHA1 code of your resource pack to the remote server, which is saved in the `.txt` file.
 
-## Commands and permissions
+4. **File Transmission**
+- The zipped resource pack file is sent to the remote server, assigned the same UUID as the `.txt` file. This file can be obtained through `/resourcepackmanager data_compliance_request` and verified to be identical to the original in your output folder, as it is not modified by the Nightbreak servers.
 
-Base command: `/resourcepackmanager` (alias `/rspm`). All subcommands require the
-`resourcepackmanager.*` permission.
+5. **"Still Alive" Ping**
+- ResourcePackManager sends a "still alive" ping every 6 hours, transmitting the UUID to the server, which updates the timestamp in the `.txt` file.
+- If no "still alive" ping is received for over 24 hours, all data associated with that UUID (the `.txt` file and the resource pack) is deleted from the Nightbreak servers.
 
-| Command | Description |
-| --- | --- |
-| `/rspm reload` | Reload the plugin. |
-| `/rspm status` | Show current pack state, hosting mode, config, and integrations. |
-| `/rspm data_compliance_request` | Download a copy of all data the autohoster holds for this server. |
-| `/rspm itemsadder <configure\|dismiss>` | Configure the ItemsAdder integration. |
+### Data Policy
 
-## Building from source
+- **Pseudonymous Identification:** Nightbreak assigns a random UUID to your server's files each time the server reboots, ensuring no IP address or identifiable information is stored unless users manually add such information to their resource packs.
+- **No Download Logging:** Nightbreak does not log any data related to download requests by Minecraft clients.
+- **No Data Sales:** Data uploaded to Nightbreak is not, has never been, and will never be sold.
+- **Compliance with Takedown Requests:** Nightbreak will comply with takedown requests from both server administrators and law enforcement agencies.
+- **Automatic Data Removal:** All data associated with your server is automatically removed 24 hours after your server shuts down and is reuploaded on every restart for as long as ResourcePackManager is in use and using the auto-host feature.
 
-Requires JDK 21 and Maven. Build from the repository root so the Velocity and
-Bungee adapters are rebuilt before the final jar is shaded:
+### Terms of service
 
-```powershell
-$env:MC_DIST_DIR = 'C:/path/to/MineCraftProjects/dist'
-mvn -DskipTests package
-```
+As of writing this, the hosting service is provided for free for all users of ResourcePackManager.
 
-This builds every module. The main backend jar is produced at:
+It is the user's responsibility to ensure that the data uploaded to servers is not illegal and complies with any Mojang TOS as defined in their EULA.
 
-```
-resourcepackmanager-bukkit/target/ResourcePackManager.jar
-```
+Abusing the service to host material other than resource packages may result in a permanent denial of service for the offending IP.
 
-When `MC_DIST_DIR` is set, the same artifact is mirrored as
-`dist/ResourcePackManager.jar`. This is the only deployable ResourcePackManager
-jar. Adapter modules still produce internal `target/` jars for reactor and
-test wiring, but public distribution uses the universal artifact for
-Bukkit/Paper, Velocity, BungeeCord, and Geyser.
+The service may, at any time, cease or be modified in such a way that makes old versions unable to connect to it.
 
-Before publishing, verify that `plugin.yml`, `velocity-plugin.json`,
-`bungee.yml`, and `extension.yml` all contain the parent POM version.
+We reserve the right to unilaterally terminate this service at any time and for any reason.
 
-## Developer API
+</details>
 
-[Java class and method reference](https://wiki.nightbreak.io/javadoc/resourcepackmanager/index.html).
+# 🟠 View More by Magmaguy!
 
-Resource-pack registration on the Bukkit backend: [ResourcePackManager developer reference](https://wiki.nightbreak.io/ResourcePackManager/api). See the [Java API index](https://wiki.nightbreak.io/developers) for dependency setup and lifecycle guidance.
+<p align="center">
+  <a href="https://nightbreak.io/plugin/elitemobs">
+    <img src="https://i.postimg.cc/zXQRn1jD/Elite-Mobs.png" width="300"/>
+  </a>
+  <a href="https://nightbreak.io/plugin/betterstructures">
+    <img src="https://i.postimg.cc/3rVK1rPq/Better-Structures.png" width="300"/>
+  </a>
+</p>
+<p align="center">
+  <a href="https://nightbreak.io/plugin/extractioncraft">
+    <img src="https://i.postimg.cc/gjV6VMYz/extractioncraft.png" width="300"/>
+  </a>
+  <a href="https://nightbreak.io/plugin/eternaltd">
+    <img src="https://i.postimg.cc/Kjf8cCGM/ETD.png" width="300"/>
+  </a>
+</p>
+<p align="center">
+  <a href="https://nightbreak.io/plugin/resourcepackmanager">
+    <img src="https://i.postimg.cc/Y0GdtBfX/Resource-Pack-Manager.png" width="300"/>
+  </a>
+  <a href="https://nightbreak.io/plugin/freeminecraftmodels">
+    <img src="https://i.postimg.cc/0Qxv6ZHd/FMM.png" width="300"/>
+  </a>
+</p>
+<p align="center">
+  <a href="https://nightbreak.io/plugin/betterfood">
+    <img src="https://i.postimg.cc/JzcDSB80/Better-Food.png" width="300"/>
+  </a>
+  <a href="https://nightbreak.io/plugin/resurrectionchest">
+    <img src="https://i.imgur.com/qpgXCge.png" width="300"/>
+  </a>
+</p>
 
-Maven: `com.magmaguy:ResourcePackManager:2.4.0` from [MagmaGuy's repository](https://repo.magmaguy.com/#/releases). Use `provided` or `compileOnly` scope for the installed plugin.
+# 🟠 Partner servers
 
-## Troubleshooting
+**Matecraft** is the official partner server! It's run by me and is always up to date with the latest experimental features and new dungeons. Great community, check it out!
 
-Start with `/rspm status` and the complete merge/hosting log. Verify that a player's machine can reach the actual pack URL. A locally reachable HTTP port does not establish that it is reachable through a firewall, proxy, or hosting provider.
+<p align="center">
+  <strong>eternaltd.matecraft.org</strong><br/>
+  <img src="https://i.postimg.cc/wBhbQ8vs/header.gif"/>
+</p>
 
-For incorrect textures, collect the source packs, generated merged pack, collision log, and priority configuration. For Bedrock network problems, include backend and proxy versions, Geyser/Floodgate placement, and both sides' logs. Keep Floodgate keys, Nightbreak tokens, and other credentials private.
+# 🟠 Developers
 
-## Data policy and licensing
-
-The bundled [autohost data policy](resourcepackmanager-bukkit/src/main/resources/ReadMe.txt) explains hosting and data retrieval. `/rspm data_compliance_request` includes a copy in its exported data. Resource packs retain the licenses of their constituent content; merging does not grant new distribution rights. No repository-wide license file is currently included.
+- [Java API guide](https://wiki.nightbreak.io/ResourcePackManager/api): registering your plugin's resource pack for merging and triggering a reload
+- [Generated Java reference](https://wiki.nightbreak.io/javadoc/resourcepackmanager/index.html)
+- [Maven repository and coordinates](https://wiki.nightbreak.io/developers)
+- [Source code](https://github.com/MagmaGuy/ResourcePackManager)
