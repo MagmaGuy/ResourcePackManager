@@ -6,8 +6,16 @@ import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
 import org.bukkit.Bukkit;
+import org.bukkit.plugin.Plugin;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -23,6 +31,8 @@ import java.util.function.BooleanSupplier;
  */
 public final class BukkitBedrockConverterContext implements BedrockConverterContext {
     private final BooleanSupplier runCancellation;
+    /** Read once per context: the mix identity and the conversion must see the same set. */
+    private Map<String, List<String>> declaredBaseItems;
 
     /**
      * Adapter exposing MagmaCore's static {@code Logger} as the converter
@@ -83,6 +93,40 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
     @Override
     public boolean isBedrockConverterDebug() {
         return DefaultConfig.isBedrockConverterDebug();
+    }
+
+    @Override
+    public synchronized Map<String, List<String>> declaredBaseItems() {
+        if (declaredBaseItems == null) {
+            Map<String, List<String>> read = Map.of();
+            try {
+                Plugin oraxen = Bukkit.getPluginManager().getPlugin("Oraxen");
+                if (oraxen != null) read = OraxenItemBases.read(oraxen.getDataFolder());
+            } catch (RuntimeException unreadable) {
+                // A config RSPM cannot read only costs these items their declared base;
+                // the filename heuristic still maps them as before.
+                Logger.warn("Could not read Oraxen item materials for Bedrock conversion: " + unreadable.getMessage());
+            }
+            declaredBaseItems = Map.copyOf(read);
+        }
+        return declaredBaseItems;
+    }
+
+    /**
+     * Short digest of {@link #declaredBaseItems()} for the mix identity, so changing an
+     * Oraxen item's material reconverts even when the pack bytes stay the same. Empty
+     * when nothing is declared, which keeps the identity of servers without Oraxen.
+     */
+    public String declaredBaseItemsDigest() {
+        Map<String, List<String>> declared = declaredBaseItems();
+        if (declared.isEmpty()) return "";
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-1")
+                    .digest(new TreeMap<>(declared).toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest, 0, 8);
+        } catch (NoSuchAlgorithmException unavailable) {
+            return Integer.toHexString(new TreeMap<>(declared).toString().hashCode());
+        }
     }
 
     @Override

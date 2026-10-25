@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -52,6 +53,18 @@ public final class BaseItemResolver {
      * custom-item override.
      */
     public static List<String> resolve(ItemsDefinition def, AssetResolver resolver) {
+        return resolve(def, resolver, Map.of());
+    }
+
+    /**
+     * As {@link #resolve(ItemsDefinition, AssetResolver)}, also adding the base items an
+     * installed plugin's config assigns to this item model (keyed by
+     * {@link ItemsDefinition#itemIdentifier()}). Oraxen items carry only
+     * {@code oraxen:<id>} in the pack, so without their {@code material:} a tomato on
+     * apples would map under the paper/stick fallback and Bedrock would show an apple.
+     */
+    public static List<String> resolve(ItemsDefinition def, AssetResolver resolver,
+                                       Map<String, List<String>> pluginDeclaredBaseItems) {
         List<String> candidates;
         if (def.hasExplicitBaseItems()) {
             candidates = def.explicitBaseItems();
@@ -80,7 +93,9 @@ public final class BaseItemResolver {
 
             // The producer knows the real carrier (a wand YAML says BLAZE_ROD); the
             // filename heuristic would only guess minecraft:stick from "wand".
-            List<String> declared = declaredBaseItems(def);
+            List<String> declared = new ArrayList<>(declaredBaseItems(def));
+            for (String base : pluginDeclaredBaseItems.getOrDefault(def.itemIdentifier(), List.of()))
+                if (base.matches("minecraft:[a-z0-9_]+") && !declared.contains(base)) declared.add(base);
             if (!declared.isEmpty()) {
                 List<String> merged = new ArrayList<>(candidates);
                 for (String base : declared) if (!merged.contains(base)) merged.add(base);

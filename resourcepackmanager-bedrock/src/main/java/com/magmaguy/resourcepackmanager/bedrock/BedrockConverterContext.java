@@ -4,6 +4,8 @@ import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Platform-neutral context passed into {@link BedrockConversion}. Implementations
@@ -143,6 +145,20 @@ public interface BedrockConverterContext {
      */
     default boolean isBedrockConverterDebug() {
         return false;
+    }
+
+    /**
+     * Java base items that installed plugins assign to their item models, keyed by
+     * item model id ({@code namespace:path}) with {@code minecraft:<item>} values.
+     * The pack alone cannot tell which item an {@code item_model} rides on, but the
+     * plugin config that creates the item can: Oraxen's {@code material:} puts
+     * {@code oraxen:tomato} on {@code minecraft:apple}. These bases are added to the
+     * filename heuristic's choice, like the {@code rspm_item_bases} files a producer
+     * ships in its own pack. Only the backend can read those configs, so the default
+     * declares nothing.
+     */
+    default Map<String, List<String>> declaredBaseItems() {
+        return Map.of();
     }
 
     /**

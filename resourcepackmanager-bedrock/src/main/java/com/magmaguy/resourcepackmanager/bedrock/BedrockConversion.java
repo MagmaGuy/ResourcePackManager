@@ -518,6 +518,8 @@ public class BedrockConversion {
             Map<String, SharedModelAssets> modelAssetsCache = new LinkedHashMap<>();
             ExactTextureFileCache exactAtlasCache = new ExactTextureFileCache();
             List<String> vanillaRetextures = new ArrayList<>();
+            Map<String, List<String>> pluginBaseItems = ctx.declaredBaseItems();
+            int pluginBased = 0;
 
             for (ItemsDefinition def : generic) {
                 if (ctx.isCancellationRequested()) return;
@@ -533,8 +535,10 @@ public class BedrockConversion {
                     leaves = leaves.stream().filter(leaf -> !leaf.predicates().isEmpty()).toList();
                 }
                 if (leaves.isEmpty()) continue;
-                List<String> baseItems = BaseItemResolver.resolve(def, assetResolver);
+                List<String> baseItems = BaseItemResolver.resolve(def, assetResolver, pluginBaseItems);
                 if (baseItems.isEmpty()) continue;
+                if (!def.hasExplicitBaseItems() && !def.isRootVanillaItem()
+                        && pluginBaseItems.containsKey(def.itemIdentifier())) pluginBased++;
 
                 for (ResolvedLeaf leaf : leaves) {
                     if (ctx.isCancellationRequested()) return;
@@ -622,6 +626,11 @@ public class BedrockConversion {
                         + String.join(", ", vanillaRetextures.subList(0, Math.min(8, vanillaRetextures.size())))
                         + (vanillaRetextures.size() > 8 ? " and " + (vanillaRetextures.size() - 8) + " more" : "")
                         + ". Their conditional variants, such as custom model data, still convert.");
+            }
+            if (pluginBased > 0) {
+                BedrockLog.info("[BedrockConverter] " + pluginBased
+                        + " custom item model(s) also map under the base item their plugin's config gives them"
+                        + " (such as Oraxen's material).");
             }
 
             // Per-pipeline emission counts are folded into the final

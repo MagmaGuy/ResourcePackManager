@@ -520,8 +520,13 @@ public class Mix {
     }
 
     private static String bedrockIdentity(BukkitBedrockConverterContext context) {
-        return BedrockConversion.OUTPUT_REVISION + "|" + context.isBedrockConversionEnabled()
+        String identity = BedrockConversion.OUTPUT_REVISION + "|" + context.isBedrockConversionEnabled()
                 + "|" + context.isBedrockTargetPresent();
+        // Plugin-declared base items (Oraxen materials) change the mappings without
+        // changing a pack byte, so they belong to the identity. Appended only when
+        // present, so servers without them keep their existing identity.
+        String declared = context.declaredBaseItemsDigest();
+        return declared.isEmpty() ? identity : identity + "|" + declared;
     }
 
     private static String verifiedJavaArchive(String inputFingerprint, File outputFolder, BooleanSupplier cancelled) {
