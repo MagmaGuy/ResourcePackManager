@@ -133,7 +133,9 @@ final class OraxenItemBasesTicketTest {
                     "{\"model\":{\"type\":\"minecraft:model\",\"model\":\"oraxen:item/" + item + "\"}}");
             write(assets.resolve("models/item/" + item + ".json"),
                     "{\"parent\":\"minecraft:item/generated\",\"textures\":{\"layer0\":\"oraxen:item/" + item + "\"}}");
-            Files.write(assets.resolve("textures/item/" + item + ".png"), png16());
+            Path texture = assets.resolve("textures/item/" + item + ".png");
+            Files.createDirectories(texture.getParent());
+            Files.write(texture, png16());
         }
         File out = temp.resolve("out-" + declared.size()).toFile();
         assertTrue(out.mkdirs());
