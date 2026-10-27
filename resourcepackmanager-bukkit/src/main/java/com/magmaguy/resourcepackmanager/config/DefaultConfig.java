@@ -31,6 +31,8 @@ public class DefaultConfig extends ConfigurationFile {
     @Getter
     private static String bedrockGeyserFolder = "";
     @Getter
+    private static List<String> bedrockExcludedPacks = List.of();
+    @Getter
     private static boolean bedrockConverterDebug = false;
     @Getter
     private static volatile boolean verboseLogging = false;
@@ -143,6 +145,14 @@ public class DefaultConfig extends ConfigurationFile {
         bedrockGeyserFolder = ConfigurationEngine.setString(
                 List.of("Path to the Geyser packs folder. Leave empty to auto-detect."),
                 fileConfiguration, "bedrockGeyserFolder", "");
+        bedrockExcludedPacks = ConfigurationEngine.setList(
+                List.of(
+                        "Resource packs to leave out of the Bedrock conversion. Java players still get them.",
+                        "Name them like in priorityOrder: a plugin name (for example ItemsAdder), or the filename of a",
+                        "pack in the mixer folder, with or without .zip. Useful when another plugin already converts",
+                        "a pack for Bedrock, or to keep the Bedrock pack smaller. Where a left-out pack replaced",
+                        "another pack's model or texture, Bedrock shows the other pack's version."),
+                fileConfiguration, "bedrockExcludedPacks", List.of());
 
         bedrockConverterDebug = ConfigurationEngine.setBoolean(
                 List.of(

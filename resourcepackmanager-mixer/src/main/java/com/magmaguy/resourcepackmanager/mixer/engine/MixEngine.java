@@ -21,8 +21,10 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
@@ -42,6 +44,8 @@ import java.util.function.BooleanSupplier;
  * performed before return.</p>
  */
 public final class MixEngine {
+    /** Suffix of the second merged folder the Bedrock converter reads when packs are left out of it. */
+    public static final String BEDROCK_INPUT_SUFFIX = "_bedrock_input";
     private final MixerLogger logger;
     private final BooleanSupplier cancellationRequested;
 
@@ -86,7 +90,11 @@ public final class MixEngine {
             //    higher-priority packs win collisions in the assembly phase.
             pruneStaleStageDirectories(outputDir);
             List<File> unzippedPackDirs = new ArrayList<>();
-            List<File> uniqueInputs = removeExactDuplicateFileInputs(input.orderedPacks());
+            // Staged packs the Bedrock converter reads: all of them unless the input leaves some out.
+            List<File> bedrockPackDirs = new ArrayList<>();
+            Set<File> excluded = input.bedrockExcludedPacks();
+            Set<File> keptForBedrock = new HashSet<>();
+            List<File> uniqueInputs = removeExactDuplicateFileInputs(input.orderedPacks(), excluded, keptForBedrock);
             for (int inputIndex = 0; inputIndex < uniqueInputs.size(); inputIndex++) {
                 File pack = uniqueInputs.get(inputIndex);
                 checkCancelled();
@@ -99,6 +107,7 @@ public final class MixEngine {
                     if (staged != null) {
                         unzippedPackDirs.add(staged);
                         stagingDirs.add(staged);
+                        if (!excluded.contains(pack) || keptForBedrock.contains(pack)) bedrockPackDirs.add(staged);
                     }
                 } catch (CancellationException cancelled) {
                     throw cancelled;
@@ -115,43 +124,7 @@ public final class MixEngine {
             // 3. Assembly: wipe the merged staging dir, then walk-copy every pack into it
             //    in priority order. Collisions are routed to resolveFileCollision below.
             File mergedDir = new File(outputDir, input.outputName());
-            checkCancelled();
-            if (mergedDir.exists()) {
-                // Renaming the previous cycle's merged tree aside frees the path instantly, so
-                // assembly starts now instead of after ~25k unlink calls.
-                deleteDirectoryOffCriticalPath(mergedDir);
-            }
-            checkCancelled();
-            if (!mergedDir.mkdirs() && !mergedDir.exists()) {
-                throw new IOException("Failed to create merged staging directory: " + mergedDir.getAbsolutePath());
-            }
-
-            for (File packDir : unzippedPackDirs) {
-                checkCancelled();
-                if (!packDir.isDirectory())
-                    throw new IOException("Required staged pack directory is unavailable: " + packDir.getAbsolutePath());
-                File[] subFiles = sortedChildren(packDir);
-                warnOnLikelyNestedRoot(packDir, subFiles);
-                for (File subFile : subFiles) {
-                    checkCancelled();
-                    recursivelyCopyDirectory(subFile, mergedDir, merge, wrapped);
-                }
-            }
-
-            // Check overlay directory containment before any code resolves those directories on
-            // disk. Format metadata is intentionally preserved from the source packs.
-            checkCancelled();
-            merge.normalizeAndValidateOverlayMetadata(mergedDir);
-            checkCancelled();
-
-            // Atlas-overlay reconciliation must happen AFTER all packs have merged into mergedDir,
-            // because it reads pack.mcmeta (which itself was JSON-merged from every input).
-            merge.mergeBaseAtlasSourcesIntoOverlays(mergedDir);
-            checkCancelled();
-            new BlocksAtlasSanitizer(wrapped).sanitize(mergedDir);
-            checkCancelled();
-            merge.sanitizeMergedModels(mergedDir);
-            checkCancelled();
+            assemble(unzippedPackDirs, mergedDir, merge, wrapped, true);
 
             // 4. Zip.
             File mergedZip = new File(outputDir, input.outputName() + ".zip");
@@ -181,12 +154,30 @@ public final class MixEngine {
                 writeCollisionLog(input.collisionLogDir(), collisionLog);
             }
 
+            // 6b. Bedrock input. When packs are left out of the conversion, the converter reads a
+            //    second merge of the same staged packs without them, so shared files such as
+            //    items/paper.json lose only the left-out packs' entries. It repeats the first
+            //    merge's collisions and warnings, so it reports nothing itself.
+            File bedrockInputDir = new File(outputDir, input.outputName() + BEDROCK_INPUT_SUFFIX);
+            if (bedrockPackDirs.size() == unzippedPackDirs.size()) {
+                deleteDirectoryOffCriticalPath(bedrockInputDir);
+                bedrockInputDir = mergedDir;
+            } else {
+                MixerLogger silent = new MixerLogger() {
+                    @Override public void info(String m) { }
+                    @Override public void warn(String m) { }
+                    @Override public void collision(String m) { }
+                };
+                assemble(bedrockPackDirs, bedrockInputDir, new MergeOperations(silent), silent, false);
+            }
+
             return new MixOutput(
                     mergedZip,
                     mergedDir,
                     sha1Hex,
                     sha1Bytes,
-                    Collections.unmodifiableList(collisionLog)
+                    Collections.unmodifiableList(collisionLog),
+                    bedrockInputDir
             );
         } finally {
             // 7. Cleanup: only the per-pack staging dirs we materialized. The merged
@@ -208,6 +199,51 @@ public final class MixEngine {
     }
 
     /**
+     * Copies the staged packs into {@code mergedDir} in priority order, resolving collisions, then runs the
+     * whole-pack passes that read the merged result. The previous tree at that path is cleared first.
+     */
+    private void assemble(List<File> packDirs, File mergedDir, MergeOperations merge, MixerLogger wrapped,
+                          boolean warnNestedRoots) throws IOException {
+        checkCancelled();
+        if (mergedDir.exists()) {
+            // Renaming the previous cycle's merged tree aside frees the path instantly, so
+            // assembly starts now instead of after ~25k unlink calls.
+            deleteDirectoryOffCriticalPath(mergedDir);
+        }
+        checkCancelled();
+        if (!mergedDir.mkdirs() && !mergedDir.exists()) {
+            throw new IOException("Failed to create merged staging directory: " + mergedDir.getAbsolutePath());
+        }
+
+        for (File packDir : packDirs) {
+            checkCancelled();
+            if (!packDir.isDirectory())
+                throw new IOException("Required staged pack directory is unavailable: " + packDir.getAbsolutePath());
+            File[] subFiles = sortedChildren(packDir);
+            if (warnNestedRoots) warnOnLikelyNestedRoot(packDir, subFiles);
+            for (File subFile : subFiles) {
+                checkCancelled();
+                recursivelyCopyDirectory(subFile, mergedDir, merge, wrapped);
+            }
+        }
+
+        // Check overlay directory containment before any code resolves those directories on
+        // disk. Format metadata is intentionally preserved from the source packs.
+        checkCancelled();
+        merge.normalizeAndValidateOverlayMetadata(mergedDir);
+        checkCancelled();
+
+        // Atlas-overlay reconciliation must happen AFTER all packs have merged into mergedDir,
+        // because it reads pack.mcmeta (which itself was JSON-merged from every input).
+        merge.mergeBaseAtlasSourcesIntoOverlays(mergedDir);
+        checkCancelled();
+        new BlocksAtlasSanitizer(wrapped).sanitize(mergedDir);
+        checkCancelled();
+        merge.sanitizeMergedModels(mergedDir);
+        checkCancelled();
+    }
+
+    /**
      * Drop only byte-for-byte duplicate file inputs while preserving the first
      * occurrence (and therefore the configured priority order).
      *
@@ -219,8 +255,13 @@ public final class MixEngine {
      * the normal case of differently-sized packs adds metadata checks only;
      * directories and unreadable/non-regular inputs retain the old staging
      * path unchanged.</p>
+     *
+     * <p>A kept representative that is left out of the Bedrock conversion while a
+     * dropped copy is not goes into {@code keptForBedrock}, so the conversion still
+     * reads those bytes.</p>
      */
-    private List<File> removeExactDuplicateFileInputs(List<File> orderedPacks) {
+    private List<File> removeExactDuplicateFileInputs(List<File> orderedPacks, Set<File> bedrockExcluded,
+                                                      Set<File> keptForBedrock) {
         Map<Long, List<File>> representativesByLength = new HashMap<>();
         List<File> unique = new ArrayList<>(orderedPacks.size());
 
@@ -248,6 +289,7 @@ public final class MixEngine {
                 if (duplicateOf != null) {
                     logger.info("Skipping byte-identical resource pack " + pack.getName()
                             + "; it duplicates " + duplicateOf.getName() + ".");
+                    if (!bedrockExcluded.contains(pack)) keptForBedrock.add(duplicateOf);
                     continue;
                 }
 

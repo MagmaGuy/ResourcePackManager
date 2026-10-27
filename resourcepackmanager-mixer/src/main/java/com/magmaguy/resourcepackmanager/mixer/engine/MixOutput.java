@@ -12,11 +12,17 @@ import java.util.List;
  * filesystem layout — e.g. Bedrock conversion or copying the unzipped pack to
  * an external reroute target. Wrappers are responsible for deleting it when
  * they are done.</p>
+ *
+ * <p>{@link #bedrockInputDir} is what the Bedrock converter should read. It is
+ * {@code mergedDir} itself unless {@link MixInput#bedrockExcludedPacks()} left
+ * packs out, in which case it is a second merged folder without them that the
+ * wrapper also deletes.</p>
  */
 public record MixOutput(
     File mergedZip,
     File mergedDir,
     String sha1Hex,
     byte[] sha1Bytes,
-    List<String> collisionLog
+    List<String> collisionLog,
+    File bedrockInputDir
 ) {}

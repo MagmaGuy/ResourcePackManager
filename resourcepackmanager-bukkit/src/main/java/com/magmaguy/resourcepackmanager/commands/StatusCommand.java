@@ -119,6 +119,11 @@ public class StatusCommand extends AdvancedCommand {
             if (geyserFolder != null && !geyserFolder.isBlank()) {
                 Logger.sendMessage(sender, "&7Geyser folder override: &f" + geyserFolder);
             }
+            java.util.Set<File> leftOut = com.magmaguy.resourcepackmanager.mixer.Mix.getBedrockExcludedFiles();
+            if (!leftOut.isEmpty()) {
+                Logger.sendMessage(sender, "&7Left out of Bedrock: &f" + leftOut.stream().map(File::getName)
+                        .collect(java.util.stream.Collectors.joining(", ")));
+            }
         }
 
         // Diagnostic: if conversion is enabled but the pack didn't get produced,

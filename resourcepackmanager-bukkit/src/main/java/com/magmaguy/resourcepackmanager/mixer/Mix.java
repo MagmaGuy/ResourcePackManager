@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -38,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.Comparator;
 import java.util.function.BooleanSupplier;
@@ -79,8 +81,16 @@ public class Mix {
     @Getter
     private static byte[] finalSHA1Bytes;
     private static final AtomicLong STARTUP_REUSE_GENERATION = new AtomicLong();
+    // Members of orderedFiles left out of the Bedrock conversion, finalized with them.
+    private static Set<File> bedrockExcludedFiles = Set.of();
+    private static final Set<String> UNMATCHED_BEDROCK_EXCLUSIONS_REPORTED = ConcurrentHashMap.newKeySet();
 
     private Mix() {
+    }
+
+    /** The packs the last mix left out of the Bedrock conversion, for /rspm status. */
+    public static Set<File> getBedrockExcludedFiles() {
+        return bedrockExcludedFiles;
     }
 
     /**
@@ -221,8 +231,12 @@ public class Mix {
                 dataFolder,     // collisionLogDir
                 resourcePackName,
                 true,
-                reusableJavaSha1
+                reusableJavaSha1,
+                bedrockExcludedFiles
         );
+        if (!bedrockExcludedFiles.isEmpty())
+            Logger.info("Bedrock conversion leaves out " + bedrockExcludedFiles.stream().map(File::getName)
+                    .collect(java.util.stream.Collectors.joining(", ")) + " (bedrockExcludedPacks); the Java pack keeps them.");
         MixEngine engine = new MixEngine(BUKKIT_LOGGER, cancellationRequested);
         MixOutput out;
         try {
@@ -269,7 +283,7 @@ public class Mix {
         // Bedrock output. Cancellation is checked before withdrawal so an interrupted
         // lifecycle retains the last-good publication.
         boolean bedrockConversionSucceeded = BedrockConversion.generate(
-                out.mergedDir(),
+                out.bedrockInputDir(),
                 outputFolder,
                 conversionContext);
         if (cancellationRequested.getAsBoolean()) {
@@ -318,6 +332,10 @@ public class Mix {
             if (!AsyncDirectoryCleaner.deleteLater(out.mergedDir())) {
                 recursivelyDeleteDirectory(out.mergedDir());
             }
+        }
+        if (!out.bedrockInputDir().equals(out.mergedDir()) && out.bedrockInputDir().exists()
+                && !AsyncDirectoryCleaner.deleteLater(out.bedrockInputDir())) {
+            recursivelyDeleteDirectory(out.bedrockInputDir());
         }
 
         writeMixFingerprint(outputFolder, inputFingerprint, out.sha1Hex(), bedrockFingerprint);
@@ -526,7 +544,13 @@ public class Mix {
         // changing a pack byte, so they belong to the identity. Appended only when
         // present, so servers without them keep their existing identity.
         String declared = context.declaredBaseItemsDigest();
-        return declared.isEmpty() ? identity : identity + "|" + declared;
+        if (!declared.isEmpty()) identity += "|" + declared;
+        // Likewise the packs left out of the conversion; appended only when there are any.
+        if (!bedrockExcludedFiles.isEmpty())
+            identity += "|excluded=" + bedrockExcludedFiles.stream()
+                    .map(file -> file.getName().toLowerCase(java.util.Locale.ROOT)).sorted()
+                    .collect(java.util.stream.Collectors.joining(","));
+        return identity;
     }
 
     private static String verifiedJavaArchive(String inputFingerprint, File outputFolder, BooleanSupplier cancelled) {
@@ -687,6 +711,38 @@ public class Mix {
         // downstream consumer — fingerprint, reuse check, engine — agrees on the set that
         // will actually be merged.
         orderedFiles = PackQuarantine.excludeQuarantined(result);
+        bedrockExcludedFiles = bedrockExcludedPacks(orderedFiles, DefaultConfig.getBedrockExcludedPacks());
+    }
+
+    /**
+     * The merged packs that bedrockExcludedPacks leaves out of the Bedrock conversion. Entries match the way
+     * priorityOrder does, ignoring case: a pack's filename, its name without .zip, or a plugin name for that
+     * plugin's generated packs and cluster folders. An entry that matches nothing is reported once.
+     */
+    private static Set<File> bedrockExcludedPacks(List<File> packs, List<String> entries) {
+        if (entries == null || entries.isEmpty() || packs == null) return Set.of();
+        Set<String> wanted = new HashSet<>();
+        for (String entry : entries)
+            if (entry != null && !entry.isBlank()) wanted.add(entry.trim().toLowerCase(java.util.Locale.ROOT));
+        Set<File> excluded = new LinkedHashSet<>();
+        Set<String> matched = new HashSet<>();
+        for (File pack : packs) {
+            String name = pack.getName().toLowerCase(java.util.Locale.ROOT);
+            List<String> keys = new ArrayList<>(List.of(name));
+            if (name.endsWith(".zip")) keys.add(name.substring(0, name.length() - ".zip".length()));
+            for (String suffix : List.of("_shared_resource_pack.zip", "_resource_pack.zip",
+                    "_shared_cluster_temp", "_cluster_temp"))
+                if (name.endsWith(suffix)) keys.add(name.substring(0, name.length() - suffix.length()));
+            for (String key : keys) {
+                if (!wanted.contains(key)) continue;
+                excluded.add(pack);
+                matched.add(key);
+            }
+        }
+        for (String entry : wanted)
+            if (!matched.contains(entry) && UNMATCHED_BEDROCK_EXCLUSIONS_REPORTED.add(entry))
+                Logger.warn("bedrockExcludedPacks entry '" + entry + "' matches no resource pack being merged.");
+        return Collections.unmodifiableSet(excluded);
     }
 
     private static int configuredPriority(File file, List<String> priorityOrder) {

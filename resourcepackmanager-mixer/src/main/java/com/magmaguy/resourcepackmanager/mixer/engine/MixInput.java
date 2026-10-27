@@ -2,6 +2,7 @@ package com.magmaguy.resourcepackmanager.mixer.engine;
 
 import java.io.File;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Input parameters for {@link MixEngine#run}.
@@ -19,10 +20,15 @@ public record MixInput(
     File collisionLogDir,      // where collision_log.txt is written (when writeCollisionLog == true)
     String outputName,         // file name without extension, e.g. "ResourcePackManager_RSP"
     boolean writeCollisionLog,
-    String reusableArchiveSha1 // optional verified prior Java output; rebuild expanded converter input only
+    String reusableArchiveSha1, // optional verified prior Java output; rebuild expanded converter input only
+    Set<File> bedrockExcludedPacks // members of orderedPacks left out of the Bedrock converter's input
 ) {
+    public MixInput {
+        bedrockExcludedPacks = bedrockExcludedPacks == null ? Set.of() : Set.copyOf(bedrockExcludedPacks);
+    }
+
     public MixInput(List<File> orderedPacks, File workingDir, File outputDir,
                     File collisionLogDir, String outputName, boolean writeCollisionLog) {
-        this(orderedPacks, workingDir, outputDir, collisionLogDir, outputName, writeCollisionLog, null);
+        this(orderedPacks, workingDir, outputDir, collisionLogDir, outputName, writeCollisionLog, null, Set.of());
     }
 }
