@@ -60,7 +60,7 @@ public final class MagmaguyRspClient implements AutoCloseable {
 
     private static final int DEFAULT_CONNECT_TIMEOUT = 30;
     // ResourcePackHoster config.file.maxSize: 50,000 KiB, not 50 MiB.
-    private static final long MAX_JAVA_UPLOAD_BYTES = 50_000L * 1024L;
+    public static final long MAX_JAVA_UPLOAD_BYTES = 50_000L * 1024L;
     // Vanilla clients refuse to download a server pack above 250 MiB (DownloadedPackSource), whoever hosts it.
     private static final long CLIENT_MAX_PACK_BYTES = 250L * 1024L * 1024L;
     private static volatile String requestBaseUrl = BASE_URL;

@@ -31,6 +31,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -1462,15 +1463,30 @@ public class AutoHost {
      * the Bedrock-side "pack not ready" modal Geyser fires on the proxy.</p>
      */
     private static void warnPackNotReady(Player player) {
+        // A pack over the automatic hosting limit is never uploaded, so only working self-hosting
+        // can deliver it and no amount of waiting will.
+        LifecycleRun run = lifecycleRun;
+        boolean blocked = run != null && run.remoteUploadRejected().get() && selfHostedUrl == null;
         // Operator-facing: loud console banner so it's hard to miss.
         Logger.warn("=====================================================================");
         Logger.warn("⚠  RSPM: '" + player.getName() + "' joined before the resource pack is ready.");
         Logger.warn("⚠  Pack state: mixed=" + (Mix.getFinalResourcePack() != null)
                 + ", uploadedOrSelfHosted=" + (done || selfHostedUrl != null));
         Logger.warn("⚠  Effect: they're connected with NO resource pack right now.");
-        Logger.warn("⚠  Auto-recovery: they'll receive the pack automatically as soon as");
-        Logger.warn("⚠                 mixing+upload finish (typically <30s after boot).");
-        Logger.warn("⚠                 No need for them to rejoin.");
+        if (blocked) {
+            File pack = Mix.getFinalResourcePack();
+            Logger.warn("⚠  Cause: the pack" + (pack == null ? "" : " (" + megabytes(pack.length()) + " MB)")
+                    + " is over the " + megabytes(MagmaguyRspClient.MAX_JAVA_UPLOAD_BYTES)
+                    + " MB limit for automatic hosting,");
+            Logger.warn("⚠         and self-hosting is not serving it either.");
+            Logger.warn("⚠  Self-host check: " + (lastSelfHostCheck == null ? "not run yet." : lastSelfHostCheck));
+            Logger.warn("⚠  Fix: make self-hosting reachable (selfHostPort in config.yml, checked by");
+            Logger.warn("⚠       /rspm status) or shrink the pack below the limit, then run /rspm reload.");
+        } else {
+            Logger.warn("⚠  Auto-recovery: they'll receive the pack automatically as soon as");
+            Logger.warn("⚠                 mixing+upload finish (typically <30s after boot).");
+            Logger.warn("⚠                 No need for them to rejoin.");
+        }
         Logger.warn("=====================================================================");
 
         // Admin-facing: deferred 1 tick so the join greeting/welcome messages
@@ -1480,9 +1496,19 @@ public class AutoHost {
         Bukkit.getScheduler().runTaskLater(ResourcePackManager.plugin, () -> {
             if (!player.isOnline()) return;
             if (!player.isOp() && !player.hasPermission("resourcepackmanager.*")) return;
+            if (blocked) {
+                player.sendMessage("§c§l⚠ §e§l[RSPM] §r§eThe resource pack is too large for automatic hosting,"
+                        + " and self-hosting isn't serving it.");
+                player.sendMessage("§7Nobody gets the pack until that changes. See the console or /rspm status.");
+                return;
+            }
             player.sendMessage("§c§l⚠ §e§l[RSPM] §r§eResource pack still building on this server.");
             player.sendMessage("§7You'll receive it automatically in a few seconds — no need to rejoin.");
         }, 20L);
+    }
+
+    private static String megabytes(long bytes) {
+        return String.format(Locale.ROOT, "%.1f", bytes / 1_000_000.0);
     }
 
     /**
