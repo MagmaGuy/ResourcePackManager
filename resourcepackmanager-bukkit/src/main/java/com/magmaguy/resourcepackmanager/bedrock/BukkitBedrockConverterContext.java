@@ -12,6 +12,8 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -98,24 +100,40 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
     @Override
     public synchronized Map<String, List<String>> declaredBaseItems() {
         if (declaredBaseItems == null) {
-            Map<String, List<String>> read = Map.of();
+            Map<String, List<String>> read = new HashMap<>();
             try {
                 Plugin oraxen = Bukkit.getPluginManager().getPlugin("Oraxen");
-                if (oraxen != null) read = OraxenItemBases.read(oraxen.getDataFolder());
+                if (oraxen != null) mergeDeclaredBaseItems(read, OraxenItemBases.read(oraxen.getDataFolder()));
             } catch (RuntimeException unreadable) {
                 // A config RSPM cannot read only costs these items their declared base;
                 // the filename heuristic still maps them as before.
                 Logger.warn("Could not read Oraxen item materials for Bedrock conversion: " + unreadable.getMessage());
+            }
+            try {
+                Plugin craftEngine = Bukkit.getPluginManager().getPlugin("CraftEngine");
+                if (craftEngine != null && craftEngine.isEnabled())
+                    mergeDeclaredBaseItems(read, CraftEngineItemBases.read(craftEngine.getClass().getClassLoader()));
+            } catch (ReflectiveOperationException | LinkageError | RuntimeException unreadable) {
+                // Same fallback when CraftEngine's API changed: the heuristic bases remain.
+                Logger.warn("Could not read CraftEngine item materials for Bedrock conversion: " + unreadable);
             }
             declaredBaseItems = Map.copyOf(read);
         }
         return declaredBaseItems;
     }
 
+    private static void mergeDeclaredBaseItems(Map<String, List<String>> into, Map<String, List<String>> declared) {
+        declared.forEach((model, bases) -> into.merge(model, bases, (existing, added) -> {
+            List<String> union = new ArrayList<>(existing);
+            for (String base : added) if (!union.contains(base)) union.add(base);
+            return List.copyOf(union);
+        }));
+    }
+
     /**
      * Short digest of {@link #declaredBaseItems()} for the mix identity, so changing an
-     * Oraxen item's material reconverts even when the pack bytes stay the same. Empty
-     * when nothing is declared, which keeps the identity of servers without Oraxen.
+     * Oraxen or CraftEngine item's material reconverts even when the pack bytes stay the
+     * same. Empty when nothing is declared, which keeps the identity of servers without them.
      */
     public String declaredBaseItemsDigest() {
         Map<String, List<String>> declared = declaredBaseItems();

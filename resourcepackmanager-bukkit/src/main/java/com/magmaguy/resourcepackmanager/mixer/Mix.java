@@ -745,7 +745,7 @@ public class Mix {
         return Collections.unmodifiableSet(excluded);
     }
 
-    private static int configuredPriority(File file, List<String> priorityOrder) {
+    static int configuredPriority(File file, List<String> priorityOrder) {
         int priority = priorityOrder.indexOf(file.getName());
         if (priority >= 0) return priority;
 

@@ -7,10 +7,12 @@ import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.bedrock.BukkitBedrockConverterContext;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
+import com.magmaguy.resourcepackmanager.craftengine.CraftEngineDelivery;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
 import com.magmaguy.resourcepackmanager.http.NetworkKeyResolver;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
+import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 
@@ -249,6 +251,19 @@ public class StatusCommand extends AdvancedCommand {
         Logger.sendMessage(sender, "&8&m----- &5Integrations &8&m-----");
         Logger.sendMessage(sender, "&7Floodgate plugin: " + bool(Bukkit.getPluginManager().isPluginEnabled("floodgate")));
         Logger.sendMessage(sender, "&7Geyser-Spigot plugin: " + bool(Bukkit.getPluginManager().isPluginEnabled("Geyser-Spigot")));
+        if (Bukkit.getPluginManager().isPluginEnabled("CraftEngine")) {
+            Logger.sendMessage(sender, "&7CraftEngine plugin: " + bool(true));
+            if (CraftEngineDelivery.doubleDelivery()) {
+                Logger.sendMessage(sender, "&c⚠ CraftEngine also sends its own pack on join, so players get it twice.");
+                Logger.sendMessage(sender, "&c  Set resource-pack.delivery.send-on-join: false in");
+                Logger.sendMessage(sender, "&c  plugins/CraftEngine/config.yml, then /ce reload all.");
+            }
+        }
+        List<String> waitingPacks = ThirdPartyResourcePack.pendingSourceDescriptions();
+        if (!waitingPacks.isEmpty()) {
+            Logger.sendMessage(sender, "&7Waiting for resource packs: &f" + String.join(", ", waitingPacks));
+            Logger.sendMessage(sender, "&7  &oMerged automatically once the plugin writes the file.");
+        }
         Logger.sendMessage(sender, "&7Online players: &f" + Bukkit.getOnlinePlayers().size());
 
         Logger.sendMessage(sender, "&8&m-------------------------");

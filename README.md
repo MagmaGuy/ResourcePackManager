@@ -80,6 +80,7 @@ ResourcePackManager merges where possible but cannot fix fundamental conflicts (
 * [CannonRTP](https://nightbreak.io/plugin/cannonrtp)
 * [ResurrectionChest](https://nightbreak.io/plugin/resurrectionchest)
 * BetterHUD
+* CraftEngine (set `send-on-join: false` in CraftEngine's config; `/ce reload all` writes the pack RSPM merges)
 * ItemsAdder (requires unencrypting & disabling hosting; `/rspm itemsadder configure` does this for you)
 * InfiniteVehicles
 * MMOInventory

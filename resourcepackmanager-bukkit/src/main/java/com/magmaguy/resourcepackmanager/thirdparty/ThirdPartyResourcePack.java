@@ -41,6 +41,7 @@ public class ThirdPartyResourcePack {
     public static Set<ThirdPartyResourcePack> thirdPartyResourcePacks = ConcurrentHashMap.newKeySet();
     private static final Set<String> configurationExcludedPluginNames = ConcurrentHashMap.newKeySet();
     private static final Set<String> configurationExcludedMixerEntries = ConcurrentHashMap.newKeySet();
+    private static final PendingPackSources pendingSources = new PendingPackSources();
 
     @Getter
     private final String pluginName;
@@ -199,6 +200,9 @@ public class ThirdPartyResourcePack {
             @Override
             public void run() {
                 if (generation != watchdogGeneration) return;
+                // A pack written after startup joins the monitored set here; being new and
+                // unsent, it starts the usual stability wait and then a remix.
+                if (!mixInProgress) registerArrivedSources();
                 // Phase 1: Wait for all monitored plugins to finish initializing
                 if (!allPluginsReady) {
                     for (ThirdPartyResourcePack thirdPartyResourcePack : thirdPartyResourcePacks) {
@@ -383,6 +387,7 @@ public class ThirdPartyResourcePack {
         waitForActiveMix();
         for (ThirdPartyResourcePack pack : thirdPartyResourcePacks) pack.pendingSourcePublication.set(null);
         thirdPartyResourcePacks.clear();
+        pendingSources.clear();
         configurationExcludedPluginNames.clear();
         configurationExcludedMixerEntries.clear();
         // A reload is an explicit "try again" from the operator, so quarantines start
@@ -483,8 +488,41 @@ public class ThirdPartyResourcePack {
         }
 
         if (!Bukkit.getPluginManager().isPluginEnabled(compatiblePluginConfigFields.getPluginName())) return;
-        Logger.warn("Found " + compatiblePluginConfigFields.getPluginName() + " but none of its configured resource pack paths exist: "
-                + describeConfiguredPaths(local, additional) + " . ResourcePackManager will not be able to merge the resource pack from this plugin.");
+        if (local == null && additional == null) {
+            Logger.warn("Plugin " + compatiblePluginConfigFields.getPluginName() + " has no resource pack path specified! ResourcePackManager will not be able to merge the resource pack from this plugin.");
+            return;
+        }
+        // Plugins such as CraftEngine write their pack after startup. Wait for it instead of
+        // giving up; the watchdog registers it when it appears and the rest mixes meanwhile.
+        pendingSources.add(compatiblePluginConfigFields);
+        String reloadCommand = blankToNull(compatiblePluginConfigFields.getReloadCommand());
+        Logger.info("Found " + compatiblePluginConfigFields.getPluginName() + ", but its resource pack is not at "
+                + describeConfiguredPaths(local, additional) + " yet. ResourcePackManager will merge it as soon as it appears"
+                + (reloadCommand == null ? "." : "; /" + reloadCommand + " usually generates it."));
+    }
+
+    /**
+     * Installed integrations still waiting for their pack file, as
+     * {@code PluginName (expected path)}, for {@code /rspm status}.
+     */
+    public static List<String> pendingSourceDescriptions() {
+        return pendingSources.snapshot().stream()
+                .map(fields -> fields.getPluginName() + " (" + describeConfiguredPaths(
+                        blankToNull(fields.getLocalPath()), blankToNull(fields.getAdditionalLocalPath())) + ")")
+                .toList();
+    }
+
+    public static boolean isPendingSource(String pluginName) {
+        return pendingSources.snapshot().stream().anyMatch(fields -> fields.getPluginName().equalsIgnoreCase(pluginName));
+    }
+
+    /** Registers waiting integrations whose pack file now exists. Runs on the watchdog. */
+    private static void registerArrivedSources() {
+        if (pendingSources.isEmpty()) return;
+        for (CompatiblePluginConfigFields fields : pendingSources.takeArrived(ThirdPartyResourcePack::localSourceExists)) {
+            Logger.info(fields.getPluginName() + " wrote its resource pack. ResourcePackManager is merging it now.");
+            initializeThirdPartyResourcePack(fields);
+        }
     }
 
     /**

@@ -29,6 +29,7 @@ import com.magmaguy.resourcepackmanager.config.DataConfig;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfigFields;
+import com.magmaguy.resourcepackmanager.craftengine.CraftEngineDelivery;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.playermanager.PlayerManager;
 import com.magmaguy.resourcepackmanager.thirdparty.ThirdPartyResourcePack;
@@ -184,6 +185,7 @@ public class ResourcePackManager extends JavaPlugin {
         for (CompatiblePluginConfigFields compatiblePluginConfigFields : CompatiblePluginConfig.getCompatiblePlugins().values()) {
             ThirdPartyResourcePack.initializeThirdPartyResourcePack(compatiblePluginConfigFields);
         }
+        CraftEngineDelivery.warnIfDoubleDelivery();
     }
 
     private void syncInitialization(PluginInitializationContext initializationContext) {
