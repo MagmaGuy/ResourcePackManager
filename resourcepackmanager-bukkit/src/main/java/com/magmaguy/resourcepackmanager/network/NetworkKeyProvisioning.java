@@ -35,8 +35,6 @@ public final class NetworkKeyProvisioning implements Listener, PluginMessageList
     private static final String GRANT = "KEY_GRANT";
 
     private static NetworkKeyProvisioning instance;
-    private boolean forwardingPolicyLoaded;
-    private String forwardingSecret;
 
     private NetworkKeyProvisioning() {
     }
@@ -91,13 +89,12 @@ public final class NetworkKeyProvisioning implements Listener, PluginMessageList
             NetworkMode.acceptProvisionedKey(grantedKey);
             return;
         }
+        // Read on every grant, not once: an operator who corrects paper-global.yml after a
+        // rejection must be linked by the next player connection, without a restart.
+        // Grants stop costing a read once the key is held (the early return above).
         final String secret;
         try {
-            if (!forwardingPolicyLoaded) {
-                forwardingSecret = readForwardingSecret();
-                forwardingPolicyLoaded = true;
-            }
-            secret = forwardingSecret;
+            secret = readForwardingSecret();
         } catch (Exception failure) {
             Logger.warn("Rejected network key: could not read the forwarding authentication policy: "
                     + failure.getMessage());
