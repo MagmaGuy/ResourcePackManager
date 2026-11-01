@@ -14,7 +14,10 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.Enumeration;
 import java.util.HexFormat;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * Entry point Geyser loads for the RSPM custom Bedrock entity bridge.
@@ -73,6 +76,13 @@ public class RspmGeyserBridgeExtension implements Extension {
             "org.geysermc.mcprotocollib.protocol.packet.common.clientbound.ClientboundCustomPayloadPacket",
             "org.geysermc.mcprotocollib.protocol.packet.common.serverbound.ServerboundCustomPayloadPacket"
     };
+
+    /** Jar path of every class the bridge ships, including its shaded bridge-common and Gson. */
+    private static final String BRIDGE_CLASS_PATH_PREFIX = "com/magmaguy/resourcepackmanager/geyserbridge/";
+
+    static {
+        defineBridgeClasses();
+    }
 
     private volatile RspmGeyserBridgeCore core;
     private volatile boolean disabled;
@@ -271,6 +281,57 @@ public class RspmGeyserBridgeExtension implements Extension {
             return HexFormat.of().formatHex(digest.digest());
         } catch (Exception | LinkageError ignored) {
             return "unavailable";
+        }
+    }
+
+    /**
+     * Defines every bridge class through this class's own loader while Geyser is still
+     * loading extensions, so the whole bridge lives in one class loader.
+     *
+     * <p>On BungeeCord, Geyser loads extensions before ResourcePackManager's plugin class
+     * loader exists, so this class and {@link RspmGeyserBridgeCore} are defined by Geyser's
+     * extension loader. That loader asks its parent first, and BungeeCord's plugin loaders
+     * search every other plugin, including the universal ResourcePackManager jar, which ships
+     * these same classes. A bridge class first needed after ResourcePackManager loaded
+     * ({@link ControllerPropertyIndex}, the core's packet listener and switch map, the shaded
+     * bridge-common and Gson) was therefore defined by ResourcePackManager's loader instead.
+     * Different loaders make different runtime packages, so the core's package-private access
+     * failed with {@link IllegalAccessError} and the bridge disabled itself.</p>
+     *
+     * <p>Resolution only ever gains loaders over time, so loading here can only keep a class in
+     * this loader or resolve it as it would have been resolved later. Where the bridge already
+     * resolved to one loader, as on Velocity, this only moves the loading earlier. Classes are
+     * not initialized, and a class whose Geyser supertype this build lacks is skipped:
+     * {@link #missingRequiredClass()} disables the bridge before anything uses it.</p>
+     */
+    private static void defineBridgeClasses() {
+        try {
+            ClassLoader loader = RspmGeyserBridgeExtension.class.getClassLoader();
+            Path artifact = Path.of(RspmGeyserBridgeExtension.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI());
+            if (!Files.isRegularFile(artifact)) {
+                // Exploded classes (unit tests) have no second copy to split against.
+                return;
+            }
+            try (ZipFile jar = new ZipFile(artifact.toFile())) {
+                Enumeration<? extends ZipEntry> entries = jar.entries();
+                while (entries.hasMoreElements()) {
+                    String name = entries.nextElement().getName();
+                    if (!name.startsWith(BRIDGE_CLASS_PATH_PREFIX) || !name.endsWith(".class")
+                            || name.endsWith("module-info.class") || name.endsWith("package-info.class")) {
+                        continue;
+                    }
+                    String className = name.substring(0, name.length() - ".class".length()).replace('/', '.');
+                    try {
+                        Class.forName(className, false, loader);
+                    } catch (ClassNotFoundException | LinkageError skipped) {
+                        // Left to load lazily, as before; see the method comment.
+                    }
+                }
+            }
+        } catch (Exception | LinkageError ignored) {
+            // Best effort: a failure here leaves the earlier lazy loading, and must never
+            // stop Geyser from loading the extension.
         }
     }
 
