@@ -22,6 +22,7 @@ import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.mixer.engine.PackStagingException;
 import com.magmaguy.resourcepackmanager.mixer.engine.internal.Sha1;
 import lombok.Getter;
+import org.bukkit.Bukkit;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.io.File;
@@ -83,6 +84,8 @@ public class Mix {
     private static final AtomicLong STARTUP_REUSE_GENERATION = new AtomicLong();
     // Members of orderedFiles left out of the Bedrock conversion, finalized with them.
     private static Set<File> bedrockExcludedFiles = Set.of();
+    // The part of bedrockExcludedFiles left out only because GeyserModelEngine is installed.
+    private static Set<File> geyserModelEngineExcludedFiles = Set.of();
     private static final Set<String> UNMATCHED_BEDROCK_EXCLUSIONS_REPORTED = ConcurrentHashMap.newKeySet();
 
     private Mix() {
@@ -234,9 +237,15 @@ public class Mix {
                 reusableJavaSha1,
                 bedrockExcludedFiles
         );
-        if (!bedrockExcludedFiles.isEmpty())
-            Logger.info("Bedrock conversion leaves out " + bedrockExcludedFiles.stream().map(File::getName)
-                    .collect(java.util.stream.Collectors.joining(", ")) + " (bedrockExcludedPacks); the Java pack keeps them.");
+        List<String> configuredOut = bedrockExcludedFiles.stream()
+                .filter(file -> !geyserModelEngineExcludedFiles.contains(file)).map(File::getName).toList();
+        if (!configuredOut.isEmpty())
+            Logger.info("Bedrock conversion leaves out " + String.join(", ", configuredOut)
+                    + " (bedrockExcludedPacks); the Java pack keeps them.");
+        if (!geyserModelEngineExcludedFiles.isEmpty())
+            Logger.info("GeyserModelEngine is installed, so Bedrock players see ModelEngine models as its entities."
+                    + " Bedrock conversion leaves out " + geyserModelEngineExcludedFiles.stream().map(File::getName)
+                    .collect(java.util.stream.Collectors.joining(", ")) + "; Java players still get it.");
         MixEngine engine = new MixEngine(BUKKIT_LOGGER, cancellationRequested);
         MixOutput out;
         try {
@@ -711,7 +720,25 @@ public class Mix {
         // downstream consumer — fingerprint, reuse check, engine — agrees on the set that
         // will actually be merged.
         orderedFiles = PackQuarantine.excludeQuarantined(result);
-        bedrockExcludedFiles = bedrockExcludedPacks(orderedFiles, DefaultConfig.getBedrockExcludedPacks());
+        Set<File> configured = bedrockExcludedPacks(orderedFiles, DefaultConfig.getBedrockExcludedPacks(), true);
+        Set<File> automatic = new LinkedHashSet<>();
+        if (geyserModelEngineInstalled())
+            for (File pack : bedrockExcludedPacks(orderedFiles, List.of("ModelEngine"), false))
+                if (!configured.contains(pack)) automatic.add(pack);
+        Set<File> all = new LinkedHashSet<>(configured);
+        all.addAll(automatic);
+        bedrockExcludedFiles = Collections.unmodifiableSet(all);
+        geyserModelEngineExcludedFiles = Collections.unmodifiableSet(automatic);
+    }
+
+    /**
+     * GeyserModelEngine shows ModelEngine models to Bedrock players as Bedrock entities of its own and uses no
+     * custom items. Converting ModelEngine's pack as well turns every bone into Bedrock custom items no one sees:
+     * on one network that came to tens of thousands, and every Bedrock client that joined crashed. Checked by
+     * presence rather than enabled state so plugin load order cannot hide it.
+     */
+    private static boolean geyserModelEngineInstalled() {
+        return Bukkit.getServer() != null && Bukkit.getPluginManager().getPlugin("GeyserModelEngine") != null;
     }
 
     /**
@@ -719,7 +746,7 @@ public class Mix {
      * priorityOrder does, ignoring case: a pack's filename, its name without .zip, or a plugin name for that
      * plugin's generated packs and cluster folders. An entry that matches nothing is reported once.
      */
-    private static Set<File> bedrockExcludedPacks(List<File> packs, List<String> entries) {
+    private static Set<File> bedrockExcludedPacks(List<File> packs, List<String> entries, boolean reportUnmatched) {
         if (entries == null || entries.isEmpty() || packs == null) return Set.of();
         Set<String> wanted = new HashSet<>();
         for (String entry : entries)
@@ -740,7 +767,7 @@ public class Mix {
             }
         }
         for (String entry : wanted)
-            if (!matched.contains(entry) && UNMATCHED_BEDROCK_EXCLUSIONS_REPORTED.add(entry))
+            if (reportUnmatched && !matched.contains(entry) && UNMATCHED_BEDROCK_EXCLUSIONS_REPORTED.add(entry))
                 Logger.warn("bedrockExcludedPacks entry '" + entry + "' matches no resource pack being merged.");
         return Collections.unmodifiableSet(excluded);
     }
