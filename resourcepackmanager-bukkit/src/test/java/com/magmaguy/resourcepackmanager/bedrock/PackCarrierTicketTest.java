@@ -69,9 +69,9 @@ final class PackCarrierTicketTest {
     void withoutTheHorseArmorDefinitionBonesKeepTheGuessedBases() throws IOException {
         Map<String, Set<String>> bases = basesByModel(convert(false));
 
-        for (String bone : BONES)
-            assertTrue(bases.get(bone).containsAll(BedrockMappingFixture.GUESSED_BASES), bone + " bases: " + bases.get(bone));
-        assertTrue(bases.get("modelengine:ghoul/sword_r").size() >= 10, "sword_r bases: " + bases.get("modelengine:ghoul/sword_r"));
+        // The ticket's symptom: the generic fallback, or the six swords a "sword" name guesses.
+        assertEquals(new TreeSet<>(BedrockMappingFixture.GUESSED_BASES), bases.get("modelengine:ghoul/head"));
+        assertEquals(new TreeSet<>(BedrockMappingFixture.GUESSED_BASES.subList(4, 10)), bases.get("modelengine:ghoul/sword_r"));
     }
 
     private record Mapping(String base, String model, String bedrockIdentifier) {
