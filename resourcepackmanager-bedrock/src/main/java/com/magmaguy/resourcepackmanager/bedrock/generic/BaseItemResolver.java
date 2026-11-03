@@ -21,6 +21,7 @@ import java.util.Optional;
  *
  * <p>Resolution order: filename heuristic for clearly-weapon/tool patterns →
  * equipment-file lookup (armor case) → broader filename heuristic → generic fallback.
+ * Base items the pack itself puts the models on ({@link PackCarrierIndex}) skip all four.
  *
  * <p>The early weapon/tool heuristic precedes the equipment lookup specifically because
  * many plugins (e.g. EliteMobs) ship a single "material" equipment file (e.g.
@@ -65,6 +66,20 @@ public final class BaseItemResolver {
      */
     public static List<String> resolve(ItemsDefinition def, AssetResolver resolver,
                                        Map<String, List<String>> pluginDeclaredBaseItems) {
+        return resolve(def, resolver, pluginDeclaredBaseItems, List.of());
+    }
+
+    /**
+     * As {@link #resolve(ItemsDefinition, AssetResolver, Map)}, with the base items the pack
+     * itself puts this definition's models on ({@link PackCarrierIndex#carriersFor}). When
+     * present they replace the filename heuristic and the generic fallback: the producer has
+     * named its carrier, and every guessed base is one more Bedrock custom item. Without this,
+     * each ModelEngine bone mapped under about twelve base items although ModelEngine only
+     * ever shows bones on leather horse armor.
+     */
+    public static List<String> resolve(ItemsDefinition def, AssetResolver resolver,
+                                       Map<String, List<String>> pluginDeclaredBaseItems,
+                                       List<String> packCarriers) {
         List<String> candidates;
         if (def.hasExplicitBaseItems()) {
             candidates = def.explicitBaseItems();
@@ -73,7 +88,9 @@ public final class BaseItemResolver {
             // the filename heuristic here would misroute carrot_on_a_stick to minecraft:stick.
             candidates = List.of(def.itemIdentifier());
         } else {
-            candidates = resolveHeuristic(def, resolver);
+            candidates = packCarriers == null || packCarriers.isEmpty()
+                    ? resolveHeuristic(def, resolver)
+                    : packCarriers;
 
             // FreeMinecraftModels always wears items on a leather_horse_armor carrier when
             // rendering bones via packet armor stands. Ensure the FMM model is registered

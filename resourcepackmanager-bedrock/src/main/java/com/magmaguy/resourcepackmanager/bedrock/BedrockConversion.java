@@ -10,6 +10,7 @@ import com.magmaguy.resourcepackmanager.bedrock.generic.GeyserDefinitionEntry;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ItemModelTreeWalker;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ItemsDefinition;
 import com.magmaguy.resourcepackmanager.bedrock.generic.MappedItemRegistry;
+import com.magmaguy.resourcepackmanager.bedrock.generic.PackCarrierIndex;
 import com.magmaguy.resourcepackmanager.bedrock.generic.PredicateRecord;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ResolvedLeaf;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ResolvedModel;
@@ -41,6 +42,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
@@ -64,7 +67,7 @@ import java.util.zip.ZipFile;
  * the {@link BedrockConverterContext}.</p>
  */
 public class BedrockConversion {
-    public static final String OUTPUT_REVISION = "plain-vanilla-overrides-v1";
+    public static final String OUTPUT_REVISION = "pack-declared-carriers-v1";
 
     public static final String BEDROCK_PACK_NAME = "ResourcePackManager_Bedrock";
     public static final String GEYSER_MAPPINGS_NAME = "rspm_geyser_mappings.json";
@@ -521,9 +524,21 @@ public class BedrockConversion {
             Map<String, List<String>> pluginBaseItems = ctx.declaredBaseItems();
             int pluginBased = 0;
 
+            // Walked once up front: the carrier index needs every definition's leaves before
+            // the first custom definition resolves its base items.
+            List<List<ResolvedLeaf>> walkedLeaves = new ArrayList<>(generic.size());
             for (ItemsDefinition def : generic) {
                 if (ctx.isCancellationRequested()) return;
-                List<ResolvedLeaf> leaves = ItemModelTreeWalker.walk(def, assetResolver);
+                walkedLeaves.add(ItemModelTreeWalker.walk(def, assetResolver));
+            }
+            PackCarrierIndex packCarriers = PackCarrierIndex.build(generic, walkedLeaves);
+            int packCarried = 0;
+            Set<String> packCarrierBases = new TreeSet<>();
+
+            for (int defIndex = 0; defIndex < generic.size(); defIndex++) {
+                if (ctx.isCancellationRequested()) return;
+                ItemsDefinition def = generic.get(defIndex);
+                List<ResolvedLeaf> leaves = walkedLeaves.get(defIndex);
                 // assets/minecraft/items/<item>.json is scanned for the custom-model-data
                 // branches packs put there. Its branch without predicates is the vanilla
                 // item's own look; mapped to Geyser it would replace that item for every
@@ -535,8 +550,15 @@ public class BedrockConversion {
                     leaves = leaves.stream().filter(leaf -> !leaf.predicates().isEmpty()).toList();
                 }
                 if (leaves.isEmpty()) continue;
-                List<String> baseItems = BaseItemResolver.resolve(def, assetResolver, pluginBaseItems);
+                List<String> carriers = def.hasExplicitBaseItems() || def.isRootVanillaItem()
+                        ? List.of()
+                        : packCarriers.carriersFor(leaves);
+                List<String> baseItems = BaseItemResolver.resolve(def, assetResolver, pluginBaseItems, carriers);
                 if (baseItems.isEmpty()) continue;
+                if (!carriers.isEmpty()) {
+                    packCarried++;
+                    packCarrierBases.addAll(carriers);
+                }
                 if (!def.hasExplicitBaseItems() && !def.isRootVanillaItem()
                         && pluginBaseItems.containsKey(def.itemIdentifier())) pluginBased++;
 
@@ -631,6 +653,13 @@ public class BedrockConversion {
                 BedrockLog.info("[BedrockConverter] " + pluginBased
                         + " custom item model(s) also map under the base item their plugin's config gives them"
                         + " (such as Oraxen's material).");
+            }
+            if (packCarried > 0) {
+                BedrockLog.info("[BedrockConverter] " + packCarried
+                        + " custom item model(s) map only under the base item their own pack puts them on ("
+                        + String.join(", ", new ArrayList<>(packCarrierBases).subList(0, Math.min(4, packCarrierBases.size())))
+                        + (packCarrierBases.size() > 4 ? " and " + (packCarrierBases.size() - 4) + " more" : "")
+                        + "), such as ModelEngine bones on leather horse armor, instead of every guessed base item.");
             }
 
             // Per-pipeline emission counts are folded into the final
