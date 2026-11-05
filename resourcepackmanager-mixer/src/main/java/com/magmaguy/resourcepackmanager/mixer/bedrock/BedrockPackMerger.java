@@ -48,7 +48,8 @@ import java.util.zip.ZipOutputStream;
  * Bedrock pack zip that the proxy can hand to Geyser. Each backend has already run
  * {@code BedrockConversion} locally and produced its own
  * {@code ResourcePackManager_Bedrock.zip}; this merger does a file-level union across
- * all of them, JSON-merges {@code textures/item_texture.json}, and regenerates a fresh
+ * all of them, JSON-merges {@code textures/item_texture.json} and
+ * {@code sounds/sound_definitions.json}, and regenerates a fresh
  * {@code manifest.json} pinned to a stable proxy-side UUID so Bedrock clients cache the
  * merged pack across re-merges.
  *
@@ -68,6 +69,8 @@ public final class BedrockPackMerger {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
     private static final String MANIFEST_NAME = "manifest.json";
     private static final String ITEM_TEXTURE_REL = "textures/item_texture.json";
+    private static final String SOUND_DEFINITIONS_REL = "sounds/sound_definitions.json";
+    private static final String DEFAULT_SOUND_FORMAT_VERSION = "1.20.20";
     private static final String BEDROCK_PACK_NAME = "ResourcePackManager_Bedrock";
     private static final int GEYSER_PATH_WARNING_LENGTH = 80;
     private static final String ENTITY_TEXTURE_PREFIX = "textures/entity/";
@@ -181,7 +184,8 @@ public final class BedrockPackMerger {
             }
 
             // 3. Walk every file in each unzipped pack except manifest.json (always
-            //    regenerated below) and textures/item_texture.json (JSON-merged below).
+            //    regenerated below), textures/item_texture.json and
+            //    sounds/sound_definitions.json (both JSON-merged below).
             //    File-level union, last writer wins on collision. Track collision owner
             //    indices so the warn message names the conflicting backends.
             Map<String, Integer> lastWriterByRelPath = new LinkedHashMap<>();
@@ -207,6 +211,7 @@ public final class BedrockPackMerger {
                         String rel = packRoot.relativize(file).toString().replace('\\', '/');
                         if (rel.equals(MANIFEST_NAME)) return FileVisitResult.CONTINUE;
                         if (rel.equals(ITEM_TEXTURE_REL)) return FileVisitResult.CONTINUE;
+                        if (rel.equals(SOUND_DEFINITIONS_REL)) return FileVisitResult.CONTINUE;
 
                         File target = new File(stagingDir, rel);
                         if (target.exists()) {
@@ -226,6 +231,9 @@ public final class BedrockPackMerger {
 
             // 4. JSON-merge every textures/item_texture.json: union the texture_data map.
             mergeItemTextures(unzippedDirs, stagingDir);
+            // 4b. Same for sounds/sound_definitions.json, so every backend's custom sounds stay
+            //     defined. Merged before path compaction, which rewrites the sound paths in it.
+            mergeSoundDefinitions(unzippedDirs, stagingDir);
 
             // 5. Compact any long backend-supplied paths before the manifest digest.
             compactLongPackPaths(stagingDir);
@@ -548,6 +556,89 @@ public final class BedrockPackMerger {
         Files.createDirectories(output.getParentFile().toPath());
         try (Writer w = new BufferedWriter(new FileWriter(output, StandardCharsets.UTF_8), 1 << 16)) {
             GSON.toJson(root, w);
+        }
+    }
+
+    /**
+     * JSON-merge each input's {@code sounds/sound_definitions.json}: union the
+     * {@code sound_definitions} map, last writer wins per sound event like plain files.
+     * Keeps the highest {@code format_version} seen. Writes nothing when no input has one.
+     */
+    private void mergeSoundDefinitions(List<File> unzippedDirs, File stagingDir) throws IOException {
+        JsonObject merged = new JsonObject();
+        Map<String, Integer> ownerByKey = new LinkedHashMap<>();
+        String formatVersion = null;
+        boolean anyInput = false;
+
+        for (int i = 0; i < unzippedDirs.size(); i++) {
+            File packDir = unzippedDirs.get(i);
+            if (packDir == null) continue;
+            File f = new File(packDir, SOUND_DEFINITIONS_REL);
+            if (!f.isFile()) continue;
+            JsonObject root = parseJsonOrNull(f);
+            if (root == null) {
+                throw new IOException("Could not parse " + SOUND_DEFINITIONS_REL
+                        + " from backend #" + i + " (" + f.getAbsolutePath() + ")");
+            }
+            anyInput = true;
+            JsonObject definitions;
+            if (root.has("sound_definitions") && root.get("sound_definitions").isJsonObject()) {
+                definitions = root.getAsJsonObject("sound_definitions");
+                if (root.has("format_version") && root.get("format_version").isJsonPrimitive()) {
+                    String version = root.get("format_version").getAsString();
+                    if (formatVersion == null || compareDottedVersions(version, formatVersion) > 0) {
+                        formatVersion = version;
+                    }
+                }
+            } else {
+                // Legacy layout: definitions directly at the root.
+                definitions = new JsonObject();
+                for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
+                    if (entry.getValue().isJsonObject()) definitions.add(entry.getKey(), entry.getValue());
+                }
+            }
+            for (Map.Entry<String, JsonElement> entry : definitions.entrySet()) {
+                String key = entry.getKey();
+                if (merged.has(key)) {
+                    Integer prev = ownerByKey.get(key);
+                    logger.warn("[BedrockPackMerger] sound_definitions.json key collision on '" + key
+                            + "' between backend #" + (prev == null ? "?" : prev)
+                            + " and backend #" + i
+                            + "; last writer wins (backend #" + i + ").");
+                }
+                merged.add(key, entry.getValue());
+                ownerByKey.put(key, i);
+            }
+        }
+        if (!anyInput) return;
+
+        JsonObject root = new JsonObject();
+        root.addProperty("format_version", formatVersion == null ? DEFAULT_SOUND_FORMAT_VERSION : formatVersion);
+        root.add("sound_definitions", merged);
+        File output = new File(stagingDir, SOUND_DEFINITIONS_REL);
+        Files.createDirectories(output.getParentFile().toPath());
+        try (Writer w = new BufferedWriter(new FileWriter(output, StandardCharsets.UTF_8), 1 << 16)) {
+            GSON.toJson(root, w);
+        }
+    }
+
+    /** Compares dotted numeric versions such as 1.20.20; non-numeric parts count as 0. */
+    private static int compareDottedVersions(String a, String b) {
+        String[] left = a.split("\\.");
+        String[] right = b.split("\\.");
+        for (int i = 0; i < Math.max(left.length, right.length); i++) {
+            int cmp = Integer.compare(versionPart(left, i), versionPart(right, i));
+            if (cmp != 0) return cmp;
+        }
+        return 0;
+    }
+
+    private static int versionPart(String[] parts, int index) {
+        if (index >= parts.length) return 0;
+        try {
+            return Integer.parseInt(parts[index].trim());
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 
