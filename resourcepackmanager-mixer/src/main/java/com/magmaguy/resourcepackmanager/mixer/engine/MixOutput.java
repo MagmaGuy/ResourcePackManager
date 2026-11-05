@@ -2,6 +2,7 @@ package com.magmaguy.resourcepackmanager.mixer.engine;
 
 import java.io.File;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Result of a {@link MixEngine#run(MixInput)} call.
@@ -17,6 +18,13 @@ import java.util.List;
  * {@code mergedDir} itself unless {@link MixInput#bedrockExcludedPacks()} left
  * packs out, in which case it is a second merged folder without them that the
  * wrapper also deletes.</p>
+ *
+ * <p>{@link #bedrockSoundInputDir} is where the Bedrock converter reads custom sounds. It is
+ * {@code bedrockInputDir} unless {@link MixInput#bedrockSoundExcludedPacks()} left packs' sounds
+ * out, in which case it is a third folder holding only the sounds.json files and sounds/ trees of
+ * the remaining packs, which the wrapper also deletes. {@link #bedrockSoundSources} names the
+ * source pack of each sound file ({@code assets/<ns>/sounds/<path>} to pack file name) when
+ * {@link MixInput#bedrockSounds()} is set, and is empty otherwise.</p>
  */
 public record MixOutput(
     File mergedZip,
@@ -24,5 +32,17 @@ public record MixOutput(
     String sha1Hex,
     byte[] sha1Bytes,
     List<String> collisionLog,
-    File bedrockInputDir
-) {}
+    File bedrockInputDir,
+    File bedrockSoundInputDir,
+    Map<String, String> bedrockSoundSources
+) {
+    public MixOutput {
+        if (bedrockSoundInputDir == null) bedrockSoundInputDir = bedrockInputDir;
+        bedrockSoundSources = bedrockSoundSources == null ? Map.of() : Map.copyOf(bedrockSoundSources);
+    }
+
+    public MixOutput(File mergedZip, File mergedDir, String sha1Hex, byte[] sha1Bytes,
+                     List<String> collisionLog, File bedrockInputDir) {
+        this(mergedZip, mergedDir, sha1Hex, sha1Bytes, collisionLog, bedrockInputDir, bedrockInputDir, Map.of());
+    }
+}

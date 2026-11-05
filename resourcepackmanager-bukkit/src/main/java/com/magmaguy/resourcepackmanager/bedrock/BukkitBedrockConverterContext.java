@@ -2,6 +2,7 @@ package com.magmaguy.resourcepackmanager.bedrock;
 
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
+import com.magmaguy.resourcepackmanager.bedrock.converter.SoundDefinitionConverter;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
@@ -32,6 +33,7 @@ import java.util.function.BooleanSupplier;
  * live rather than cached.</p>
  */
 public final class BukkitBedrockConverterContext implements BedrockConverterContext {
+    private static volatile SoundDefinitionConverter.Result lastSoundConversion;
     private final BooleanSupplier runCancellation;
     /** Read once per context: the mix identity and the conversion must see the same set. */
     private Map<String, List<String>> declaredBaseItems;
@@ -95,6 +97,24 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
     @Override
     public boolean isBedrockConverterDebug() {
         return DefaultConfig.isBedrockConverterDebug();
+    }
+
+    @Override
+    public boolean isBedrockSoundConversionEnabled() {
+        return DefaultConfig.isBedrockConvertSounds();
+    }
+
+    @Override
+    public void soundsConverted(SoundDefinitionConverter.Result result) {
+        lastSoundConversion = result;
+    }
+
+    /**
+     * What the last sound conversion this session added, for /rspm status; {@code null} when none
+     * ran since startup (sound conversion off, or the previous run's output was reused).
+     */
+    public static SoundDefinitionConverter.Result lastSoundConversion() {
+        return lastSoundConversion;
     }
 
     @Override

@@ -148,6 +148,23 @@ public interface BedrockConverterContext {
     }
 
     /**
+     * True when the operator opted in to carrying custom Java sounds (every
+     * {@code sounds.json} outside the {@code minecraft} namespace) into the Bedrock pack.
+     * Off by default: a large songs pack makes every Bedrock player download it.
+     */
+    default boolean isBedrockSoundConversionEnabled() {
+        return false;
+    }
+
+    /**
+     * Receives what the sound conversion added once a conversion cycle that ran it
+     * finishes (published, or found nothing to convert), so the platform can show it in
+     * its status output. Not called when sound conversion is off.
+     */
+    default void soundsConverted(com.magmaguy.resourcepackmanager.bedrock.converter.SoundDefinitionConverter.Result result) {
+    }
+
+    /**
      * Java base items that installed plugins assign to their item models, keyed by
      * item model id ({@code namespace:path}) with {@code minecraft:<item>} values.
      * The pack alone cannot tell which item an {@code item_model} rides on, but the

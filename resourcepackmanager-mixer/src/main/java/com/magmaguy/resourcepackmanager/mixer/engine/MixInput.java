@@ -21,14 +21,26 @@ public record MixInput(
     String outputName,         // file name without extension, e.g. "ResourcePackManager_RSP"
     boolean writeCollisionLog,
     String reusableArchiveSha1, // optional verified prior Java output; rebuild expanded converter input only
-    Set<File> bedrockExcludedPacks // members of orderedPacks left out of the Bedrock converter's input
+    Set<File> bedrockExcludedPacks, // members of orderedPacks left out of the Bedrock converter's input
+    boolean bedrockSounds,          // the Bedrock converter carries custom sounds over
+    Set<File> bedrockSoundExcludedPacks // members of orderedPacks whose sounds the Bedrock converter leaves out
 ) {
     public MixInput {
         bedrockExcludedPacks = bedrockExcludedPacks == null ? Set.of() : Set.copyOf(bedrockExcludedPacks);
+        bedrockSoundExcludedPacks = bedrockSoundExcludedPacks == null || !bedrockSounds
+                ? Set.of() : Set.copyOf(bedrockSoundExcludedPacks);
+    }
+
+    public MixInput(List<File> orderedPacks, File workingDir, File outputDir, File collisionLogDir,
+                    String outputName, boolean writeCollisionLog, String reusableArchiveSha1,
+                    Set<File> bedrockExcludedPacks) {
+        this(orderedPacks, workingDir, outputDir, collisionLogDir, outputName, writeCollisionLog,
+                reusableArchiveSha1, bedrockExcludedPacks, false, Set.of());
     }
 
     public MixInput(List<File> orderedPacks, File workingDir, File outputDir,
                     File collisionLogDir, String outputName, boolean writeCollisionLog) {
-        this(orderedPacks, workingDir, outputDir, collisionLogDir, outputName, writeCollisionLog, null, Set.of());
+        this(orderedPacks, workingDir, outputDir, collisionLogDir, outputName, writeCollisionLog, null, Set.of(),
+                false, Set.of());
     }
 }

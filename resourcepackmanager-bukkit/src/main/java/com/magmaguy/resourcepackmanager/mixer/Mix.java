@@ -7,6 +7,7 @@ import com.magmaguy.resourcepackmanager.api.ResourcePackManagerAPI;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockOutputPublication;
+import com.magmaguy.resourcepackmanager.bedrock.BedrockSoundInput;
 import com.magmaguy.resourcepackmanager.bedrock.BukkitBedrockConverterContext;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfig;
@@ -83,6 +84,8 @@ public class Mix {
     private static final AtomicLong STARTUP_REUSE_GENERATION = new AtomicLong();
     // Members of orderedFiles left out of the Bedrock conversion, finalized with them.
     private static Set<File> bedrockExcludedFiles = Set.of();
+    // Members of orderedFiles whose sounds stay out of the Bedrock conversion; empty unless bedrockConvertSounds.
+    private static Set<File> bedrockSoundExcludedFiles = Set.of();
     private static final Set<String> UNMATCHED_BEDROCK_EXCLUSIONS_REPORTED = ConcurrentHashMap.newKeySet();
 
     private Mix() {
@@ -91,6 +94,11 @@ public class Mix {
     /** The packs the last mix left out of the Bedrock conversion, for /rspm status. */
     public static Set<File> getBedrockExcludedFiles() {
         return bedrockExcludedFiles;
+    }
+
+    /** The packs whose sounds the last mix left out of the Bedrock conversion, for /rspm status. */
+    public static Set<File> getBedrockSoundExcludedFiles() {
+        return bedrockSoundExcludedFiles;
     }
 
     /**
@@ -232,11 +240,17 @@ public class Mix {
                 resourcePackName,
                 true,
                 reusableJavaSha1,
-                bedrockExcludedFiles
+                bedrockExcludedFiles,
+                conversionContext.isBedrockSoundConversionEnabled(),
+                bedrockSoundExcludedFiles
         );
         if (!bedrockExcludedFiles.isEmpty())
             Logger.info("Bedrock conversion leaves out " + bedrockExcludedFiles.stream().map(File::getName)
                     .collect(java.util.stream.Collectors.joining(", ")) + " (bedrockExcludedPacks); the Java pack keeps them.");
+        if (!bedrockSoundExcludedFiles.isEmpty())
+            Logger.info("Bedrock conversion leaves out the sounds of " + bedrockSoundExcludedFiles.stream()
+                    .map(File::getName).collect(java.util.stream.Collectors.joining(", "))
+                    + " (bedrockSoundExcludedPacks); their items still convert.");
         MixEngine engine = new MixEngine(BUKKIT_LOGGER, cancellationRequested);
         MixOutput out;
         try {
@@ -284,6 +298,7 @@ public class Mix {
         // lifecycle retains the last-good publication.
         boolean bedrockConversionSucceeded = BedrockConversion.generate(
                 out.bedrockInputDir(),
+                new BedrockSoundInput(out.bedrockSoundInputDir(), out.bedrockSoundSources()),
                 outputFolder,
                 conversionContext);
         if (cancellationRequested.getAsBoolean()) {
@@ -336,6 +351,11 @@ public class Mix {
         if (!out.bedrockInputDir().equals(out.mergedDir()) && out.bedrockInputDir().exists()
                 && !AsyncDirectoryCleaner.deleteLater(out.bedrockInputDir())) {
             recursivelyDeleteDirectory(out.bedrockInputDir());
+        }
+        if (!out.bedrockSoundInputDir().equals(out.bedrockInputDir())
+                && !out.bedrockSoundInputDir().equals(out.mergedDir()) && out.bedrockSoundInputDir().exists()
+                && !AsyncDirectoryCleaner.deleteLater(out.bedrockSoundInputDir())) {
+            recursivelyDeleteDirectory(out.bedrockSoundInputDir());
         }
 
         writeMixFingerprint(outputFolder, inputFingerprint, out.sha1Hex(), bedrockFingerprint);
@@ -550,6 +570,15 @@ public class Mix {
             identity += "|excluded=" + bedrockExcludedFiles.stream()
                     .map(file -> file.getName().toLowerCase(java.util.Locale.ROOT)).sorted()
                     .collect(java.util.stream.Collectors.joining(","));
+        // Sound conversion and its exclusions, appended only when it is on, so servers that
+        // leave it off keep their existing identity.
+        if (context.isBedrockSoundConversionEnabled()) {
+            identity += "|sounds";
+            if (!bedrockSoundExcludedFiles.isEmpty())
+                identity += "|soundExcluded=" + bedrockSoundExcludedFiles.stream()
+                        .map(file -> file.getName().toLowerCase(java.util.Locale.ROOT)).sorted()
+                        .collect(java.util.stream.Collectors.joining(","));
+        }
         return identity;
     }
 
@@ -711,15 +740,20 @@ public class Mix {
         // downstream consumer — fingerprint, reuse check, engine — agrees on the set that
         // will actually be merged.
         orderedFiles = PackQuarantine.excludeQuarantined(result);
-        bedrockExcludedFiles = bedrockExcludedPacks(orderedFiles, DefaultConfig.getBedrockExcludedPacks());
+        bedrockExcludedFiles = matchConfiguredPacks(orderedFiles, DefaultConfig.getBedrockExcludedPacks(),
+                "bedrockExcludedPacks");
+        bedrockSoundExcludedFiles = DefaultConfig.isBedrockConvertSounds()
+                ? matchConfiguredPacks(orderedFiles, DefaultConfig.getBedrockSoundExcludedPacks(),
+                "bedrockSoundExcludedPacks")
+                : Set.of();
     }
 
     /**
-     * The merged packs that bedrockExcludedPacks leaves out of the Bedrock conversion. Entries match the way
-     * priorityOrder does, ignoring case: a pack's filename, its name without .zip, or a plugin name for that
-     * plugin's generated packs and cluster folders. An entry that matches nothing is reported once.
+     * The merged packs a pack list setting (bedrockExcludedPacks, bedrockSoundExcludedPacks) names. Entries
+     * match the way priorityOrder does, ignoring case: a pack's filename, its name without .zip, or a plugin
+     * name for that plugin's generated packs and cluster folders. An entry that matches nothing is reported once.
      */
-    private static Set<File> bedrockExcludedPacks(List<File> packs, List<String> entries) {
+    private static Set<File> matchConfiguredPacks(List<File> packs, List<String> entries, String settingName) {
         if (entries == null || entries.isEmpty() || packs == null) return Set.of();
         Set<String> wanted = new HashSet<>();
         for (String entry : entries)
@@ -740,8 +774,8 @@ public class Mix {
             }
         }
         for (String entry : wanted)
-            if (!matched.contains(entry) && UNMATCHED_BEDROCK_EXCLUSIONS_REPORTED.add(entry))
-                Logger.warn("bedrockExcludedPacks entry '" + entry + "' matches no resource pack being merged.");
+            if (!matched.contains(entry) && UNMATCHED_BEDROCK_EXCLUSIONS_REPORTED.add(settingName + ":" + entry))
+                Logger.warn(settingName + " entry '" + entry + "' matches no resource pack being merged.");
         return Collections.unmodifiableSet(excluded);
     }
 

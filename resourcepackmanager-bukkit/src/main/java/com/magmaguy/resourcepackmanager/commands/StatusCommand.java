@@ -6,6 +6,7 @@ import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.autohost.AutoHost;
 import com.magmaguy.resourcepackmanager.bedrock.BukkitBedrockConverterContext;
+import com.magmaguy.resourcepackmanager.bedrock.converter.SoundDefinitionConverter;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.craftengine.CraftEngineDelivery;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
@@ -126,6 +127,7 @@ public class StatusCommand extends AdvancedCommand {
                 Logger.sendMessage(sender, "&7Left out of Bedrock: &f" + leftOut.stream().map(File::getName)
                         .collect(java.util.stream.Collectors.joining(", ")));
             }
+            sendSoundStatus(sender);
         }
 
         // Diagnostic: if conversion is enabled but the pack didn't get produced,
@@ -268,6 +270,40 @@ public class StatusCommand extends AdvancedCommand {
 
         Logger.sendMessage(sender, "&8&m-------------------------");
     }
+
+    /** Custom sounds on Bedrock: the setting, the packs whose sounds stay out, and what the last conversion added. */
+    private static void sendSoundStatus(CommandSender sender) {
+        boolean soundsEnabled = DefaultConfig.isBedrockConvertSounds();
+        Logger.sendMessage(sender, "&7Custom sounds (bedrockConvertSounds): " + bool(soundsEnabled));
+        if (!soundsEnabled) return;
+        java.util.Set<File> soundsLeftOut = Mix.getBedrockSoundExcludedFiles();
+        if (!soundsLeftOut.isEmpty()) {
+            Logger.sendMessage(sender, "&7  Sounds left out: &f" + soundsLeftOut.stream().map(File::getName)
+                    .collect(java.util.stream.Collectors.joining(", ")));
+        }
+        SoundDefinitionConverter.Result sounds = BukkitBedrockConverterContext.lastSoundConversion();
+        if (sounds == null) {
+            Logger.sendMessage(sender, "&7  Added: &8(not converted since startup; the previous output was reused)");
+            return;
+        }
+        Logger.sendMessage(sender, "&7  Added: &f" + sounds.events() + " sounds, " + sounds.files() + " files, "
+                + humanBytes(sounds.bytes()));
+        List<java.util.Map.Entry<String, SoundDefinitionConverter.SourceTotals>> sources = sounds.bySource()
+                .entrySet().stream()
+                .sorted((a, b) -> Long.compare(b.getValue().bytes(), a.getValue().bytes()))
+                .toList();
+        int shown = Math.min(SOUND_SOURCES_SHOWN, sources.size());
+        for (int i = 0; i < shown; i++) {
+            var source = sources.get(i);
+            Logger.sendMessage(sender, "&7    " + source.getKey() + ": &f" + source.getValue().files() + " files, "
+                    + humanBytes(source.getValue().bytes()));
+        }
+        if (sources.size() > shown) {
+            Logger.sendMessage(sender, "&7    &8(+" + (sources.size() - shown) + " more packs, see the console)");
+        }
+    }
+
+    private static final int SOUND_SOURCES_SHOWN = 8;
 
     // ---------- Formatting helpers ----------
 

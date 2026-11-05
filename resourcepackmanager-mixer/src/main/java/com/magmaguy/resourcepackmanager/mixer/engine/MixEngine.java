@@ -46,6 +46,8 @@ import java.util.function.BooleanSupplier;
 public final class MixEngine {
     /** Suffix of the second merged folder the Bedrock converter reads when packs are left out of it. */
     public static final String BEDROCK_INPUT_SUFFIX = "_bedrock_input";
+    /** Suffix of the sounds-only folder the Bedrock converter reads when packs' sounds are left out of it. */
+    public static final String BEDROCK_SOUND_INPUT_SUFFIX = "_bedrock_sounds";
     private final MixerLogger logger;
     private final BooleanSupplier cancellationRequested;
 
@@ -94,7 +96,13 @@ public final class MixEngine {
             List<File> bedrockPackDirs = new ArrayList<>();
             Set<File> excluded = input.bedrockExcludedPacks();
             Set<File> keptForBedrock = new HashSet<>();
-            List<File> uniqueInputs = removeExactDuplicateFileInputs(input.orderedPacks(), excluded, keptForBedrock);
+            // Staged packs whose sounds the converter reads, with the pack each was staged from.
+            List<File> soundPackDirs = new ArrayList<>();
+            Map<File, String> sourceNameByStaged = new HashMap<>();
+            Set<File> soundExcluded = input.bedrockSoundExcludedPacks();
+            Set<File> keptForBedrockSounds = new HashSet<>();
+            List<File> uniqueInputs = removeExactDuplicateFileInputs(input.orderedPacks(), excluded, keptForBedrock,
+                    soundExcluded, keptForBedrockSounds);
             for (int inputIndex = 0; inputIndex < uniqueInputs.size(); inputIndex++) {
                 File pack = uniqueInputs.get(inputIndex);
                 checkCancelled();
@@ -108,6 +116,9 @@ public final class MixEngine {
                         unzippedPackDirs.add(staged);
                         stagingDirs.add(staged);
                         if (!excluded.contains(pack) || keptForBedrock.contains(pack)) bedrockPackDirs.add(staged);
+                        if ((!excluded.contains(pack) && !soundExcluded.contains(pack))
+                                || keptForBedrockSounds.contains(pack)) soundPackDirs.add(staged);
+                        sourceNameByStaged.put(staged, pack.getName());
                     }
                 } catch (CancellationException cancelled) {
                     throw cancelled;
@@ -171,13 +182,34 @@ public final class MixEngine {
                 assemble(bedrockPackDirs, bedrockInputDir, new MergeOperations(silent), silent, false);
             }
 
+            // 6c. Bedrock sounds. The converter reports what each source pack added, so the sound
+            //    files are attributed to the pack that wins them (the first, as in the merge). When
+            //    packs' sounds are left out, it reads a sounds-only merge of the other packs instead
+            //    of a whole second merge: their items still convert from bedrockInputDir.
+            File bedrockSoundInputDir = new File(outputDir, input.outputName() + BEDROCK_SOUND_INPUT_SUFFIX);
+            Map<String, String> soundSources = Map.of();
+            if (!input.bedrockSounds() || soundPackDirs.size() == bedrockPackDirs.size()) {
+                deleteDirectoryOffCriticalPath(bedrockSoundInputDir);
+                bedrockSoundInputDir = bedrockInputDir;
+            } else {
+                MixerLogger silent = new MixerLogger() {
+                    @Override public void info(String m) { }
+                    @Override public void warn(String m) { }
+                    @Override public void collision(String m) { }
+                };
+                assembleSounds(soundPackDirs, bedrockSoundInputDir, new MergeOperations(silent), silent);
+            }
+            if (input.bedrockSounds()) soundSources = soundFileSources(soundPackDirs, sourceNameByStaged);
+
             return new MixOutput(
                     mergedZip,
                     mergedDir,
                     sha1Hex,
                     sha1Bytes,
                     Collections.unmodifiableList(collisionLog),
-                    bedrockInputDir
+                    bedrockInputDir,
+                    bedrockSoundInputDir,
+                    soundSources
             );
         } finally {
             // 7. Cleanup: only the per-pack staging dirs we materialized. The merged
@@ -244,6 +276,63 @@ public final class MixEngine {
     }
 
     /**
+     * Copies only {@code assets/<ns>/sounds.json} and {@code assets/<ns>/sounds/**} of the staged packs
+     * into {@code soundDir} in priority order, merging sounds.json collisions like the main merge.
+     */
+    private void assembleSounds(List<File> packDirs, File soundDir, MergeOperations merge, MixerLogger silent)
+            throws IOException {
+        checkCancelled();
+        if (soundDir.exists()) deleteDirectoryOffCriticalPath(soundDir);
+        if (!soundDir.mkdirs() && !soundDir.exists()) {
+            throw new IOException("Failed to create Bedrock sound staging directory: " + soundDir.getAbsolutePath());
+        }
+        for (File packDir : packDirs) {
+            checkCancelled();
+            File assets = new File(packDir, "assets");
+            if (!assets.isDirectory()) continue;
+            for (File namespace : sortedChildren(assets)) {
+                if (!namespace.isDirectory()) continue;
+                File soundsJson = new File(namespace, "sounds.json");
+                File sounds = new File(namespace, "sounds");
+                if (!soundsJson.isFile() && !sounds.isDirectory()) continue;
+                File target = new File(new File(soundDir, "assets"), namespace.getName());
+                if (!target.mkdirs() && !target.isDirectory()) {
+                    throw new IOException("Failed to create Bedrock sound staging directory: " + target.getAbsolutePath());
+                }
+                if (soundsJson.isFile()) recursivelyCopyDirectory(soundsJson, target, merge, silent);
+                if (sounds.isDirectory()) recursivelyCopyDirectory(sounds, target, merge, silent);
+            }
+        }
+    }
+
+    /**
+     * The source pack name of every file under {@code assets/<ns>/sounds/} of the staged packs, keyed by
+     * its pack path. The first pack holding a path wins it, as in the merge.
+     */
+    private Map<String, String> soundFileSources(List<File> packDirs, Map<File, String> sourceNameByStaged)
+            throws IOException {
+        Map<String, String> sources = new HashMap<>();
+        for (File packDir : packDirs) {
+            checkCancelled();
+            File assets = new File(packDir, "assets");
+            if (!assets.isDirectory()) continue;
+            String sourceName = sourceNameByStaged.getOrDefault(packDir, packDir.getName());
+            for (File namespace : sortedChildren(assets)) {
+                Path sounds = namespace.toPath().resolve("sounds");
+                if (!Files.isDirectory(sounds)) continue;
+                String prefix = "assets/" + namespace.getName() + "/sounds/";
+                try (java.util.stream.Stream<Path> files = Files.walk(sounds)) {
+                    for (Path file : (Iterable<Path>) files.filter(Files::isRegularFile)::iterator) {
+                        String relative = sounds.relativize(file).toString().replace(File.separatorChar, '/');
+                        sources.putIfAbsent(prefix + relative, sourceName);
+                    }
+                }
+            }
+        }
+        return sources;
+    }
+
+    /**
      * Drop only byte-for-byte duplicate file inputs while preserving the first
      * occurrence (and therefore the configured priority order).
      *
@@ -258,10 +347,12 @@ public final class MixEngine {
      *
      * <p>A kept representative that is left out of the Bedrock conversion while a
      * dropped copy is not goes into {@code keptForBedrock}, so the conversion still
-     * reads those bytes.</p>
+     * reads those bytes. Likewise {@code keptForBedrockSounds} for a dropped copy whose
+     * sounds the conversion keeps.</p>
      */
     private List<File> removeExactDuplicateFileInputs(List<File> orderedPacks, Set<File> bedrockExcluded,
-                                                      Set<File> keptForBedrock) {
+                                                      Set<File> keptForBedrock, Set<File> soundExcluded,
+                                                      Set<File> keptForBedrockSounds) {
         Map<Long, List<File>> representativesByLength = new HashMap<>();
         List<File> unique = new ArrayList<>(orderedPacks.size());
 
@@ -290,6 +381,8 @@ public final class MixEngine {
                     logger.info("Skipping byte-identical resource pack " + pack.getName()
                             + "; it duplicates " + duplicateOf.getName() + ".");
                     if (!bedrockExcluded.contains(pack)) keptForBedrock.add(duplicateOf);
+                    if (!bedrockExcluded.contains(pack) && !soundExcluded.contains(pack))
+                        keptForBedrockSounds.add(duplicateOf);
                     continue;
                 }
 

@@ -49,6 +49,10 @@ public class DefaultConfig extends ConfigurationFile {
     @Getter
     private static List<String> bedrockExcludedPacks = List.of();
     @Getter
+    private static boolean bedrockConvertSounds = false;
+    @Getter
+    private static List<String> bedrockSoundExcludedPacks = List.of();
+    @Getter
     private static boolean bedrockConverterDebug = false;
     @Getter
     private static volatile boolean verboseLogging = false;
@@ -156,6 +160,21 @@ public class DefaultConfig extends ConfigurationFile {
                         "a pack for Bedrock, or to keep the Bedrock pack smaller. Where a left-out pack replaced",
                         "another pack's model or texture, Bedrock shows the other pack's version."),
                 fileConfiguration, "bedrockExcludedPacks", List.of());
+        bedrockConvertSounds = ConfigurationEngine.setBoolean(
+                List.of(
+                        "Adds the custom sounds of the merged Java pack (every sounds.json outside the minecraft",
+                        "namespace, and the .ogg files it names) to the Bedrock pack, so Bedrock players hear custom",
+                        "sounds and songs too. Off by default: Bedrock players download the whole Bedrock pack",
+                        "before they join, so a large songs pack makes every one of them wait. Replacements of",
+                        "vanilla sounds are not converted."),
+                fileConfiguration, "bedrockConvertSounds", false);
+        bedrockSoundExcludedPacks = ConfigurationEngine.setList(
+                List.of(
+                        "Resource packs whose sounds stay out of the Bedrock pack when bedrockConvertSounds is on.",
+                        "Their items, models and textures still convert, and Java players still get everything.",
+                        "Name them like in bedrockExcludedPacks: a plugin name, or the filename of a pack in the",
+                        "mixer folder, with or without .zip. Use it to keep a large songs pack out of the download."),
+                fileConfiguration, "bedrockSoundExcludedPacks", List.of());
 
         bedrockConverterDebug = ConfigurationEngine.setBoolean(
                 List.of(

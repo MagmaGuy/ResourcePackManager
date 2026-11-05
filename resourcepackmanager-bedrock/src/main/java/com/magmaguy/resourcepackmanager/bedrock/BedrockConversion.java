@@ -57,8 +57,9 @@ import java.util.zip.ZipFile;
  * {@link BedrockConverterContext#isBedrockTargetPresent()} — without a Bedrock target,
  * the whole pipeline is pure overhead and is skipped.
  *
- * <p>Pipeline: run generic items pipeline → emit item_texture / manifest /
- * mappings → zip → deploy to Geyser.</p>
+ * <p>Pipeline: run generic items pipeline → import entity bundles → convert
+ * custom sounds (opt-in) → emit item_texture / manifest / mappings → zip →
+ * deploy to Geyser.</p>
  *
  * <p>This class is platform-neutral. Used by both the backend Bukkit plugin (after
  * Mix.java mixes the per-plugin Java packs) and the proxy plugin (after the proxy's
@@ -129,6 +130,18 @@ public class BedrockConversion {
      *         required; {@code false} when it was cancelled or failed
      */
     public static boolean generate(File mergedJavaPack, File outputDir, BedrockConverterContext ctx) {
+        return generate(mergedJavaPack, null, outputDir, ctx);
+    }
+
+    /**
+     * {@link #generate(File, File, BedrockConverterContext)} with a separate source for custom
+     * sounds, used when some packs' sounds are left out of the conversion while their items are not.
+     *
+     * @param soundInput where the sound conversion reads from and which pack supplied each sound
+     *                   file; {@code null} reads sounds from {@code mergedJavaPack}
+     */
+    public static boolean generate(File mergedJavaPack, BedrockSoundInput soundInput, File outputDir,
+                                   BedrockConverterContext ctx) {
         BedrockLog.set(ctx.logger());
         BedrockLog.setDebug(ctx.isBedrockConverterDebug());
         File publicationStaging = new File(outputDir,
@@ -182,25 +195,45 @@ public class BedrockConversion {
                     ctx::isCancellationRequested);
             if (ctx.isCancellationRequested()) return false;
 
+            // Custom sounds (opt-in): sounds.json outside the minecraft namespace becomes
+            // sounds/sound_definitions.json, with the .ogg files copied as they are.
+            boolean soundsEnabled = ctx.isBedrockSoundConversionEnabled();
+            SoundDefinitionConverter.Result sounds = SoundDefinitionConverter.Result.EMPTY;
+            if (soundsEnabled) {
+                File soundPack = soundInput != null && soundInput.packDir() != null
+                        ? soundInput.packDir()
+                        : mergedJavaPack;
+                sounds = SoundDefinitionConverter.convert(
+                        soundPack,
+                        bedrockDir,
+                        soundInput == null ? Map.of() : soundInput.fileSources(),
+                        ctx::isCancellationRequested);
+                if (ctx.isCancellationRequested()) return false;
+                logSounds(sounds);
+            }
+
             // No convertible content (no custom items / models in the merged Java pack).
             // Per user policy: do NOT fall back to a manifest-only minimal pack. Either
             // we have real content or we emit nothing. This avoids a useless 22KB pack
             // with a prompt when the backend has nothing to ship. Also nuke any stale
             // output from the previous run so the backend's /bedrock.zip route 404s
             // cleanly instead of serving last cycle's content forever.
-            if (registry.totalMappings() == 0 && entityBundleFiles == 0) {
+            if (registry.totalMappings() == 0 && entityBundleFiles == 0 && sounds.events() == 0) {
                 // No convertible content this cycle. Clear out previous-run output
                 // so the backend's /bedrock.zip route 404s cleanly instead of
                 // serving last cycle's content forever. One INFO line so "Bedrock
                 // players see vanilla" is diagnosable from a default log: plain
                 // vanilla retextures are not convertible and used to end here with
                 // zero output of any kind.
-                BedrockLog.info("Bedrock conversion found no convertible content (no custom item definitions or "
-                        + "entity bundles in the merged Java pack), so no Bedrock pack was generated. "
+                BedrockLog.info("Bedrock conversion found no convertible content (no custom item definitions, "
+                        + "entity bundles" + (soundsEnabled ? " or custom sounds" : "")
+                        + " in the merged Java pack), so no Bedrock pack was generated. "
                         + "Vanilla texture replacements cannot be auto-converted; Bedrock clients need a "
                         + "handmade Bedrock pack in Geyser's own packs folder for those.");
                 deleteOffCriticalPath(bedrockDir);
-                return removePublishedOutputs(outputDir, ctx);
+                boolean removed = removePublishedOutputs(outputDir, ctx);
+                if (soundsEnabled) ctx.soundsConverted(sounds);
+                return removed;
             }
 
             // 4. Generate item_texture.json (required by Geyser for icon resolution).
@@ -283,7 +316,9 @@ public class BedrockConversion {
 
             BedrockLog.info("Bedrock conversion complete: " + registry.totalMappings() + " mappings ("
                     + registry.uniqueModelsWritten() + " unique models, "
-                    + entityBundleFiles + " custom entity bundle files).");
+                    + entityBundleFiles + " custom entity bundle files"
+                    + (soundsEnabled ? ", " + sounds.events() + " custom sounds" : "") + ").");
+            if (soundsEnabled) ctx.soundsConverted(sounds);
             return true;
 
         } catch (Exception e) {
@@ -883,6 +918,26 @@ public class BedrockConversion {
         }
         iconTextureMap.put(safeId, iconRel);
         return true;
+    }
+
+    /** One line with what the sound conversion added in total and per source pack. */
+    private static void logSounds(SoundDefinitionConverter.Result sounds) {
+        if (sounds.events() == 0) {
+            BedrockLog.info("[BedrockConverter] Custom sounds: none to convert (no sounds.json outside the "
+                    + "minecraft namespace with sound files in the merged pack).");
+            return;
+        }
+        StringBuilder perSource = new StringBuilder();
+        for (Map.Entry<String, SoundDefinitionConverter.SourceTotals> entry : sounds.bySource().entrySet()) {
+            if (perSource.length() > 0) perSource.append("; ");
+            perSource.append(entry.getKey()).append(": ")
+                    .append(entry.getValue().files()).append(" files, ")
+                    .append(SoundDefinitionConverter.humanBytes(entry.getValue().bytes()));
+        }
+        BedrockLog.info("[BedrockConverter] Custom sounds: " + sounds.events() + " sound events, "
+                + sounds.files() + " files, " + SoundDefinitionConverter.humanBytes(sounds.bytes())
+                + " added to the Bedrock pack (" + perSource + "). bedrockSoundExcludedPacks leaves a "
+                + "pack's sounds out.");
     }
 
     private static void generateItemTexture(Map<String, String> iconTextureMap, File bedrockDir)
