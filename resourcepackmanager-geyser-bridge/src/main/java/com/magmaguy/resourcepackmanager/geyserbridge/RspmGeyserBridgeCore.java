@@ -94,7 +94,7 @@ public class RspmGeyserBridgeCore {
     private static final ConcurrentMap<String, ConcurrentMap<String, String>> REGISTERED_PROPERTY_TYPES = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, ConcurrentMap<String, GeyserEntityProperty<?>>> REGISTERED_PROPERTIES =
             new ConcurrentHashMap<>();
-    private static final ConcurrentMap<GeyserConnection, ConcurrentMap<Integer, String>> CUSTOM_ENTITIES = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<GeyserConnection, SessionBindings> CUSTOM_ENTITIES = new ConcurrentHashMap<>();
     private static volatile boolean geyserLoaded;
     private static volatile boolean entityDefinitionWindowClosed;
     private static volatile boolean entityPropertyWindowClosed;
@@ -105,6 +105,7 @@ public class RspmGeyserBridgeCore {
     private static volatile boolean warnedUnregisteredSpawnDefinition;
     private static volatile String preloadedPackSignature;
     private static volatile boolean loggedLateEntityReplacement;
+    private static volatile boolean warnedSpawnStateFailure;
 
     private final RspmGeyserBridgeExtension extension;
     private final ScheduledExecutorService scheduler;
@@ -190,14 +191,15 @@ public class RspmGeyserBridgeCore {
     }
 
     public void onServerSpawnEntity(ServerSpawnEntityEvent event) {
-        Map<Integer, String> sessionEntities = CUSTOM_ENTITIES.get(event.connection());
-        if (sessionEntities == null) {
+        SessionBindings bindings = CUSTOM_ENTITIES.get(event.connection());
+        if (bindings == null) {
             return;
         }
-        String identifier = sessionEntities.get(event.entityId());
-        if (identifier == null) {
+        SessionBindings.Binding binding = bindings.of(event.entityId());
+        if (binding == null) {
             return;
         }
+        String identifier = binding.identifier();
         CustomBedrockEntityDefinition definition = LOADED_DEFINITIONS.get(identifier);
         if (definition == null) {
             return;
@@ -207,13 +209,39 @@ public class RspmGeyserBridgeCore {
             return;
         }
         event.definition(definition);
+        if (binding.hasState()) {
+            // Geyser runs this on the entity it has just built, before it spawns it, and the spawn packet
+            // carries the entity's data and properties. So the entity arrives as its plugin last described it.
+            event.preSpawnConsumer(entity -> extension.guarded(() -> restoreState(entity, binding)));
+        }
+    }
+
+    /**
+     * Gives a newly built Geyser entity the data and properties kept beside its binding. Whatever goes wrong
+     * here must not cost the entity its spawn, so a refused value is reported once and skipped.
+     */
+    private void restoreState(GeyserEntity entity, SessionBindings.Binding binding) {
+        try {
+            overrideEntityData(entity, binding.entityData());
+        } catch (RuntimeException exception) {
+            if (!warnedSpawnStateFailure) {
+                warnedSpawnStateFailure = true;
+                logger().warning("Could not give a spawning RSPM custom Bedrock entity its data: " + exception.getMessage());
+            }
+        }
+        for (Map.Entry<String, Object> entry : binding.properties().entrySet()) {
+            GeyserEntityProperty<?> property = findProperty(binding.identifier(), entry.getKey());
+            if (property != null) {
+                updateRuntimeProperty(entity, property, entry.getValue());
+            }
+        }
     }
 
     public void onSessionJoin(GeyserConnection connection) {
         // Velocity may deliver this through both Geyser's automatic extension
         // registration and RSPM's programmatic lifecycle relay. Only the first
         // callback may attach a downstream packet listener.
-        if (CUSTOM_ENTITIES.putIfAbsent(connection, new ConcurrentHashMap<>()) != null) {
+        if (CUSTOM_ENTITIES.putIfAbsent(connection, new SessionBindings()) != null) {
             return;
         }
         if (connection instanceof GeyserSession session) {
@@ -679,16 +707,16 @@ public class RspmGeyserBridgeCore {
             return;
         }
 
-        Map<Integer, String> bindings = CUSTOM_ENTITIES.get(session);
+        SessionBindings bindings = CUSTOM_ENTITIES.get(session);
         if (bindings == null) return;
-        bindings.put(entityId, identifier);
+        bindings.bind(entityId, identifier);
         replaceAlreadySpawnedEntity(session, entityId, identifier);
     }
 
     /** Later spawns of the entity are the plain mob again. One already spawned stays as it is drawn. */
     private void unmarkCustomEntity(GeyserSession session, int entityId) {
-        Map<Integer, String> bindings = CUSTOM_ENTITIES.get(session);
-        if (bindings != null) bindings.remove(entityId);
+        SessionBindings bindings = CUSTOM_ENTITIES.get(session);
+        if (bindings != null) bindings.unbind(entityId);
     }
 
     /**
@@ -728,31 +756,46 @@ public class RspmGeyserBridgeCore {
     }
 
     private void applyEntityData(GeyserSession session, BridgeMessage message) {
+        rememberForNextSpawn(session, message);
         Entity entity = session.getEntityCache().getEntityByJavaId(message.entityId());
         if (entity == null) {
             return;
         }
 
-        GeyserEntity apiEntity = entity;
-        if (message.height() != null) {
-            apiEntity.override(GeyserEntityDataTypes.HEIGHT, message.height());
-        }
-        if (message.width() != null) {
-            apiEntity.override(GeyserEntityDataTypes.WIDTH, message.width());
-        }
-        if (message.scale() != null) {
-            apiEntity.override(GeyserEntityDataTypes.SCALE, message.scale());
-        }
-        if (message.color() != null) {
-            apiEntity.override(GeyserEntityDataTypes.COLOR, (byte) closestDyeColor(message.color()));
-        }
-        if (message.variant() != null) {
-            apiEntity.override(GeyserEntityDataTypes.VARIANT, message.variant());
-        }
+        overrideEntityData(entity, SessionBindings.EntityData.NONE.with(message));
         entity.updateBedrockMetadata();
     }
 
+    /** Sets the fields that were sent; a null field leaves the entity's own value. */
+    private void overrideEntityData(GeyserEntity entity, SessionBindings.EntityData data) {
+        if (data.height() != null) {
+            entity.override(GeyserEntityDataTypes.HEIGHT, data.height());
+        }
+        if (data.width() != null) {
+            entity.override(GeyserEntityDataTypes.WIDTH, data.width());
+        }
+        if (data.scale() != null) {
+            entity.override(GeyserEntityDataTypes.SCALE, data.scale());
+        }
+        if (data.color() != null) {
+            entity.override(GeyserEntityDataTypes.COLOR, (byte) closestDyeColor(data.color()));
+        }
+        if (data.variant() != null) {
+            entity.override(GeyserEntityDataTypes.VARIANT, data.variant());
+        }
+    }
+
+    /**
+     * Geyser builds a new entity at every spawn, and the plugin sends data and properties only when it first
+     * shows a mob and when a value changes. The session keeps them beside the binding for the mob's next spawn.
+     */
+    private void rememberForNextSpawn(GeyserSession session, BridgeMessage message) {
+        SessionBindings bindings = CUSTOM_ENTITIES.get(session);
+        if (bindings != null) bindings.remember(message);
+    }
+
     private void applyProperties(GeyserSession session, BridgeMessage message) {
+        rememberForNextSpawn(session, message);
         Entity entity = session.getEntityCache().getEntityByJavaId(message.entityId());
         if (entity == null) {
             return;
@@ -774,8 +817,9 @@ public class RspmGeyserBridgeCore {
     }
 
     private String customIdentifierOf(GeyserSession session, int entityId) {
-        Map<Integer, String> sessionEntities = CUSTOM_ENTITIES.get(session);
-        return sessionEntities == null ? null : sessionEntities.get(entityId);
+        SessionBindings bindings = CUSTOM_ENTITIES.get(session);
+        SessionBindings.Binding binding = bindings == null ? null : bindings.of(entityId);
+        return binding == null ? null : binding.identifier();
     }
 
     private GeyserEntityProperty<?> findProperty(String definitionIdentifier, String propertyIdentifier) {

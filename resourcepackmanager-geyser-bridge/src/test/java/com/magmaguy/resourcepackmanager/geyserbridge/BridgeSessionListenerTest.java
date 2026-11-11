@@ -17,7 +17,6 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -36,7 +35,7 @@ class BridgeSessionListenerTest {
 
     private final Deque<Runnable> tickLoop = new ArrayDeque<>();
     private boolean inTickLoop;
-    private final Map<Integer, String> bindings = new ConcurrentHashMap<>();
+    private final SessionBindings bindings = new SessionBindings();
     private final BridgeSessionListener listener = new BridgeSessionListener(
             connection -> bindings,
             packet -> ((ClientboundCustomPayloadPacket) packet).getChannel().asString(),
@@ -52,7 +51,8 @@ class BridgeSessionListenerTest {
     /** What RspmGeyserBridgeCore.handleMessage does to the bindings. */
     private void handleBridgePayload(byte[] payload) {
         BridgeMessage message = BridgeCodec.decode(payload);
-        if (message.type() == BridgeMessageType.SET_CUSTOM_ENTITY) bindings.put(message.entityId(), message.identifier());
+        if (message.type() == BridgeMessageType.SET_CUSTOM_ENTITY) bindings.bind(message.entityId(), message.identifier());
+        bindings.remember(message);
     }
 
     /** NetworkSession.channelRead0: the server's packets, in the order the server sent them. */
@@ -64,7 +64,10 @@ class BridgeSessionListenerTest {
     /** The server spawns the mob for the viewer. Geyser asks for its definition when the tick loop gets there. */
     private AtomicReference<String> spawnFromServer(int entityId) {
         AtomicReference<String> drawnAs = new AtomicReference<>("never spawned");
-        tickLoop.add(() -> drawnAs.set(bindings.get(entityId)));
+        tickLoop.add(() -> {
+            SessionBindings.Binding binding = bindings.of(entityId);
+            drawnAs.set(binding == null ? null : binding.identifier());
+        });
         return drawnAs;
     }
 
@@ -80,6 +83,16 @@ class BridgeSessionListenerTest {
     private static Packet binding(int entityId, String identifier) {
         return new ClientboundCustomPayloadPacket(BRIDGE_CHANNEL,
                 BridgeCodec.encode(BridgeMessage.setCustomEntity(entityId, identifier)));
+    }
+
+    private static Packet entityData(int entityId, float height, float width, float scale) {
+        return new ClientboundCustomPayloadPacket(BRIDGE_CHANNEL,
+                BridgeCodec.encode(BridgeMessage.entityData(entityId, height, width, scale, null, null)));
+    }
+
+    private static Packet properties(int entityId, String name, int value) {
+        return new ClientboundCustomPayloadPacket(BRIDGE_CHANNEL,
+                BridgeCodec.encode(BridgeMessage.properties(entityId, Map.of(name, value))));
     }
 
     private static Packet removal(int entityId) {
@@ -151,6 +164,28 @@ class BridgeSessionListenerTest {
         runTickLoop();
 
         assertEquals(SEWER_RAT, drawnAs.get(), "A mob the server pairs again after a respawn is still the custom entity");
+    }
+
+    @Test
+    void aMobPairedAgainAfterARespawnStillHasItsDataAndProperties() {
+        // The model's plugin sends a mob's data and properties when it first shows the mob and when one changes.
+        // After the viewer's death the server pairs the mob again and the plugin sends nothing, so what the
+        // session holds at that spawn is all the new Geyser entity can be given.
+        fromServer(binding(MOB, SEWER_RAT));
+        fromServer(entityData(MOB, 1.4375f, 1f, 2.5f));
+        fromServer(properties(MOB, "freeminecraftmodels:anim0", 4));
+        runTickLoop();
+        fromServer(removal(MOB));
+        fromServer(respawn());
+        AtomicReference<SessionBindings.Binding> atSpawn = new AtomicReference<>();
+        tickLoop.add(() -> atSpawn.set(bindings.of(MOB)));
+
+        runTickLoop();
+
+        assertEquals(new SessionBindings.EntityData(1.4375f, 1f, 2.5f, null, null), atSpawn.get().entityData(),
+                "The scale and the hitbox the plugin sent before the respawn");
+        assertEquals(4, ((Number) atSpawn.get().properties().get("freeminecraftmodels:anim0")).intValue(),
+                "The animation flags the plugin sent before the respawn");
     }
 
     @Test

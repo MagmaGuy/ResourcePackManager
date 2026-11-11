@@ -11,7 +11,6 @@ import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.Clientbound
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -38,7 +37,7 @@ final class BridgeSessionListener extends SessionAdapter {
     // The minecraft:register payload separates channel names with NUL characters.
     private static final String REGISTER_CHANNEL_SEPARATOR = String.valueOf((char) 0);
 
-    private final Function<Session, Map<Integer, String>> bindingsOf;
+    private final Function<Session, SessionBindings> bindingsOf;
     private final Function<Object, String> channelOf;
     private final Consumer<Runnable> inSessionOrder;
     private final Consumer<byte[]> bridgePayload;
@@ -50,7 +49,7 @@ final class BridgeSessionListener extends SessionAdapter {
      * @param inSessionOrder runs a task among the packets Geyser has queued for the session
      * @param bridgePayload  handles one payload of the bridge channel
      */
-    BridgeSessionListener(Function<Session, Map<Integer, String>> bindingsOf, Function<Object, String> channelOf,
+    BridgeSessionListener(Function<Session, SessionBindings> bindingsOf, Function<Object, String> channelOf,
                           Consumer<Runnable> inSessionOrder, Consumer<byte[]> bridgePayload) {
         this.bindingsOf = bindingsOf;
         this.channelOf = channelOf;
@@ -74,7 +73,7 @@ final class BridgeSessionListener extends SessionAdapter {
 
     @Override
     public void packetReceived(Session tcpSession, Packet packet) {
-        Map<Integer, String> bindings = bindingsOf.apply(tcpSession);
+        SessionBindings bindings = bindingsOf.apply(tcpSession);
         if (bindings == null) return;
         if (packet instanceof ClientboundLoginPacket) {
             inSessionOrder.accept(bindings::clear);
