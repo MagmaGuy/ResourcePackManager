@@ -1,6 +1,5 @@
 package com.magmaguy.resourcepackmanager.geyserbridge;
 
-import com.magmaguy.resourcepackmanager.bridge.BridgeChannels;
 import com.magmaguy.resourcepackmanager.bridge.BridgeCodec;
 import com.magmaguy.resourcepackmanager.bridge.BridgeEntityDefinition;
 import com.magmaguy.resourcepackmanager.bridge.BridgeMessage;
@@ -25,15 +24,6 @@ import org.geysermc.geyser.entity.CustomBedrockEntityDefinition;
 import org.geysermc.geyser.entity.properties.GeyserEntityProperties;
 import org.geysermc.geyser.entity.type.Entity;
 import org.geysermc.geyser.session.GeyserSession;
-import org.geysermc.mcprotocollib.network.Session;
-import org.geysermc.mcprotocollib.network.event.session.PacketSendingEvent;
-import org.geysermc.mcprotocollib.network.event.session.SessionAdapter;
-import org.geysermc.mcprotocollib.network.packet.Packet;
-import org.geysermc.mcprotocollib.protocol.packet.common.clientbound.ClientboundCustomPayloadPacket;
-import org.geysermc.mcprotocollib.protocol.packet.common.serverbound.ServerboundCustomPayloadPacket;
-import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.ClientboundRemoveEntitiesPacket;
-import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundRespawnPacket;
-import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundLoginPacket;
 
 import java.lang.reflect.Method;
 import java.io.InputStreamReader;
@@ -41,7 +31,6 @@ import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -89,10 +78,6 @@ public class RspmGeyserBridgeCore {
     public static final int MAX_PROPERTY_VALUE = 1_000_000;
     public static final int MIN_PROPERTY_VALUE = -1_000_000;
 
-    private static final String REGISTER_CHANNEL = "minecraft:register";
-    // The minecraft:register payload separates channel names with NUL characters.
-    private static final String REGISTER_CHANNEL_SEPARATOR = String.valueOf((char) 0);
-    private static final String CUSTOM_ENTITY_CHANNEL = BridgeChannels.CUSTOM_ENTITY;
     private static final List<Path> BEDROCK_PACK_PATHS = List.of(
             // Velocity's default data directory is lowercase.
             Path.of("plugins", "resourcepackmanager", "work", "merged", "Bedrock.zip"),
@@ -516,37 +501,12 @@ public class RspmGeyserBridgeCore {
                 return;
             }
 
-            session.getDownstream().getSession().addListener(new SessionAdapter() {
-                @Override
-                public void packetSending(PacketSendingEvent event) {
-                    Packet packet = event.getPacket();
-                    if (packet instanceof ServerboundCustomPayloadPacket payloadPacket
-                            && payloadChannelEquals(payloadPacket, REGISTER_CHANNEL)) {
-                        String channels = new String(payloadPacket.getData(), StandardCharsets.UTF_8);
-                        if (Arrays.asList(channels.split(REGISTER_CHANNEL_SEPARATOR)).contains(BridgeChannels.CUSTOM_ENTITY)) {
-                            return;
-                        }
-                        event.setPacket(payloadPacket.withData(
-                                (channels + REGISTER_CHANNEL_SEPARATOR + BridgeChannels.CUSTOM_ENTITY).getBytes(StandardCharsets.UTF_8)));
-                    }
-                }
-
-                @Override
-                public void packetReceived(Session tcpSession, Packet packet) {
-                    Map<Integer, String> bindings = CUSTOM_ENTITIES.get(session);
-                    if (bindings == null || session.getDownstream() == null
-                            || session.getDownstream().getSession() != tcpSession) return;
-                    if (packet instanceof ClientboundRemoveEntitiesPacket removed) {
-                        for (int entityId : removed.getEntityIds()) bindings.remove(entityId);
-                    } else if (packet instanceof ClientboundRespawnPacket || packet instanceof ClientboundLoginPacket) {
-                        bindings.clear();
-                    }
-                    if (packet instanceof ClientboundCustomPayloadPacket payloadPacket
-                            && payloadChannelEquals(payloadPacket, CUSTOM_ENTITY_CHANNEL)) {
-                        extension.guarded(() -> handleMessage(session, BridgeCodec.decode(payloadPacket.getData())));
-                    }
-                }
-            });
+            session.getDownstream().getSession().addListener(new BridgeSessionListener(
+                    tcpSession -> session.getDownstream() == null || session.getDownstream().getSession() != tcpSession
+                            ? null : CUSTOM_ENTITIES.get(session),
+                    this::payloadChannel,
+                    task -> extension.guarded(() -> session.ensureInEventLoop(task)),
+                    payload -> extension.guarded(() -> handleMessage(session, BridgeCodec.decode(payload)))));
         }), attempt == 0 ? 0 : 25);
     }
 
@@ -577,11 +537,6 @@ public class RspmGeyserBridgeCore {
         warnedDeferredDefinition = false;
         preloadedPackSignature = null;
         versionedEventsSubscribed = false;
-    }
-
-    private boolean payloadChannelEquals(Object payloadPacket, String expectedChannel) {
-        String actualChannel = payloadChannel(payloadPacket);
-        return expectedChannel.equals(actualChannel);
     }
 
     private String payloadChannel(Object payloadPacket) {
@@ -656,6 +611,7 @@ public class RspmGeyserBridgeCore {
         switch (message.type()) {
             case REGISTER_DEFINITION -> registerDefinition(message.definition());
             case SET_CUSTOM_ENTITY -> markCustomEntity(session, message.entityId(), message.identifier());
+            case CLEAR_CUSTOM_ENTITY -> unmarkCustomEntity(session, message.entityId());
             case ENTITY_DATA -> applyEntityData(session, message);
             case PROPERTIES -> applyProperties(session, message);
         }
@@ -727,6 +683,12 @@ public class RspmGeyserBridgeCore {
         if (bindings == null) return;
         bindings.put(entityId, identifier);
         replaceAlreadySpawnedEntity(session, entityId, identifier);
+    }
+
+    /** Later spawns of the entity are the plain mob again. One already spawned stays as it is drawn. */
+    private void unmarkCustomEntity(GeyserSession session, int entityId) {
+        Map<Integer, String> bindings = CUSTOM_ENTITIES.get(session);
+        if (bindings != null) bindings.remove(entityId);
     }
 
     /**

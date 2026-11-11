@@ -47,9 +47,9 @@ public class RspmGeyserBridgeExtension implements Extension {
             "org.geysermc.geyser.inventory.recipe.RecipeUtil";
 
     /**
-     * Classes {@link RspmGeyserBridgeCore} references that are not guaranteed on
-     * every Geyser build: internals, mcprotocollib, and 2.11+ API additions. Probed
-     * before the bridge activates; keep in sync with the core's imports.
+     * Classes {@link RspmGeyserBridgeCore} and its {@link BridgeSessionListener} reference
+     * that are not guaranteed on every Geyser build: internals, mcprotocollib, and 2.11+
+     * API additions. Probed before the bridge activates; keep in sync with their imports.
      */
     private static final String[] REQUIRED_CLASSES = {
             // Geyser internals
