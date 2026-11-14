@@ -29,6 +29,10 @@ public final class ItemComponentIndex {
     private final Map<String, List<ItemComponentSnapshot>> byModel = new HashMap<>();
     private final Map<String, List<ItemComponentSnapshot>> byBaseWithCustomModelData = new HashMap<>();
     private final int size;
+    // Last threshold sort, keyed by the identity of the leaf list it came from. The conversion
+    // calls matching() from one thread, one definition at a time.
+    private List<ResolvedLeaf> cachedThresholdLeaves;
+    private double[] cachedThresholds;
 
     public ItemComponentIndex(List<ItemComponentSnapshot> snapshots) {
         for (ItemComponentSnapshot snapshot : snapshots) {
@@ -65,11 +69,7 @@ public final class ItemComponentIndex {
         if (definition.isRootVanillaItem()) {
             Double threshold = customModelDataThreshold(leaf);
             if (threshold == null) return List.of();
-            List<Double> thresholds = allLeaves.stream()
-                    .map(ItemComponentIndex::customModelDataThreshold)
-                    .filter(java.util.Objects::nonNull)
-                    .sorted()
-                    .toList();
+            double[] thresholds = sortedThresholds(allLeaves);
             return byBaseWithCustomModelData.getOrDefault(baseItem, List.of()).stream()
                     .filter(stack -> threshold.equals(selected(thresholds, stack.customModelData())))
                     .toList();
@@ -89,11 +89,43 @@ public final class ItemComponentIndex {
         return range.threshold();
     }
 
-    private static Double selected(List<Double> ascendingThresholds, float value) {
-        Double chosen = null;
-        for (Double threshold : ascendingThresholds) {
-            if (threshold <= value) chosen = threshold;
+    /**
+     * The definition's thresholds in ascending {@link Double#compareTo} order. Every leaf and
+     * base item of one definition passes the same leaf list, so the last sort is kept and reused
+     * while that list is passed again.
+     */
+    private double[] sortedThresholds(List<ResolvedLeaf> allLeaves) {
+        if (allLeaves == cachedThresholdLeaves) return cachedThresholds;
+        double[] sorted = allLeaves.stream()
+                .map(ItemComponentIndex::customModelDataThreshold)
+                .filter(java.util.Objects::nonNull)
+                .sorted()
+                .mapToDouble(Double::doubleValue)
+                .toArray();
+        cachedThresholdLeaves = allLeaves;
+        cachedThresholds = sorted;
+        return sorted;
+    }
+
+    /**
+     * The highest threshold not above {@code value}: the last entry in ascending order for which
+     * {@code threshold <= value} holds. That test is monotone over the sorted array (NaN sorts
+     * last and never passes; -0.0 and 0.0 pass or fail together), so a binary search finds the
+     * same entry a linear scan would.
+     */
+    private static Double selected(double[] ascendingThresholds, float value) {
+        int low = 0;
+        int high = ascendingThresholds.length - 1;
+        int chosen = -1;
+        while (low <= high) {
+            int mid = (low + high) >>> 1;
+            if (ascendingThresholds[mid] <= value) {
+                chosen = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
         }
-        return chosen;
+        return chosen < 0 ? null : ascendingThresholds[chosen];
     }
 }
