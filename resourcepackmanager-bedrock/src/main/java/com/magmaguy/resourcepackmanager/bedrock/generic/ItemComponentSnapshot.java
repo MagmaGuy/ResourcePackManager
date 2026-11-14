@@ -15,14 +15,16 @@ import java.util.Objects;
  * @param baseItem  the Java item the client receives, such as {@code minecraft:nether_brick}
  * @param patch     the stack's changes against its base item, keyed by component id; a removed
  *                  base component is written {@code "!minecraft:food": {}}
- * @param prototype every component of the plain base item
+ * @param prototype every component of the plain base item. It is kept as given, not copied: the
+ *                  collector shares one prototype among every item on the same base item, and
+ *                  nothing may modify it after the snapshot is built.
  */
 public record ItemComponentSnapshot(String source, String itemId, String baseItem,
                                     JsonObject patch, JsonObject prototype) {
     public ItemComponentSnapshot {
         Objects.requireNonNull(baseItem, "baseItem");
         patch = patch == null ? new JsonObject() : patch.deepCopy();
-        prototype = prototype == null ? new JsonObject() : prototype.deepCopy();
+        prototype = prototype == null ? new JsonObject() : prototype;
     }
 
     /** The {@code minecraft:item_model} the stack sets, or {@code null} when it keeps its base's. */

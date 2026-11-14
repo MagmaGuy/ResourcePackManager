@@ -1,5 +1,6 @@
 package com.magmaguy.resourcepackmanager.bedrock;
 
+import com.google.gson.JsonObject;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.bedrock.converter.SoundDefinitionConverter;
@@ -192,9 +193,12 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
         StringBuilder identity = new StringBuilder(new TreeMap<>(declared).toString());
         if (!components.isEmpty()) {
             List<String> items = new ArrayList<>(components.size());
+            // Items on one base item share a single prototype object; write it once.
+            Map<JsonObject, String> prototypeText = new java.util.IdentityHashMap<>();
             for (ItemComponentSnapshot snapshot : components) {
                 items.add(snapshot.source() + "|" + snapshot.itemId() + "|" + snapshot.baseItem() + "|"
-                        + CanonicalJson.write(snapshot.patch()) + "|" + CanonicalJson.write(snapshot.prototype()));
+                        + CanonicalJson.write(snapshot.patch()) + "|"
+                        + prototypeText.computeIfAbsent(snapshot.prototype(), CanonicalJson::write));
             }
             items.sort(null);
             identity.append("|components=").append(String.join(";", items));
