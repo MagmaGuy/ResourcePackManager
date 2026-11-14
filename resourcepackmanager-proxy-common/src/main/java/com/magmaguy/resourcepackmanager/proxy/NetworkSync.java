@@ -90,7 +90,12 @@ public final class NetworkSync {
     }
 
     private static void rememberVerifiedFile(Path path, FileIdentity identity, byte[] sha1, ArtifactSetManifest manifest) {
-        if (VERIFIED_FILES.size() >= 2048) VERIFIED_FILES.clear();
+        if (VERIFIED_FILES.size() >= 2048) {
+            // Replaced generations leave entries for paths that no longer exist; drop those
+            // first and clear everything only when the live entries alone fill the cache.
+            VERIFIED_FILES.keySet().removeIf(cachedPath -> !Files.exists(cachedPath));
+            if (VERIFIED_FILES.size() >= 2048) VERIFIED_FILES.clear();
+        }
         VerifiedFile existing = verifiedFile(path, identity);
         VERIFIED_FILES.put(path, new VerifiedFile(identity, existing == null ? System.nanoTime() : existing.verifiedAt(),
                 sha1 != null ? sha1.clone() : existing == null ? null : existing.sha1(),
