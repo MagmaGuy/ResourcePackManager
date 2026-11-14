@@ -138,6 +138,15 @@
                                     <pattern>com.magmaguy.magmacore</pattern>
                                     <shadedPattern>com.magmaguy.resourcepackmanager.magmacore</shadedPattern>
                                 </relocation>
+                                <!-- MagmaCore's NMS layer, relocated like every other consumer does.
+                                     Shade rewrites RSPM's and MagmaCore's own string lookups of it
+                                     (NMSManager adapter names, MagmaCore's NMSManager shutdown). The
+                                     FreeMinecraftModels and EliteMobs registry names in
+                                     GeyserBridgeInstaller do not start with this pattern and stay as is. -->
+                                <relocation>
+                                    <pattern>com.magmaguy.easyminecraftgoals</pattern>
+                                    <shadedPattern>com.magmaguy.resourcepackmanager.easyminecraftgoals</shadedPattern>
+                                </relocation>
                             </relocations>
                         </configuration>
                     </execution>
