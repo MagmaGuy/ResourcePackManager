@@ -344,15 +344,17 @@ public final class NetworkSync {
                 MergedOutputPublication.current(mergedDir);
         if (previousPublication != null) {
             try {
-                byte[] sha1 = sha1OfFile(previousPublication.pack());
-                if (sha1 != null) {
+                // current() just verified the pack against its committed SHA-1 (lowercase hex,
+                // the form hex() produces); retainForGeyser re-verifies its copy against it.
+                String sha1Hex = previousPublication.packSha1();
+                if (sha1Hex != null) {
                     this.current = new MergedPack(
-                            MergedOutputPublication.retainForGeyser(mergedDir, previousPublication.pack(), hex(sha1)),
-                            hex(sha1));
+                            MergedOutputPublication.retainForGeyser(mergedDir, previousPublication.pack(), sha1Hex),
+                            sha1Hex);
                     logger.info("NetworkSync: pre-loaded previous merged pack from "
                             + previousPublication.pack().getAbsolutePath() + " ("
                             + previousPublication.pack().length()
-                            + " bytes, sha1 " + hex(sha1) + ") — Bedrock sessions before the first new merge will receive this pack.");
+                            + " bytes, sha1 " + sha1Hex + ") — Bedrock sessions before the first new merge will receive this pack.");
                     // Notify GeyserBinder immediately so it has a non-null current
                     // before its event subscription fires. The proxy plugin's
                     // entrypoint calls bedrock.onMergedPackReady from the same
