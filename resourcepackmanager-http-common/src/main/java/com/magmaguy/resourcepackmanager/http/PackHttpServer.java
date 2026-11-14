@@ -40,7 +40,7 @@ import java.util.function.Supplier;
  *         is absent, this route 404s — relevant when self-hosting hasn't produced a
  *         pack yet on a fresh backend.</li>
  *     <li>Additional file-serving routes registered via
- *         {@link #registerFileRoute(String, File, String)} after start — used by the
+ *         {@link #registerFileRoute(String, Supplier, String)} after start — used by the
  *         backend to expose its Bedrock-conversion outputs ({@code /bedrock.zip},
  *         {@code /mappings.json}) for the proxy to pull. These routes read the file
  *         fresh on every request, support {@code If-Modified-Since} so unchanged

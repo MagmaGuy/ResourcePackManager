@@ -14,18 +14,12 @@ import java.util.UUID;
  * no {@code url} field on this record.
  *
  * @param packFile  on-disk path to an immutable merged Bedrock generation
- *                  (overwritten atomically by {@link NetworkSync})
+ *                  written by {@link NetworkSync}
  * @param sha1Hex   lowercase hex SHA-1 of the merged zip
- * @param sha1Bytes raw SHA-1 bytes (20 bytes) — convenient for protocol APIs that
- *                  take {@code byte[]} rather than hex
- * @param packUuid  UUID announced to the client; stable across re-merges so
- *                  Bedrock clients treat repeated sends as no-ops
  */
 public record MergedPack(
         File packFile,
-        String sha1Hex,
-        byte[] sha1Bytes,
-        UUID packUuid
+        String sha1Hex
 ) {
     /**
      * Stable UUID identifying RPM's network-merged pack across re-merges. Bedrock

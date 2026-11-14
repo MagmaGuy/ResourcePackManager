@@ -343,7 +343,7 @@ public final class NetworkSync {
                 if (sha1 != null) {
                     this.current = new MergedPack(
                             MergedOutputPublication.retainForGeyser(mergedDir, previousPublication.pack(), hex(sha1)),
-                            hex(sha1), sha1, MergedPack.NETWORK_PACK_UUID);
+                            hex(sha1));
                     logger.info("NetworkSync: pre-loaded previous merged pack from "
                             + previousPublication.pack().getAbsolutePath() + " ("
                             + previousPublication.pack().length()
@@ -938,7 +938,7 @@ public final class NetworkSync {
             }
 
             MergedPack pack = new MergedPack(
-                    immutableGeneration, sha1Hex, sha1, MergedPack.NETWORK_PACK_UUID);
+                    immutableGeneration, sha1Hex);
             synchronized (pollCompletionMonitor) {
                 if (!isActive(pollGeneration)) return false;
                 current = pack;
@@ -2343,9 +2343,6 @@ public final class NetworkSync {
     }
 
     record ResolvedBackendEndpoint(String host, int port, String source, String backendId) {
-        ResolvedBackendEndpoint(String host, int port, String source) {
-            this(host, port, source, null);
-        }
     }
 
     static ResolvedBackendEndpoint resolveBackendHttpEndpoint(
