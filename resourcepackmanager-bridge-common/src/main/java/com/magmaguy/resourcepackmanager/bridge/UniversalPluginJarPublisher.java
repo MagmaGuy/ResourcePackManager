@@ -38,9 +38,9 @@ public final class UniversalPluginJarPublisher {
                 channel.force(true);
             }
 
-            UniversalPluginJarInspector.Inspection copied =
-                    UniversalPluginJarInspector.inspect(temporary);
-            if (!expectedSha256.equals(copied.sha256())) {
+            // Every caller's expected hash comes from a JAR that already passed inspect(), and
+            // inspection depends only on the bytes, so a matching hash is the whole check.
+            if (!expectedSha256.equals(UniversalPluginJarInspector.sha256(temporary))) {
                 throw new IOException("copied universal JAR failed SHA-256 verification");
             }
 
