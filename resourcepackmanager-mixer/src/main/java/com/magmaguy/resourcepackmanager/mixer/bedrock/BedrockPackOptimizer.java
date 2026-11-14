@@ -11,6 +11,7 @@ import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.mixer.engine.internal.Cancellation;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,6 +46,7 @@ public final class BedrockPackOptimizer {
             .disableHtmlEscaping()
             .create();
     private static final Set<String> IMAGE_EXTENSIONS = Set.of(".png", ".tga", ".jpg", ".jpeg");
+    private static final int OPAQUE_SCAN_CHUNK_BYTES = 1 << 16;
 
     private BedrockPackOptimizer() {
     }
@@ -226,12 +228,30 @@ public final class BedrockPackOptimizer {
         aliasMatcher.protectMatches(value, protectedDuplicates);
     }
 
+    /**
+     * Scans a non-JSON, non-image file (sounds, text) for alias paths, reading it in chunks so a
+     * large sound file is never held whole in memory. Each chunk is decoded byte for byte as
+     * ISO-8859-1, as the whole file used to be, and the tail that could still begin a match
+     * carries over into the next chunk, so every start position is tested exactly once against
+     * the full text it would have seen. The protected set comes out the same.
+     */
     private static void protectAliasesFoundInOpaqueFile(Path file,
                                                         AliasMatcher aliasMatcher,
                                                         Set<Path> protectedDuplicates) throws IOException {
-        byte[] bytes = Files.readAllBytes(file);
-        String bytePreservingText = new String(bytes, StandardCharsets.ISO_8859_1);
-        aliasMatcher.protectMatches(bytePreservingText, protectedDuplicates);
+        // A match starting at index s ends at most at s + longest - 1.
+        int overlap = aliasMatcher.longestAlias() - 1;
+        byte[] buffer = new byte[OPAQUE_SCAN_CHUNK_BYTES];
+        String carry = "";
+        try (InputStream in = Files.newInputStream(file)) {
+            int read;
+            while ((read = in.readNBytes(buffer, 0, buffer.length)) > 0) {
+                String window = carry + new String(buffer, 0, read, StandardCharsets.ISO_8859_1);
+                int limit = Math.max(0, window.length() - overlap);
+                aliasMatcher.protectMatchesStartingBefore(window, limit, protectedDuplicates);
+                carry = window.substring(limit);
+            }
+        }
+        aliasMatcher.protectMatchesStartingBefore(carry, carry.length(), protectedDuplicates);
     }
 
     private static void writeJsonAtomically(Path target, JsonElement json) throws IOException {
@@ -287,9 +307,11 @@ public final class BedrockPackOptimizer {
     /** Linear-time multi-pattern matcher for converter-generated texture paths. */
     private static final class AliasMatcher {
         private final AliasNode root = new AliasNode();
+        private int longestAlias;
 
         private AliasMatcher(Map<String, Replacement> replacements) {
             for (Map.Entry<String, Replacement> entry : replacements.entrySet()) {
+                longestAlias = Math.max(longestAlias, entry.getKey().length());
                 AliasNode node = root;
                 for (int i = 0; i < entry.getKey().length(); i++) {
                     node = node.children.computeIfAbsent(entry.getKey().charAt(i), ignored -> new AliasNode());
@@ -303,14 +325,29 @@ public final class BedrockPackOptimizer {
         }
 
         void protectMatches(String text, Set<Path> protectedDuplicates) {
-            visitMatches(text, protectedDuplicates, false);
+            if (text == null) return;
+            visitMatches(text, text.length(), protectedDuplicates, false);
+        }
+
+        /** As {@link #protectMatches}, only for matches that start before {@code startLimit}. */
+        void protectMatchesStartingBefore(String text, int startLimit, Set<Path> protectedDuplicates) {
+            visitMatches(text, startLimit, protectedDuplicates, false);
+        }
+
+        int longestAlias() {
+            return Math.max(1, longestAlias);
         }
 
         private boolean visitMatches(String text, Set<Path> protectedDuplicates, boolean stopAtFirst) {
             if (text == null) return false;
+            return visitMatches(text, text.length(), protectedDuplicates, stopAtFirst);
+        }
+
+        private boolean visitMatches(String text, int startLimit, Set<Path> protectedDuplicates,
+                                     boolean stopAtFirst) {
             int start = text.indexOf("textures/");
             boolean found = false;
-            while (start >= 0) {
+            while (start >= 0 && start < startLimit) {
                 AliasNode node = root;
                 for (int index = start; index < text.length(); index++) {
                     node = node.children.get(text.charAt(index));
