@@ -95,6 +95,26 @@ public final class GeyserBinder {
         this.current = pack;
     }
 
+    /** The Geyser pack built for one published generation, shared by every session that loads it. */
+    private record PreparedPack(MergedPack source, ResourcePack resourcePack) {
+    }
+
+    private volatile PreparedPack prepared;
+
+    /**
+     * One Geyser {@link ResourcePack} per published generation. Each generation is an immutable
+     * file, so every session gets the same manifest, UUID and bytes it would get from a fresh
+     * pack, and Geyser's codec hashes the file once instead of on every login. A failed build is
+     * not kept, so the next session tries again as before.
+     */
+    private ResourcePack resourcePackFor(MergedPack pack, java.io.File packFile) {
+        PreparedPack cached = prepared;
+        if (cached != null && cached.source() == pack) return cached.resourcePack();
+        ResourcePack created = ResourcePack.create(PackCodec.path(packFile.toPath()));
+        prepared = new PreparedPack(pack, created);
+        return created;
+    }
+
     private void onSession(SessionLoadResourcePacksEvent event) {
         MergedPack pack = current;
         String playerName = safePlayerName(event);
@@ -125,7 +145,7 @@ public final class GeyserBinder {
             return;
         }
         try {
-            ResourcePack resourcePack = ResourcePack.create(PackCodec.path(packFile.toPath()));
+            ResourcePack resourcePack = resourcePackFor(pack, packFile);
             boolean replacedSameUuid = event.unregister(resourcePack.uuid());
             if (!event.register(resourcePack)) {
                 throw new IllegalStateException("Geyser refused pack UUID " + resourcePack.uuid()
