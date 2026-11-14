@@ -567,9 +567,68 @@ public class RspmGeyserBridgeCore {
         versionedEventsSubscribed = false;
     }
 
+    /**
+     * {@code getChannel()} of each custom-payload packet class, resolved once per class. A
+     * lookup failure is kept and rethrown on every call, so the first failure still warns once.
+     */
+    private static final ClassValue<Object> GET_CHANNEL = new ClassValue<>() {
+        @Override
+        protected Object computeValue(Class<?> type) {
+            try {
+                return type.getMethod("getChannel");
+            } catch (NoSuchMethodException exception) {
+                return exception;
+            }
+        }
+    };
+    private static final ClassValue<NoArgAccessor> AS_STRING = noArgAccessor("asString");
+    private static final ClassValue<NoArgAccessor> NAMESPACE = noArgAccessor("namespace");
+    private static final ClassValue<NoArgAccessor> VALUE = noArgAccessor("value");
+
+    /**
+     * A no-argument method found by {@link #findNoArgMethod}, resolved once per class. When
+     * {@code setAccessible} failed at resolution it is retried on every call, so the call fails
+     * the same way it did before the cache.
+     */
+    private record NoArgAccessor(Method method, boolean accessible) {
+        static final NoArgAccessor ABSENT = new NoArgAccessor(null, false);
+
+        Object invoke(Object target) throws ReflectiveOperationException {
+            if (method == null) {
+                return null;
+            }
+            if (!accessible) {
+                method.setAccessible(true);
+            }
+            return method.invoke(target);
+        }
+    }
+
+    private static ClassValue<NoArgAccessor> noArgAccessor(String methodName) {
+        return new ClassValue<>() {
+            @Override
+            protected NoArgAccessor computeValue(Class<?> type) {
+                Method method = findNoArgMethod(type, methodName);
+                if (method == null) {
+                    return NoArgAccessor.ABSENT;
+                }
+                try {
+                    method.setAccessible(true);
+                    return new NoArgAccessor(method, true);
+                } catch (RuntimeException inaccessible) {
+                    return new NoArgAccessor(method, false);
+                }
+            }
+        };
+    }
+
     private String payloadChannel(Object payloadPacket) {
         try {
-            Object channel = payloadPacket.getClass().getMethod("getChannel").invoke(payloadPacket);
+            Object getChannel = GET_CHANNEL.get(payloadPacket.getClass());
+            if (getChannel instanceof NoSuchMethodException missing) {
+                throw missing;
+            }
+            Object channel = ((Method) getChannel).invoke(payloadPacket);
             return channelToString(channel);
         } catch (ReflectiveOperationException | LinkageError e) {
             if (!warnedPayloadChannelReflectionFailure) {
@@ -589,13 +648,13 @@ public class RspmGeyserBridgeCore {
             return charSequence.toString();
         }
 
-        Object asString = invokeNoArgIfPresent(channel, "asString");
+        Object asString = AS_STRING.get(channel.getClass()).invoke(channel);
         if (asString instanceof String value) {
             return value;
         }
 
-        Object namespace = invokeNoArgIfPresent(channel, "namespace");
-        Object value = invokeNoArgIfPresent(channel, "value");
+        Object namespace = NAMESPACE.get(channel.getClass()).invoke(channel);
+        Object value = VALUE.get(channel.getClass()).invoke(channel);
         if (namespace instanceof String namespaceString && value instanceof String valueString) {
             return namespaceString + ":" + valueString;
         }
@@ -603,16 +662,7 @@ public class RspmGeyserBridgeCore {
         return channel.toString();
     }
 
-    private Object invokeNoArgIfPresent(Object target, String methodName) throws ReflectiveOperationException {
-        Method method = findNoArgMethod(target.getClass(), methodName);
-        if (method == null) {
-            return null;
-        }
-        method.setAccessible(true);
-        return method.invoke(target);
-    }
-
-    private Method findNoArgMethod(Class<?> type, String methodName) {
+    private static Method findNoArgMethod(Class<?> type, String methodName) {
         if (type == null) {
             return null;
         }
@@ -866,24 +916,7 @@ public class RspmGeyserBridgeCore {
         int r = (argb >> 16) & 0xFF;
         int g = (argb >> 8) & 0xFF;
         int b = argb & 0xFF;
-        int[][] colors = {
-                {249, 255, 254},
-                {249, 128, 29},
-                {199, 78, 189},
-                {58, 179, 218},
-                {254, 216, 61},
-                {128, 199, 31},
-                {243, 139, 170},
-                {71, 79, 82},
-                {159, 157, 151},
-                {22, 156, 156},
-                {137, 50, 184},
-                {60, 68, 170},
-                {131, 84, 50},
-                {94, 124, 22},
-                {176, 46, 38},
-                {29, 29, 33}
-        };
+        int[][] colors = DYE_RGB;
 
         int closest = 0;
         long bestDistance = Long.MAX_VALUE;
@@ -899,4 +932,24 @@ public class RspmGeyserBridgeCore {
         }
         return closest;
     }
+
+    /** RGB of the 16 dye colours, in dye-index order. */
+    private static final int[][] DYE_RGB = {
+            {249, 255, 254},
+            {249, 128, 29},
+            {199, 78, 189},
+            {58, 179, 218},
+            {254, 216, 61},
+            {128, 199, 31},
+            {243, 139, 170},
+            {71, 79, 82},
+            {159, 157, 151},
+            {22, 156, 156},
+            {137, 50, 184},
+            {60, 68, 170},
+            {131, 84, 50},
+            {94, 124, 22},
+            {176, 46, 38},
+            {29, 29, 33}
+    };
 }
