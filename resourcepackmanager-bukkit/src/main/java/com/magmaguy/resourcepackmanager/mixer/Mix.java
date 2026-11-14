@@ -432,9 +432,7 @@ public class Mix {
                     updateDigest(input.toPath(), digest, cancellationRequested);
                 }
             }
-            StringBuilder hex = new StringBuilder();
-            for (byte b : digest.digest()) hex.append(String.format("%02x", b));
-            return hex.toString();
+            return java.util.HexFormat.of().formatHex(digest.digest());
         } catch (CancellationException cancelled) {
             throw cancelled;
         } catch (Exception exception) {
