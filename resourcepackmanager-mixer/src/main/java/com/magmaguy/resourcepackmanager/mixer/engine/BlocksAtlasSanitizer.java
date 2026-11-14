@@ -60,6 +60,11 @@ final class BlocksAtlasSanitizer {
     void sanitize(File resourcePackRoot) throws IOException {
         List<Path> layerRoots = layerRoots(resourcePackRoot.toPath());
         rejectInternalNamespaceCollisions(layerRoots);
+        // The texture walk below only serves blocks.json atlases; a pack without one has
+        // nothing to sanitize.
+        if (layerRoots.stream().noneMatch(root -> Files.isRegularFile(root.resolve("assets/minecraft/atlases/blocks.json")))) {
+            return;
+        }
         Map<String, List<TextureVariant>> textures = collectTextures(layerRoots);
         SafeResourceResolver safeResources = new SafeResourceResolver(textures);
 
