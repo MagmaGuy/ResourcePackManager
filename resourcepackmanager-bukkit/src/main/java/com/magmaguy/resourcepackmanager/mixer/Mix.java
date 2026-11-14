@@ -157,7 +157,7 @@ public class Mix {
         // inputs validate. If Bedrock output is missing, the normal watchdog path
         // remains responsible for generating it after plugin sources settle.
         boolean reused = reuseExistingMix(inputFingerprint, outputFolder, false, cancellationRequested,
-                new BukkitBedrockConverterContext(cancellationRequested));
+                new BukkitBedrockConverterContext(cancellationRequested), null);
         if (reused) {
             RSPLogger.detail("Verified saved mixer inputs and merged ZIP; Java resource pack hosting started before monitored plugins finished initializing.");
         }
@@ -229,8 +229,12 @@ public class Mix {
         if (cancellationRequested.getAsBoolean()) return false;
         BukkitBedrockConverterContext conversionContext = new BukkitBedrockConverterContext(cancellationRequested);
         String bedrockFingerprint = bedrockIdentity(conversionContext);
-        if (reuseExistingMix(inputFingerprint, outputFolder, true, cancellationRequested, conversionContext)) return true;
-        String reusableJavaSha1 = verifiedJavaArchive(inputFingerprint, outputFolder, cancellationRequested);
+        java.util.concurrent.atomic.AtomicReference<MergedZipHash> mergedZipHash =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        if (reuseExistingMix(inputFingerprint, outputFolder, true, cancellationRequested, conversionContext,
+                mergedZipHash)) return true;
+        String reusableJavaSha1 = verifiedJavaArchive(inputFingerprint, outputFolder, cancellationRequested,
+                mergedZipHash.get());
 
         MixInput input = new MixInput(
                 orderedFiles,
@@ -465,13 +469,16 @@ public class Mix {
      * present. Deliberately conservative: any missing output, any unreadable fingerprint, or any
      * doubt at all falls through to a full mix.
      *
+     * @param hashedZip receives the merged zip's SHA-1 when this call computed it, so a full mix
+     *                  that follows does not hash the same unchanged file again; may be null
      * @return true when the previous outputs were reused and the pipeline can stop here
      */
     private static boolean reuseExistingMix(String inputFingerprint,
                                              File outputFolder,
                                              boolean requireBedrockOutput,
                                              BooleanSupplier cancellationRequested,
-                                             BukkitBedrockConverterContext conversionContext) {
+                                             BukkitBedrockConverterContext conversionContext,
+                                             java.util.concurrent.atomic.AtomicReference<MergedZipHash> hashedZip) {
         if (inputFingerprint == null) return false;
         BooleanSupplier cancelled = cancellationRequested == null ? () -> false : cancellationRequested;
         if (cancelled.getAsBoolean()) return false;
@@ -513,18 +520,20 @@ public class Mix {
         // trusting the sidecar: otherwise a truncated/replaced ZIP with a valid old
         // fingerprint was republished to every player under the old hash.
         try {
+            long zipSize = mergedZip.length();
+            long zipModified = mergedZip.lastModified();
             String actualSha1 = Sha1.hex(mergedZip);
+            if (hashedZip != null) hashedZip.set(new MergedZipHash(mergedZip, zipSize, zipModified, actualSha1));
             if (cancelled.getAsBoolean()) return false;
             if (!storedSha1.equalsIgnoreCase(actualSha1)) return false;
         } catch (IOException exception) {
             return false;
         }
 
-        byte[] sha1Bytes = new byte[20];
+        byte[] sha1Bytes;
         try {
-            for (int i = 0; i < 20; i++)
-                sha1Bytes[i] = (byte) Integer.parseInt(storedSha1.substring(i * 2, i * 2 + 2), 16);
-        } catch (NumberFormatException exception) {
+            sha1Bytes = java.util.HexFormat.of().parseHex(storedSha1);
+        } catch (IllegalArgumentException exception) {
             return false;
         }
         if (cancelled.getAsBoolean()) return false;
@@ -576,15 +585,26 @@ public class Mix {
         return identity;
     }
 
-    private static String verifiedJavaArchive(String inputFingerprint, File outputFolder, BooleanSupplier cancelled) {
+    private static String verifiedJavaArchive(String inputFingerprint, File outputFolder, BooleanSupplier cancelled,
+                                              MergedZipHash alreadyHashed) {
         if (inputFingerprint == null || cancelled.getAsBoolean()) return null;
         try {
             List<String> lines = Files.readAllLines(new File(outputFolder, MIX_FINGERPRINT_FILENAME).toPath());
             if (lines.size() < 2 || !inputFingerprint.equals(lines.get(0))) return null;
             String expected = lines.get(1).trim();
-            String actual = Sha1.hex(new File(outputFolder, resourcePackName + ".zip"));
+            File mergedZip = new File(outputFolder, resourcePackName + ".zip");
+            String actual = alreadyHashed != null && alreadyHashed.stillDescribes(mergedZip)
+                    ? alreadyHashed.sha1()
+                    : Sha1.hex(mergedZip);
             return !cancelled.getAsBoolean() && expected.equals(actual) ? actual : null;
         } catch (IOException unavailable) { return null; }
+    }
+
+    /** The merged zip's SHA-1 with the size and modification time read just before hashing it. */
+    private record MergedZipHash(File zip, long size, long modified, String sha1) {
+        boolean stillDescribes(File file) {
+            return zip.equals(file) && file.isFile() && file.length() == size && file.lastModified() == modified;
+        }
     }
 
     private static void writeMixFingerprint(File outputFolder, String inputFingerprint, String sha1Hex, String bedrockIdentity) {
