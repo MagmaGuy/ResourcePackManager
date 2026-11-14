@@ -11,7 +11,6 @@ import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.Mix;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
 import com.magmaguy.resourcepackmanager.utils.RSPLogger;
-import com.magmaguy.resourcepackmanager.utils.ServerVersionHelper;
 import com.magmaguy.resourcepackmanager.http.BackendIdentity;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient;
 import com.magmaguy.resourcepackmanager.http.MagmaguyRspClient.UploadResult;
@@ -290,13 +289,8 @@ public class AutoHost {
         boolean force = DefaultConfig.isForceResourcePack();
 
         awaitingPack.remove(player.getUniqueId());
-        if (ServerVersionHelper.supportsMultipleResourcePacks()) {
-            // 1.20.3+ supports multiple resource packs - use addResourcePack to coexist with other plugins
-            player.addResourcePack(packUuid, url, hash, prompt, force);
-        } else {
-            // Older versions - use setResourcePack (replaces any existing packs)
-            player.setResourcePack(url, hash, prompt, force);
-        }
+        // addResourcePack lets our pack coexist with other plugins' packs.
+        player.addResourcePack(packUuid, url, hash, prompt, force);
     }
 
     /**
@@ -359,12 +353,7 @@ public class AutoHost {
      * rejoin needed.
      *
      * <p>Cross-platform: driven by the stock Bukkit
-     * {@link PlayerResourcePackStatusEvent}. The status is matched by enum
-     * <em>name</em> rather than constant so referencing 1.20.3+-only states
-     * ({@code DISCARDED}, {@code INVALID_URL}) can't throw {@code NoSuchFieldError}
-     * on older servers, and {@code getID()} is only called when
-     * {@link ServerVersionHelper#supportsMultipleResourcePacks()} (i.e. when the
-     * method exists).</p>
+     * {@link PlayerResourcePackStatusEvent}, matched by status name.</p>
      */
     public static void handleResourcePackStatus(PlayerResourcePackStatusEvent event) {
         Player player = event.getPlayer();
@@ -374,13 +363,9 @@ public class AutoHost {
             return;
         }
 
-        // On stacked-pack servers, ignore reports for other plugins' packs (we
-        // tag ours with RESOURCE_PACK_UUID). On single-pack servers there's only
-        // our pack, so every report is ours.
-        if (ServerVersionHelper.supportsMultipleResourcePacks()) {
-            UUID packId = event.getID();
-            if (packId != null && !packId.equals(RESOURCE_PACK_UUID)) return;
-        }
+        // Ignore reports for other plugins' packs (we tag ours with RESOURCE_PACK_UUID).
+        UUID packId = event.getID();
+        if (packId != null && !packId.equals(RESOURCE_PACK_UUID)) return;
 
         switch (event.getStatus().name()) {
             case "SUCCESSFULLY_LOADED":
