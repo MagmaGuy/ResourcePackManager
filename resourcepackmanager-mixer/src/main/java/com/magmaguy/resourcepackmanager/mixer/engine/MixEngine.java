@@ -172,11 +172,7 @@ public final class MixEngine {
                 deleteDirectoryOffCriticalPath(bedrockInputDir);
                 bedrockInputDir = mergedDir;
             } else {
-                MixerLogger silent = new MixerLogger() {
-                    @Override public void info(String m) { }
-                    @Override public void warn(String m) { }
-                    @Override public void collision(String m) { }
-                };
+                MixerLogger silent = MixerLogger.SILENT;
                 assemble(bedrockPackDirs, bedrockInputDir, new MergeOperations(silent), silent, false);
             }
 
@@ -190,11 +186,7 @@ public final class MixEngine {
                 deleteDirectoryOffCriticalPath(bedrockSoundInputDir);
                 bedrockSoundInputDir = bedrockInputDir;
             } else {
-                MixerLogger silent = new MixerLogger() {
-                    @Override public void info(String m) { }
-                    @Override public void warn(String m) { }
-                    @Override public void collision(String m) { }
-                };
+                MixerLogger silent = MixerLogger.SILENT;
                 assembleSounds(soundPackDirs, bedrockSoundInputDir, new MergeOperations(silent), silent);
             }
             if (input.bedrockSounds()) soundSources = soundFileSources(soundPackDirs, sourceNameByStaged);
