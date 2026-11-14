@@ -74,11 +74,20 @@ public final class BedrockPackOptimizer {
                         .toList();
             }
 
+            // The fingerprint includes the extension and the size, so a texture whose extension
+            // and size no other texture shares cannot be a duplicate and is never hashed.
+            Map<String, Integer> sameExtensionAndSize = new HashMap<>();
+            for (Path texture : textureFiles) {
+                if (isCancelled(cancellationRequested)) return;
+                sameExtensionAndSize.merge(sizeBucket(texture), 1, Integer::sum);
+            }
+
             Map<ExactTextureFingerprint, Path> canonicalByFingerprint = new HashMap<>();
             Map<String, Replacement> replacements = new LinkedHashMap<>();
             Map<Path, Long> duplicateSizes = new LinkedHashMap<>();
             for (Path texture : textureFiles) {
                 if (isCancelled(cancellationRequested)) return;
+                if (sameExtensionAndSize.get(sizeBucket(texture)) < 2) continue;
                 ExactTextureFingerprint fingerprint = ExactTextureFingerprint.of(texture);
                 Path canonical = canonicalByFingerprint.putIfAbsent(fingerprint, texture);
                 if (canonical == null) continue;
@@ -262,6 +271,10 @@ public final class BedrockPackOptimizer {
         } catch (IOException atomicMoveFailed) {
             Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
         }
+    }
+
+    private static String sizeBucket(Path texture) throws IOException {
+        return ExactTextureFingerprint.extension(texture) + '\0' + Files.size(texture);
     }
 
     private static boolean isImage(Path file) {
