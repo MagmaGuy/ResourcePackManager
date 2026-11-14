@@ -160,6 +160,26 @@
                             </target>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>verify-no-bundled-netty</id>
+                        <phase>package</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <!-- Every host provides Netty (Bukkit server, Velocity, BungeeCord,
+                                     Geyser). A bundled copy is dead weight that other plugins can
+                                     pick up through Bukkit's cross-plugin class lookup. -->
+                                <fail message="ResourcePackManager.jar must not bundle Netty, jctools or Netty native libraries.">
+                                    <condition>
+                                        <resourcecount when="greater" count="0">
+                                            <zipfileset src="${project.build.directory}/${project.build.finalName}.jar"
+                                                        includes="io/netty/**,org/jctools/**,META-INF/native/**"/>
+                                        </resourcecount>
+                                    </condition>
+                                </fail>
+                            </target>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

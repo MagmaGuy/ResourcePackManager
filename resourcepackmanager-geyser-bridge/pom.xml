@@ -81,6 +81,16 @@
                         </goals>
                         <configuration>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <!-- netty-bom manages Netty's native transports with runtime scope, which
+                                 overrides the provided scope inherited from Geyser core and would pull
+                                 Netty (with jctools inside netty-common) into this jar. Every host
+                                 provides Netty: the Bukkit server, Velocity, BungeeCord and Geyser. -->
+                            <artifactSet>
+                                <excludes>
+                                    <exclude>io.netty:*</exclude>
+                                    <exclude>org.jctools:*</exclude>
+                                </excludes>
+                            </artifactSet>
                             <relocations>
                                 <relocation>
                                     <pattern>com.magmaguy.resourcepackmanager.bridge</pattern>
