@@ -32,6 +32,8 @@ public final class BedrockOutputPublication {
 
     private static volatile Cache cache;
     private static volatile boolean revokedInThisJvm;
+    /** The last snapshot {@link #servable} found to carry the artifact-set manifest. */
+    private static volatile Snapshot manifestVerified;
 
     private BedrockOutputPublication() {
     }
@@ -56,10 +58,12 @@ public final class BedrockOutputPublication {
         Path marker = new File(outputDir, MARKER_NAME).toPath();
         Path pending = marker.resolveSibling("." + MARKER_NAME + "." + UUID.randomUUID() + ".tmp");
         try {
-            String packSha1 = stableSha1(pack, cancelled);
-            if (packSha1 == null) return false;
+            StableHash packHash = stableSha1(pack, cancelled);
+            if (packHash == null) return false;
+            String packSha1 = packHash.sha1();
             boolean hasMappings = mappings.isFile();
-            String mappingsSha1 = hasMappings ? stableSha1(mappings, cancelled) : null;
+            StableHash mappingsHash = hasMappings ? stableSha1(mappings, cancelled) : null;
+            String mappingsSha1 = mappingsHash == null ? null : mappingsHash.sha1();
             if (hasMappings && mappingsSha1 == null) return false;
             if (cancelled.getAsBoolean()) return false;
 
@@ -83,6 +87,7 @@ public final class BedrockOutputPublication {
             // their committed hashes were calculated.
             revokedInThisJvm = false;
             cache = null;
+            seedCache(outputDir, marker, pack, packHash, mappings, mappingsHash);
             return true;
         } catch (IOException e) {
             Logger.warn("Failed to publish Bedrock output authority marker: " + e.getMessage());
@@ -153,6 +158,49 @@ public final class BedrockOutputPublication {
         }
     }
 
+    /**
+     * {@link #current} narrowed to artifact sets that carry the artifact-set manifest; legacy
+     * publications without it are not served. A positive manifest check is remembered for the
+     * snapshot it was made on, which {@link #current} keeps returning while the files' stamps
+     * stay the same; a negative one is checked again on the next call.
+     */
+    public static Snapshot servable(File outputDir) {
+        Snapshot snapshot = current(outputDir);
+        if (snapshot == null) return null;
+        if (snapshot == manifestVerified) return snapshot;
+        if (!BedrockConversion.hasArtifactSetManifest(snapshot.pack())) return null;
+        manifestVerified = snapshot;
+        return snapshot;
+    }
+
+    /**
+     * Seeds the metadata cache with the hashes {@link #publishCurrent} just verified, so the
+     * next {@link #current} call does not hash the same unchanged files again. The stamps are
+     * the ones taken around those hashes, so a file that changed since then misses the cache
+     * and is hashed as before.
+     */
+    private static void seedCache(File outputDir, Path marker, File pack, StableHash packHash,
+                                  File mappings, StableHash mappingsHash) {
+        try {
+            if (!Files.isRegularFile(marker) || !pack.isFile()) return;
+            if ((mappingsHash != null) != mappings.isFile()) return;
+            long markerStamp = Files.getLastModifiedTime(marker).toMillis();
+            long markerSize = Files.size(marker);
+            Snapshot snapshot = new Snapshot(
+                    pack,
+                    packHash.sha1(),
+                    mappingsHash != null ? mappings : null,
+                    mappingsHash != null ? mappingsHash.sha1() : null);
+            cache = new Cache(outputDir.getAbsolutePath(), markerStamp, markerSize,
+                    packHash.modified(), packHash.size(),
+                    mappingsHash != null ? mappingsHash.modified() : -1L,
+                    mappingsHash != null ? mappingsHash.size() : -1L,
+                    snapshot);
+        } catch (IOException | RuntimeException ignored) {
+            // Leave the cache empty; current() hashes the files instead.
+        }
+    }
+
     /** Clears metadata cache immediately before stable publication paths mutate. */
     public static synchronized void invalidateCache() {
         cache = null;
@@ -218,7 +266,7 @@ public final class BedrockOutputPublication {
         return removed;
     }
 
-    private static String stableSha1(File file, BooleanSupplier cancelled) throws IOException {
+    private static StableHash stableSha1(File file, BooleanSupplier cancelled) throws IOException {
         long size = file.length();
         long modified = file.lastModified();
         String hash = Sha1.hex(file).toLowerCase(Locale.ROOT);
@@ -226,7 +274,11 @@ public final class BedrockOutputPublication {
         if (!file.isFile() || size != file.length() || modified != file.lastModified()) {
             throw new IOException("Bedrock artifact changed while it was being hashed: " + file.getName());
         }
-        return hash;
+        return new StableHash(hash, size, modified);
+    }
+
+    /** A SHA-1 with the size and modification time the file kept while it was hashed. */
+    private record StableHash(String sha1, long size, long modified) {
     }
 
     private static String normalSha1(String value) {

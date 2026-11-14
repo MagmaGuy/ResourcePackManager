@@ -500,13 +500,8 @@ public class Mix {
         boolean bedrockEnabled = DefaultConfig.isBedrockConversionEnabled();
         boolean expectsBedrockOutput = bedrockEnabled && conversionContext.isBedrockTargetPresent();
         BedrockOutputPublication.Snapshot bedrockPublication = bedrockEnabled
-                ? BedrockOutputPublication.current(outputFolder)
+                ? BedrockOutputPublication.servable(outputFolder)
                 : null;
-        if (bedrockPublication != null
-                && !BedrockConversion.hasArtifactSetManifest(
-                bedrockPublication.pack())) {
-            bedrockPublication = null;
-        }
         if (cancelled.getAsBoolean()) return false;
         if (requireBedrockOutput && (!sameBedrockIdentity || (expectsBedrockOutput && bedrockPublication == null))) return false;
         if (!sameBedrockIdentity) bedrockPublication = null;

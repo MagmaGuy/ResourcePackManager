@@ -1405,12 +1405,8 @@ public class AutoHost {
     private static void refreshBedrockPublicationAuthority() {
         File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
         BedrockOutputPublication.Snapshot publication = DefaultConfig.isBedrockConversionEnabled()
-                ? BedrockOutputPublication.current(outputDir)
+                ? BedrockOutputPublication.servable(outputDir)
                 : null;
-        if (publication != null
-                && !BedrockConversion.hasArtifactSetManifest(publication.pack())) {
-            publication = null;
-        }
         if (publication == null) {
             bedrockPackRouteDescriptor = null;
             bedrockPublicationAuthorized = false;

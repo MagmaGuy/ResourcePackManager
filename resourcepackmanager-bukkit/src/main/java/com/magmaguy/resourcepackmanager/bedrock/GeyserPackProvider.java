@@ -125,9 +125,8 @@ public final class GeyserPackProvider {
 
     private static void onSessionLoadResourcePacks(SessionLoadResourcePacksEvent event) {
         File outputDir = new File(ResourcePackManager.plugin.getDataFolder(), "output");
-        BedrockOutputPublication.Snapshot publication = BedrockOutputPublication.current(outputDir);
-        if (publication == null
-                || !BedrockConversion.hasArtifactSetManifest(publication.pack())) {
+        BedrockOutputPublication.Snapshot publication = BedrockOutputPublication.servable(outputDir);
+        if (publication == null) {
             // First boot before any mix has completed, or a failed mix wiped the
             // output. The user explicitly accepted this small window — the joiner
             // just doesn't get a pack this one time.
