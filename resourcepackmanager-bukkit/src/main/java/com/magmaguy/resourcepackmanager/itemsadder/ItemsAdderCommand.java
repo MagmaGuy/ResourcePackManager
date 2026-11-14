@@ -174,7 +174,7 @@ public class ItemsAdderCommand extends AdvancedCommand {
             return;
         }
 
-        ItemsAdderDismissedConfig.setDismissed(player.getUniqueId(), true);
+        ItemsAdderDismissedConfig.setDismissed(player.getUniqueId());
         Logger.sendMessage(sender, "&aItemsAdder configuration warning has been dismissed permanently.");
         Logger.sendMessage(sender, "&7You can run &e/rspm itemsadder configure &7at any time to set it up.");
     }

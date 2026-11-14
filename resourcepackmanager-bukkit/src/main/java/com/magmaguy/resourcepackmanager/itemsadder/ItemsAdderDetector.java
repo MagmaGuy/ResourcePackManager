@@ -29,24 +29,10 @@ public class ItemsAdderDetector {
     /**
      * Check if ItemsAdder is currently configured to host its own resource pack.
      * This checks all built-in hosting methods: self-host, external-host, and lobfile.
-     * @return true if ItemsAdder is hosting via any method
-     */
-    public static boolean isItemsAdderHosting() {
-        if (!isItemsAdderInstalled()) return false;
-
-        File configFile = getItemsAdderConfigFile();
-        if (!configFile.exists()) {
-            Logger.warn("Could not find ItemsAdder config.yml");
-            return false;
-        }
-
-        return isItemsAdderHosting(YamlConfiguration.loadConfiguration(configFile));
-    }
-
-    /**
-     * Same check against an already-loaded config so multi-check callers
+     * Takes an already-loaded config so multi-check callers
      * ({@link #needsConfiguration()}) parse config.yml once instead of once
      * per question.
+     * @return true if ItemsAdder is hosting via any method
      */
     static boolean isItemsAdderHosting(YamlConfiguration config) {
         try {
@@ -91,15 +77,6 @@ public class ItemsAdderDetector {
      * Check if ItemsAdder has encryption/protection enabled.
      * @return true if any protection is enabled
      */
-    public static boolean hasProtectionEnabled() {
-        if (!isItemsAdderInstalled()) return false;
-
-        File configFile = getItemsAdderConfigFile();
-        if (!configFile.exists()) return false;
-
-        return hasProtectionEnabled(YamlConfiguration.loadConfiguration(configFile));
-    }
-
     private static boolean hasProtectionEnabled(YamlConfiguration config) {
         try {
             boolean protection1 = config.getBoolean("resource-pack.zip.protect-file-from-unzip.protection_1", false);
@@ -119,15 +96,6 @@ public class ItemsAdderDetector {
      * RSPM needs normal JSON so the mixer and Bedrock converter can parse model files.
      * @return true if JSON compression is enabled
      */
-    public static boolean hasCompressedJsonEnabled() {
-        if (!isItemsAdderInstalled()) return false;
-
-        File configFile = getItemsAdderConfigFile();
-        if (!configFile.exists()) return false;
-
-        return hasCompressedJsonEnabled(YamlConfiguration.loadConfiguration(configFile));
-    }
-
     private static boolean hasCompressedJsonEnabled(YamlConfiguration config) {
         try {
             return config.getBoolean(COMPRESS_JSON_FILES, false);

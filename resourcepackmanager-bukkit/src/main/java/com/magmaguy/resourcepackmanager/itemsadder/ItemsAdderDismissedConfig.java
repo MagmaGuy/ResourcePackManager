@@ -32,19 +32,16 @@ public class ItemsAdderDismissedConfig extends ConfigurationFile {
     }
 
     /**
-     * Set whether a player has dismissed the warning.
+     * Record that a player has dismissed the warning.
      * @param playerUUID the player's UUID
-     * @param dismissed true to dismiss, false to un-dismiss
      */
-    public static void setDismissed(UUID playerUUID, boolean dismissed) {
+    public static void setDismissed(UUID playerUUID) {
         if (instance == null) return;
 
         List<String> dismissedList = new ArrayList<>(instance.getFileConfiguration().getStringList("dismissed"));
 
-        if (dismissed && !dismissedList.contains(playerUUID.toString())) {
+        if (!dismissedList.contains(playerUUID.toString())) {
             dismissedList.add(playerUUID.toString());
-        } else if (!dismissed) {
-            dismissedList.remove(playerUUID.toString());
         }
 
         instance.getFileConfiguration().set("dismissed", dismissedList);
