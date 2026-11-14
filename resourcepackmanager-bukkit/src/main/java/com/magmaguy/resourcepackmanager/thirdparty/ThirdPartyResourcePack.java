@@ -772,17 +772,32 @@ public class ThirdPartyResourcePack {
 
     private boolean cloneRemoteRSP() {
         RSPLogger.detail("Getting resource pack from remote URL! This is not ideal but not optional for some plugins. URL: " + url);
+        // Ask the server whether the copy downloaded last time is still current. The validators
+        // are only sent while that copy is intact, so a 304 always reuses the exact bytes the
+        // server last sent; a changed pack still comes back as a full 200 download.
+        RemoteValidators validators = readRemoteValidators();
         try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
             HttpGet httpGet = new HttpGet(url);
+            if (validators != null) {
+                if (validators.etag() != null) httpGet.addHeader("If-None-Match", validators.etag());
+                if (validators.lastModified() != null) httpGet.addHeader("If-Modified-Since", validators.lastModified());
+            }
             try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
                 int statusCode = response.getCode();
                 RSPLogger.detail("Response status code: " + statusCode);
 
+                if (statusCode == 304 && validators != null) {
+                    RSPLogger.detail("The remote resource pack is unchanged since the last download; reusing "
+                            + getTarget().toFile().getAbsolutePath());
+                    mixerResourcePack = getTarget().toFile();
+                    return true;
+                }
                 if (statusCode == 200) {
                     HttpEntity responseEntity = response.getEntity();
                     if (responseEntity != null) {
                         // Save the response as a zip file
                         File zipFile = getTarget().toFile();
+                        deleteRemoteValidators();
                         if (zipFile.exists()) {
                             RSPLogger.detail("Target file exists, deleting it: " + zipFile.getAbsolutePath());
                             zipFile.delete();
@@ -800,6 +815,10 @@ public class ThirdPartyResourcePack {
 
                             RSPLogger.detail("Successfully downloaded the resource pack to " + zipFile.getAbsolutePath());
                             mixerResourcePack = zipFile;
+                            outStream.close();
+                            writeRemoteValidators(zipFile,
+                                    response.getFirstHeader("ETag") == null ? null : response.getFirstHeader("ETag").getValue(),
+                                    response.getFirstHeader("Last-Modified") == null ? null : response.getFirstHeader("Last-Modified").getValue());
                             return true;
                         } catch (Exception e) {
                             Logger.warn("Failed to write resource pack from remote!");
@@ -818,6 +837,68 @@ public class ThirdPartyResourcePack {
         }
         mixerResourcePack = null;
         return false;
+    }
+
+    /** HTTP validators of the last full download of a remote pack, with the SHA-1 of the copy it wrote. */
+    private record RemoteValidators(String etag, String lastModified) {
+    }
+
+    private Path remoteValidatorsPath() {
+        return getTarget().resolveSibling(getTarget().getFileName() + ".remote-validators");
+    }
+
+    /**
+     * The validators to send, or null when there is no intact earlier download of this same URL to
+     * fall back on: no sidecar, another URL, no validator, or a local copy whose bytes changed.
+     */
+    private RemoteValidators readRemoteValidators() {
+        try {
+            File zipFile = getTarget().toFile();
+            if (!zipFile.isFile() || !Files.isRegularFile(remoteValidatorsPath())) return null;
+            java.util.Properties properties = new java.util.Properties();
+            try (InputStream input = Files.newInputStream(remoteValidatorsPath())) {
+                properties.load(input);
+            }
+            if (!Objects.equals(url, properties.getProperty("url"))) return null;
+            String etag = blankToNull(properties.getProperty("etag"));
+            String lastModified = blankToNull(properties.getProperty("lastModified"));
+            if (etag == null && lastModified == null) return null;
+            String sha1 = properties.getProperty("sha1");
+            if (sha1 == null || !sha1.equals(Sha1.hex(zipFile))) return null;
+            return new RemoteValidators(etag, lastModified);
+        } catch (IOException | RuntimeException unavailable) {
+            return null;
+        }
+    }
+
+    private void writeRemoteValidators(File zipFile, String etag, String lastModified) {
+        if (blankToNull(etag) == null && blankToNull(lastModified) == null) return;
+        Path pending = null;
+        try {
+            java.util.Properties properties = new java.util.Properties();
+            properties.setProperty("url", url);
+            if (blankToNull(etag) != null) properties.setProperty("etag", etag);
+            if (blankToNull(lastModified) != null) properties.setProperty("lastModified", lastModified);
+            properties.setProperty("sha1", Sha1.hex(zipFile));
+            pending = Files.createTempFile(getTarget().getParent(), ".rspm-remote-validators-", ".tmp");
+            try (java.io.OutputStream output = Files.newOutputStream(pending)) {
+                properties.store(output, null);
+            }
+            com.magmaguy.resourcepackmanager.mixer.engine.internal.ZipUtil.publishAtomically(pending, remoteValidatorsPath());
+        } catch (IOException | RuntimeException unavailable) {
+            // Disposable cache metadata: without it the next mix downloads the pack in full.
+            deleteRemoteValidators();
+        } finally {
+            if (pending != null) try { Files.deleteIfExists(pending); } catch (IOException ignored) { }
+        }
+    }
+
+    private void deleteRemoteValidators() {
+        try {
+            Files.deleteIfExists(remoteValidatorsPath());
+        } catch (IOException ignored) {
+            // A stale sidecar is ignored anyway once the copy's SHA-1 no longer matches.
+        }
     }
 
     private boolean mixerCloneExists() {
