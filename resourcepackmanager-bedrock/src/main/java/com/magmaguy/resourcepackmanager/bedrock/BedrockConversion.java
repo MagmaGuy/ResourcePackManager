@@ -41,6 +41,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -559,6 +560,7 @@ public class BedrockConversion {
             // every (model × base item) attachable emission.
             Map<String, SharedModelAssets> modelAssetsCache = new LinkedHashMap<>();
             ExactTextureFileCache exactAtlasCache = new ExactTextureFileCache();
+            Map<File, File> copiedEquipmentTextures = new HashMap<>();
             List<String> vanillaRetextures = new ArrayList<>();
             Map<String, List<String>> pluginBaseItems = ctx.declaredBaseItems();
             int pluginBased = 0;
@@ -676,7 +678,7 @@ public class BedrockConversion {
                                 String attachableOut = mappingHash;
                                 EquipmentAttachableGenerator.tryEnrichWithArmorAttachable(
                                         tierBedrockId, attachableOut, namespace, itemsStem,
-                                        base, assetResolver, mergedJavaPack, bedrockDir);
+                                        base, assetResolver, mergedJavaPack, bedrockDir, copiedEquipmentTextures);
                                 if (ctx.isCancellationRequested()) return;
                             }
                         }

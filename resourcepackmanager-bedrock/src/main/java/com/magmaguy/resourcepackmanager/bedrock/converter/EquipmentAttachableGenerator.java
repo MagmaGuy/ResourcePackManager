@@ -116,6 +116,10 @@ public final class EquipmentAttachableGenerator {
      * @param resolver            Cache for {@code assets/<ns>/equipment/*.json} lookups.
      * @param mergedJavaPack      Root of the merged Java pack on disk (for texture-source lookup).
      * @param bedrockDir          Root of the Bedrock pack being written.
+     * @param copiedTextures      Run-scoped record of the source last copied to each Bedrock
+     *                            texture file. A copy whose destination already holds the same
+     *                            source from this run is skipped; a different source still
+     *                            overwrites it, so the last writer wins as before.
      * @return {@code true} if a worn-armor attachable was actually written.
      */
     public static boolean tryEnrichWithArmorAttachable(String bedrockIdentifier,
@@ -125,7 +129,8 @@ public final class EquipmentAttachableGenerator {
                                                        String baseItem,
                                                        AssetResolver resolver,
                                                        File mergedJavaPack,
-                                                       File bedrockDir) {
+                                                       File bedrockDir,
+                                                       Map<File, File> copiedTextures) {
         // 1) Infer slot. Use filename-only mode by passing a synthetic JsonObject
         //    with an empty `layers` so the mapper hits the filename branch and
         //    doesn't bail on null. The base item gives us a definitive fallback:
@@ -190,15 +195,22 @@ public final class EquipmentAttachableGenerator {
         String slotKey = slot.name().toLowerCase();
         String bedrockTextureRel = "textures/entity/equipment/" + safeNs + "/" + safeMaterial + "_" + slotKey;
         File destPng = new File(bedrockDir, bedrockTextureRel + ".png");
-        try {
-            Files.createDirectories(destPng.getParentFile().toPath());
-            // Verbatim copy: armor textures are flat 64x32 (or 64x64) skin-style
-            // sheets, no flipbook cropping needed and no atlas stitching.
-            Files.copy(sourcePng.toPath(), destPng.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        } catch (IOException e) {
-            BedrockLog.warn("[BedrockConverter] Failed to copy equipment texture "
-                    + sourcePng.getPath() + " -> " + destPng.getPath() + ": " + e.getMessage());
-            return false;
+        // The destination depends only on namespace, material and slot, so every base item of
+        // one armor piece copies the same file to the same place. The merged Java pack does not
+        // change during a conversion, so a repeat of the last copy to this destination is skipped.
+        if (!sourcePng.equals(copiedTextures.get(destPng))) {
+            try {
+                Files.createDirectories(destPng.getParentFile().toPath());
+                // Verbatim copy: armor textures are flat 64x32 (or 64x64) skin-style
+                // sheets, no flipbook cropping needed and no atlas stitching.
+                Files.copy(sourcePng.toPath(), destPng.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                copiedTextures.remove(destPng);
+                BedrockLog.warn("[BedrockConverter] Failed to copy equipment texture "
+                        + sourcePng.getPath() + " -> " + destPng.getPath() + ": " + e.getMessage());
+                return false;
+            }
+            copiedTextures.put(destPng, sourcePng);
         }
 
         // 7) Write the worn-armor attachable, identifier = supplied bedrockIdentifier.
