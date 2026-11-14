@@ -1,5 +1,7 @@
 package com.magmaguy.resourcepackmanager.bedrock.generic;
 
+import com.google.gson.JsonObject;
+
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -26,6 +28,10 @@ import java.util.List;
  *                          resolved model's parent chain hits {@code item/handheld*}.
  * @param legacyCustomModelData exact pre-1.21.4 custom-model-data value, or {@code null}
  *                              for a modern item-model definition
+ * @param components            Geyser {@code components} the custom item changes against its
+ *                              base item ({@link ComponentPlanner}); empty writes none
+ * @param extraBedrockOptions   {@code bedrock_options} fields read from the custom item, such
+ *                              as {@code protection_value} and {@code dyeable}
  */
 public record GeyserDefinitionEntry(
         String bedrockIdentifier,
@@ -33,10 +39,14 @@ public record GeyserDefinitionEntry(
         List<PredicateRecord> predicates,
         String iconKey,
         boolean handheld,
-        BigDecimal legacyCustomModelData
+        BigDecimal legacyCustomModelData,
+        JsonObject components,
+        JsonObject extraBedrockOptions
 ) {
     public GeyserDefinitionEntry {
         predicates = predicates == null ? List.of() : List.copyOf(predicates);
+        components = components == null ? new JsonObject() : components.deepCopy();
+        extraBedrockOptions = extraBedrockOptions == null ? new JsonObject() : extraBedrockOptions.deepCopy();
         boolean hasModernModel = javaItemModel != null && !javaItemModel.isBlank();
         if (hasModernModel == (legacyCustomModelData != null)) {
             throw new IllegalArgumentException(
@@ -50,7 +60,7 @@ public record GeyserDefinitionEntry(
                                                    String iconKey,
                                                    boolean handheld) {
         return new GeyserDefinitionEntry(bedrockIdentifier, javaItemModel, predicates,
-                iconKey, handheld, null);
+                iconKey, handheld, null, null, null);
     }
 
     public static GeyserDefinitionEntry legacy(String bedrockIdentifier,
@@ -59,7 +69,13 @@ public record GeyserDefinitionEntry(
                                                String iconKey,
                                                boolean handheld) {
         return new GeyserDefinitionEntry(bedrockIdentifier, null, sourcePredicates,
-                iconKey, handheld, customModelData);
+                iconKey, handheld, customModelData, null, null);
+    }
+
+    /** This entry carrying a custom item's components and extra bedrock options. */
+    public GeyserDefinitionEntry withItemData(JsonObject itemComponents, JsonObject itemBedrockOptions) {
+        return new GeyserDefinitionEntry(bedrockIdentifier, javaItemModel, predicates, iconKey, handheld,
+                legacyCustomModelData, itemComponents, itemBedrockOptions);
     }
 
     public boolean isLegacy() {

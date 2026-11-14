@@ -4,9 +4,13 @@ import com.google.gson.JsonObject;
 import com.magmaguy.resourcepackmanager.bedrock.converter.*;
 import com.magmaguy.resourcepackmanager.bedrock.generic.AssetResolver;
 import com.magmaguy.resourcepackmanager.bedrock.generic.BaseItemResolver;
+import com.magmaguy.resourcepackmanager.bedrock.generic.ComponentPlan;
+import com.magmaguy.resourcepackmanager.bedrock.generic.ComponentPlanner;
 import com.magmaguy.resourcepackmanager.bedrock.generic.GenericGeyserMappingBuilder;
 import com.magmaguy.resourcepackmanager.bedrock.generic.GenericJavaScanner;
 import com.magmaguy.resourcepackmanager.bedrock.generic.GeyserDefinitionEntry;
+import com.magmaguy.resourcepackmanager.bedrock.generic.ItemComponentIndex;
+import com.magmaguy.resourcepackmanager.bedrock.generic.ItemComponentSnapshot;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ItemModelTreeWalker;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ItemsDefinition;
 import com.magmaguy.resourcepackmanager.bedrock.generic.MappedItemRegistry;
@@ -68,7 +72,7 @@ import java.util.zip.ZipFile;
  * the {@link BedrockConverterContext}.</p>
  */
 public class BedrockConversion {
-    public static final String OUTPUT_REVISION = "pack-declared-carriers-v1";
+    public static final String OUTPUT_REVISION = "item-components-v1";
 
     public static final String BEDROCK_PACK_NAME = "ResourcePackManager_Bedrock";
     public static final String GEYSER_MAPPINGS_NAME = "rspm_geyser_mappings.json";
@@ -558,6 +562,12 @@ public class BedrockConversion {
             List<String> vanillaRetextures = new ArrayList<>();
             Map<String, List<String>> pluginBaseItems = ctx.declaredBaseItems();
             int pluginBased = 0;
+            // Components of the custom items plugins register, so each mapping carries what
+            // its item changes against the base item (stack size, food, wearing...).
+            List<ItemComponentSnapshot> declaredComponents = ctx.declaredItemComponents();
+            ItemComponentIndex componentIndex = new ItemComponentIndex(declaredComponents);
+            List<String> componentNotes = new ArrayList<>();
+            int[] componentMappings = {0};
 
             // Walked once up front: the carrier index needs every definition's leaves before
             // the first custom definition resolves its base items.
@@ -643,31 +653,43 @@ public class BedrockConversion {
                         }
                         if (!iconTextureMap.containsKey(iconKey)) continue;
                         String itemsStem = def.itemsRelPath();
+                        List<ResolvedLeaf> allLeaves = walkedLeaves.get(defIndex);
                         for (String base : baseItems) {
                             if (ctx.isCancellationRequested()) return;
-                            String mappingHash = BedrockShortName.forBaseMapping(
-                                    leaf.modelRef(), base, def.itemIdentifier() + "|"
-                                            + MappedItemRegistry.predicateShape(leaf.predicates()));
-                            String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
-                            registry.addMapping(base, geyserEntry(
-                                    def,
-                                    tierBedrockId,
-                                    leaf.predicates(),
-                                    iconKey,
-                                    resolved.isHandheldVariant()
-                            ));
-                            String attachableOut = mappingHash;
-                            EquipmentAttachableGenerator.tryEnrichWithArmorAttachable(
-                                    tierBedrockId, attachableOut, namespace, itemsStem,
-                                    base, assetResolver, mergedJavaPack, bedrockDir);
-                            if (ctx.isCancellationRequested()) return;
+                            ComponentPlan plan = componentPlan(componentIndex, def, leaf, allLeaves, base, componentNotes);
+                            for (ComponentPlan.Variant variant : plan.variants()) {
+                                List<PredicateRecord> predicates = withExtraPredicates(leaf.predicates(), variant);
+                                String mappingHash = BedrockShortName.forBaseMapping(
+                                        leaf.modelRef(), base, def.itemIdentifier() + "|"
+                                                + MappedItemRegistry.predicateShape(predicates));
+                                String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
+                                registry.addMapping(base, geyserEntry(
+                                        def,
+                                        tierBedrockId,
+                                        predicates,
+                                        iconKey,
+                                        resolved.isHandheldVariant()
+                                ).withItemData(variant.components(), variant.bedrockOptions()));
+                                if (!variant.components().isEmpty() || !variant.bedrockOptions().isEmpty()) {
+                                    componentMappings[0]++;
+                                }
+                                String attachableOut = mappingHash;
+                                EquipmentAttachableGenerator.tryEnrichWithArmorAttachable(
+                                        tierBedrockId, attachableOut, namespace, itemsStem,
+                                        base, assetResolver, mergedJavaPack, bedrockDir);
+                                if (ctx.isCancellationRequested()) return;
+                            }
                         }
                         flatEmitted++;
                     } else {
+                        ResolvedLeaf threeDLeaf = leaf;
+                        List<ResolvedLeaf> allLeaves = walkedLeaves.get(defIndex);
                         if (!emitGenericThreeD(leaf, resolved, modelHash, iconKey,
                                 def,
                                 baseItems, registry, modelAssetsCache,
                                 mergedJavaPack, bedrockDir, iconTextureMap, exactAtlasCache,
+                                base -> componentPlan(componentIndex, def, threeDLeaf, allLeaves, base, componentNotes),
+                                componentMappings,
                                 ctx::isCancellationRequested)) {
                             if (ctx.isCancellationRequested()) return;
                             continue;
@@ -683,6 +705,18 @@ public class BedrockConversion {
                         + String.join(", ", vanillaRetextures.subList(0, Math.min(8, vanillaRetextures.size())))
                         + (vanillaRetextures.size() > 8 ? " and " + (vanillaRetextures.size() - 8) + " more" : "")
                         + ". Their conditional variants, such as custom model data, still convert.");
+            }
+            if (!componentIndex.isEmpty()) {
+                BedrockLog.info("[BedrockConverter] " + componentMappings[0]
+                        + " mapping(s) carry the components of their custom item, read from "
+                        + declaredComponents.size() + " registered custom item(s), so Bedrock players"
+                        + " get their stack size, food, wearing and durability.");
+                if (!componentNotes.isEmpty()) {
+                    BedrockLog.debug("[BedrockConverter] Components left out where custom items on one model disagree ("
+                            + componentNotes.size() + "): " + String.join("; ",
+                            componentNotes.subList(0, Math.min(12, componentNotes.size())))
+                            + (componentNotes.size() > 12 ? "; and " + (componentNotes.size() - 12) + " more" : ""));
+                }
             }
             if (pluginBased > 0) {
                 BedrockLog.info("[BedrockConverter] " + pluginBased
@@ -718,6 +752,8 @@ public class BedrockConversion {
                                              File bedrockDir,
                                              Map<String, String> iconTextureMap,
                                              ExactTextureFileCache exactAtlasCache,
+                                             java.util.function.Function<String, ComponentPlan> planForBase,
+                                             int[] componentMappings,
                                              BooleanSupplier cancellationRequested) {
         if (isCancelled(cancellationRequested)) return false;
         // modelHash is the short, opaque, deterministic stem (see BedrockShortName)
@@ -814,28 +850,53 @@ public class BedrockConversion {
         boolean anyEmitted = false;
         for (String base : baseItems) {
             if (isCancelled(cancellationRequested)) return false;
-            String mappingHash = BedrockShortName.forBaseMapping(
-                    leaf.modelRef(), base, definition.itemIdentifier() + "|"
-                            + MappedItemRegistry.predicateShape(leaf.predicates()));
-            String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
-            String attachableOutPath = mappingHash;
+            for (ComponentPlan.Variant variant : planForBase.apply(base).variants()) {
+                List<PredicateRecord> predicates = withExtraPredicates(leaf.predicates(), variant);
+                String mappingHash = BedrockShortName.forBaseMapping(
+                        leaf.modelRef(), base, definition.itemIdentifier() + "|"
+                                + MappedItemRegistry.predicateShape(predicates));
+                String tierBedrockId = BedrockShortName.bedrockIdentifier(mappingHash);
+                String attachableOutPath = mappingHash;
 
-            String result = FmmAttachableGenerator.writeAttachable(
-                    tierBedrockId, attachableOutPath,
-                    shared.geometryId(), shared.bedrockTexturePath(),
-                    shared.animIds(), shared.particles(), bedrockDir);
-            if (result == null) continue;
+                String result = FmmAttachableGenerator.writeAttachable(
+                        tierBedrockId, attachableOutPath,
+                        shared.geometryId(), shared.bedrockTexturePath(),
+                        shared.animIds(), shared.particles(), bedrockDir);
+                if (result == null) continue;
 
-            registry.addMapping(base, geyserEntry(
-                    definition,
-                    tierBedrockId,
-                    leaf.predicates(),
-                    iconKey,
-                    resolved.isHandheldVariant()
-            ));
-            anyEmitted = true;
+                registry.addMapping(base, geyserEntry(
+                        definition,
+                        tierBedrockId,
+                        predicates,
+                        iconKey,
+                        resolved.isHandheldVariant()
+                ).withItemData(variant.components(), variant.bedrockOptions()));
+                if (!variant.components().isEmpty() || !variant.bedrockOptions().isEmpty()) componentMappings[0]++;
+                anyEmitted = true;
+            }
         }
         return anyEmitted;
+    }
+
+    /**
+     * The definitions one leaf gets under one base item: one per group of custom items that
+     * differ in which components they have, or a single plain one when no plugin registered an
+     * item for it.
+     */
+    private static ComponentPlan componentPlan(ItemComponentIndex index, ItemsDefinition definition,
+                                               ResolvedLeaf leaf, List<ResolvedLeaf> allLeaves, String base,
+                                               List<String> notes) {
+        List<ItemComponentSnapshot> stacks = index.matching(definition, leaf, allLeaves, base);
+        if (stacks.isEmpty() && leaf.dyeTintDefault() == null) return ComponentPlan.NONE;
+        return ComponentPlanner.plan(stacks, leaf.dyeTintDefault(), !definition.isLegacyCustomModelData(), notes);
+    }
+
+    private static List<PredicateRecord> withExtraPredicates(List<PredicateRecord> leafPredicates,
+                                                             ComponentPlan.Variant variant) {
+        if (variant.extraPredicates().isEmpty()) return leafPredicates;
+        List<PredicateRecord> combined = new ArrayList<>(leafPredicates);
+        combined.addAll(variant.extraPredicates());
+        return combined;
     }
 
     private static GeyserDefinitionEntry geyserEntry(ItemsDefinition definition,

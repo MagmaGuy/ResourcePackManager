@@ -3,6 +3,7 @@ package com.magmaguy.resourcepackmanager.bedrock;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.magmaguy.resourcepackmanager.bedrock.generic.ItemComponentSnapshot;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 
 import java.io.ByteArrayOutputStream;
@@ -41,6 +42,22 @@ final class BedrockMappingFixture {
      */
     static Map<String, Set<String>> convert(Path temp, String namespace, List<String> items,
                                             Map<String, List<String>> declared) throws IOException {
+        JsonObject mappings = mappings(temp, namespace, items, declared, List.of());
+        Map<String, Set<String>> bases = new TreeMap<>();
+        for (Map.Entry<String, JsonElement> base : mappings.getAsJsonObject("items").entrySet())
+            for (JsonElement definition : base.getValue().getAsJsonArray())
+                bases.computeIfAbsent(definition.getAsJsonObject().get("model").getAsString(),
+                        model -> new TreeSet<>()).add(base.getKey());
+        return bases;
+    }
+
+    /**
+     * Converts the same pack with the given custom item components.
+     *
+     * @return the Geyser mappings file
+     */
+    static JsonObject mappings(Path temp, String namespace, List<String> items, Map<String, List<String>> declared,
+                               List<ItemComponentSnapshot> components) throws IOException {
         Path pack = Files.createTempDirectory(temp, "pack-");
         write(pack.resolve("pack.mcmeta"), "{\"pack\":{\"pack_format\":84,\"description\":\"" + namespace + "\"}}");
         for (String item : items) {
@@ -68,17 +85,12 @@ final class BedrockMappingFixture {
             @Override public void deployMappingsIfNeeded(File mappingsFile) { }
             @Override public File previousMappingsFile() { return null; }
             @Override public Map<String, List<String>> declaredBaseItems() { return declared; }
+            @Override public List<ItemComponentSnapshot> declaredItemComponents() { return components; }
         };
         assertTrue(BedrockConversion.generate(pack.toFile(), out, context));
 
-        JsonObject mappings = JsonParser.parseString(Files.readString(
+        return JsonParser.parseString(Files.readString(
                 new File(out, BedrockConversion.GEYSER_MAPPINGS_NAME).toPath())).getAsJsonObject();
-        Map<String, Set<String>> bases = new TreeMap<>();
-        for (Map.Entry<String, JsonElement> base : mappings.getAsJsonObject("items").entrySet())
-            for (JsonElement definition : base.getValue().getAsJsonArray())
-                bases.computeIfAbsent(definition.getAsJsonObject().get("model").getAsString(),
-                        model -> new TreeSet<>()).add(base.getKey());
-        return bases;
     }
 
     static void write(Path file, String content) throws IOException {

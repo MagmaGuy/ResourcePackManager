@@ -3,6 +3,9 @@ package com.magmaguy.resourcepackmanager.bedrock;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.bedrock.converter.SoundDefinitionConverter;
+import com.magmaguy.resourcepackmanager.bedrock.generic.ItemComponentSnapshot;
+import com.magmaguy.resourcepackmanager.bedrock.items.CanonicalJson;
+import com.magmaguy.resourcepackmanager.bedrock.items.ItemComponentSnapshots;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.mixer.engine.MixerLogger;
 import com.magmaguy.resourcepackmanager.network.NetworkMode;
@@ -37,6 +40,8 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
     private final BooleanSupplier runCancellation;
     /** Read once per context: the mix identity and the conversion must see the same set. */
     private Map<String, List<String>> declaredBaseItems;
+    /** Read once per context, for the same reason. */
+    private List<ItemComponentSnapshot> declaredItemComponents;
 
     /**
      * Adapter exposing MagmaCore's static {@code Logger} as the converter
@@ -137,9 +142,33 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
                 // Same fallback when CraftEngine's API changed: the heuristic bases remain.
                 Logger.warn("Could not read CraftEngine item materials for Bedrock conversion: " + unreadable);
             }
+            // Every custom item whose stack sets an item_model also declares the base item
+            // the client receives it on, including items with a custom item_model that the
+            // plugin APIs above do not expose.
+            Map<String, List<String>> fromStacks = new HashMap<>();
+            for (ItemComponentSnapshot snapshot : declaredItemComponents()) {
+                String model = snapshot.itemModel();
+                if (model == null) continue;
+                fromStacks.merge(model, List.of(snapshot.baseItem()), (existing, added) -> {
+                    List<String> union = new ArrayList<>(existing);
+                    for (String base : added) if (!union.contains(base)) union.add(base);
+                    return List.copyOf(union);
+                });
+            }
+            mergeDeclaredBaseItems(read, fromStacks);
             declaredBaseItems = Map.copyOf(read);
         }
         return declaredBaseItems;
+    }
+
+    @Override
+    public synchronized List<ItemComponentSnapshot> declaredItemComponents() {
+        if (declaredItemComponents == null) {
+            declaredItemComponents = isBedrockConversionEnabled()
+                    ? ItemComponentSnapshots.collect(ResourcePackManager.plugin, this::isCancellationRequested)
+                    : List.of();
+        }
+        return declaredItemComponents;
     }
 
     private static void mergeDeclaredBaseItems(Map<String, List<String>> into, Map<String, List<String>> declared) {
@@ -151,19 +180,31 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
     }
 
     /**
-     * Short digest of {@link #declaredBaseItems()} for the mix identity, so changing an
-     * Oraxen or CraftEngine item's material reconverts even when the pack bytes stay the
-     * same. Empty when nothing is declared, which keeps the identity of servers without them.
+     * Short digest of {@link #declaredBaseItems()} and {@link #declaredItemComponents()} for
+     * the mix identity, so changing an Oraxen or CraftEngine item's material, or any custom
+     * item's components, reconverts even when the pack bytes stay the same. Empty when nothing
+     * is declared, which keeps the identity of servers without them.
      */
     public String declaredBaseItemsDigest() {
         Map<String, List<String>> declared = declaredBaseItems();
-        if (declared.isEmpty()) return "";
+        List<ItemComponentSnapshot> components = declaredItemComponents();
+        if (declared.isEmpty() && components.isEmpty()) return "";
+        StringBuilder identity = new StringBuilder(new TreeMap<>(declared).toString());
+        if (!components.isEmpty()) {
+            List<String> items = new ArrayList<>(components.size());
+            for (ItemComponentSnapshot snapshot : components) {
+                items.add(snapshot.source() + "|" + snapshot.itemId() + "|" + snapshot.baseItem() + "|"
+                        + CanonicalJson.write(snapshot.patch()) + "|" + CanonicalJson.write(snapshot.prototype()));
+            }
+            items.sort(null);
+            identity.append("|components=").append(String.join(";", items));
+        }
         try {
             byte[] digest = MessageDigest.getInstance("SHA-1")
-                    .digest(new TreeMap<>(declared).toString().getBytes(StandardCharsets.UTF_8));
+                    .digest(identity.toString().getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest, 0, 8);
         } catch (NoSuchAlgorithmException unavailable) {
-            return Integer.toHexString(new TreeMap<>(declared).toString().hashCode());
+            return Integer.toHexString(identity.toString().hashCode());
         }
     }
 

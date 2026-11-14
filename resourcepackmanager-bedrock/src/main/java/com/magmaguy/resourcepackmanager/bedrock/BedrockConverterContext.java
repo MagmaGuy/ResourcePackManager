@@ -179,6 +179,19 @@ public interface BedrockConverterContext {
     }
 
     /**
+     * The components of every custom item installed plugins register (CraftEngine, Nexo,
+     * Oraxen, ItemsAdder, MythicMobs), read from a freshly built stack of each. Bedrock fixes
+     * an item's properties when the player joins, so the Geyser mapping for an item's model
+     * carries what the item changes against its base item: stack size, food, wearing,
+     * durability and the rest of {@link com.magmaguy.resourcepackmanager.bedrock.generic.GeyserComponents}.
+     * Only the backend can build those stacks, so the default declares nothing and the
+     * mappings carry no components.
+     */
+    default List<com.magmaguy.resourcepackmanager.bedrock.generic.ItemComponentSnapshot> declaredItemComponents() {
+        return List.of();
+    }
+
+    /**
      * True when the platform is shutting down and conversion should stop before
      * touching any more plugin classes or output files. Long-running conversion
      * phases poll this cooperatively so the platform can wait for a clean exit

@@ -158,10 +158,20 @@ public final class GenericGeyserMappingBuilder {
             tags.add("minecraft:trimmable_armors");
             options.add("tags", tags);
         }
-        // protection_value: omitted — RSPM has no access to live item attributes.
+        // protection_value and dyeable come from the custom item itself (ComponentPlanner)
+        // when a plugin registered one for this model; otherwise they are left out.
+        for (Map.Entry<String, com.google.gson.JsonElement> extra : entry.extraBedrockOptions().entrySet()) {
+            options.add(extra.getKey(), extra.getValue().deepCopy());
+        }
         // allow_offhand: omitted — Bedrock default is true.
         if (options.size() > 0) {
             def.add("bedrock_options", options);
+        }
+
+        // components: what the custom item changes against its base item, which Bedrock
+        // needs before the player joins (stack size, food, wearing, durability...).
+        if (!entry.components().isEmpty()) {
+            def.add("components", entry.components().deepCopy());
         }
 
         // model last (Rainbow order).

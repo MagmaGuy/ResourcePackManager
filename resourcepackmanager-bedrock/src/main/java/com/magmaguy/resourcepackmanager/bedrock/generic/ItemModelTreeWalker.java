@@ -96,7 +96,39 @@ public final class ItemModelTreeWalker {
             return;
         }
         String modelRef = node.get("model").getAsString();
-        out.add(new ResolvedLeaf(modelRef, new ArrayList<>(stack)));
+        out.add(new ResolvedLeaf(modelRef, new ArrayList<>(stack), dyeTintDefault(node)));
+    }
+
+    /**
+     * The default colour of the leaf's {@code minecraft:dye} tint (leather armour's tint), as
+     * 0xRRGGBB, or {@code null} when it has none. Java writes the colour as a signed ARGB int
+     * or an [r, g, b] float list.
+     */
+    static Integer dyeTintDefault(JsonObject node) {
+        if (!node.has("tints") || !node.get("tints").isJsonArray()) return null;
+        for (com.google.gson.JsonElement tint : node.getAsJsonArray("tints")) {
+            if (!tint.isJsonObject()) continue;
+            JsonObject source = tint.getAsJsonObject();
+            if (!source.has("type") || !source.get("type").isJsonPrimitive()) continue;
+            if (!"dye".equals(stripNamespace(source.get("type").getAsString()))) continue;
+            com.google.gson.JsonElement colour = source.get("default");
+            if (colour == null) return 0xFFFFFF;
+            try {
+                if (colour.isJsonPrimitive()) return colour.getAsInt() & 0xFFFFFF;
+                if (colour.isJsonArray() && colour.getAsJsonArray().size() >= 3) {
+                    int rgb = 0;
+                    for (int i = 0; i < 3; i++) {
+                        float channel = Math.max(0F, Math.min(1F, colour.getAsJsonArray().get(i).getAsFloat()));
+                        rgb = (rgb << 8) | Math.round(channel * 255F);
+                    }
+                    return rgb;
+                }
+            } catch (RuntimeException unreadable) {
+                return 0xFFFFFF;
+            }
+            return 0xFFFFFF;
+        }
+        return null;
     }
 
     // -------------------------------------------------------------------------
