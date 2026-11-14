@@ -16,13 +16,12 @@ import java.util.function.BooleanSupplier;
 public class BedrockZip {
 
     /**
-     * Zips a directory into a .zip file via atomic temp-then-rename. The write goes
-     * to {@code <zipName>.zip.tmp} first; only on a clean ZipOutputStream close do we
-     * {@code Files.move(... ATOMIC_MOVE)} into the final path. Guarantees that any
-     * reader of {@code <zipName>.zip} sees either the previous complete zip or the
-     * new complete zip — never a partially-written file. Necessary because
-     * {@code GeyserPackProvider} now serves this file live per Bedrock session, so a
-     * half-written zip would corrupt the pack handed to a joining player.
+     * Zips a directory into a .zip file via temp-then-rename. The write goes to
+     * {@code <zipName>.zip.tmp} first; only on a clean close is it moved to the final
+     * path, so a reader of {@code <zipName>.zip} never sees a partially-written file.
+     * BedrockConversion writes into a private per-conversion staging directory and then
+     * publishes the finished zip to the served path itself, so in that use the
+     * unchanged-zip short-circuit below never finds an earlier file.
      *
      * @param sourceDir the directory to zip
      * @param outputDir where to place the zip

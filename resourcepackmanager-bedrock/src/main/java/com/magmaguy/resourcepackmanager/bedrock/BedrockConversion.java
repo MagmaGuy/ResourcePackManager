@@ -431,7 +431,7 @@ public class BedrockConversion {
             retainBackups = true;
             ctx.beginPublishedArtifactSetMutation(outputDir);
             publishFrom(stagedMappings, publishedMappings);
-            publishFrom(stagedZip, publishedZip);
+            publishByMove(stagedZip, publishedZip);
             if (deployedMappings != null) {
                 publishFrom(stagedMappings, deployedMappings);
             }
@@ -498,6 +498,17 @@ public class BedrockConversion {
         } finally {
             Files.deleteIfExists(pending);
         }
+    }
+
+    /**
+     * Publishes a staged file that has only this one destination by moving it into place,
+     * through the same final atomic move {@link #publishFrom} ends with, without first copying
+     * it. Restores keep copying from their backups through {@link #publishFrom}.
+     */
+    private static void publishByMove(Path staged, Path target) throws IOException {
+        Path parent = target.toAbsolutePath().getParent();
+        if (parent != null) Files.createDirectories(parent);
+        publishAtomically(staged, target);
     }
 
     private static IOException restore(PublicationBackup backup, IOException previous) {
