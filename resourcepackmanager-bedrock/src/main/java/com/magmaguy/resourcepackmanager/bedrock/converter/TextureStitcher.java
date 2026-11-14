@@ -68,6 +68,18 @@ public class TextureStitcher {
     public static StitchResult stitchSingleModel(String modelName, String boneName,
                                                  JsonObject javaModel,
                                                  File mergedPackRoot, File bedrockPackDir) {
+        return stitchSingleModel(modelName, boneName, javaModel, mergedPackRoot, bedrockPackDir,
+                new DecodedTextureCache());
+    }
+
+    /**
+     * As {@link #stitchSingleModel(String, String, JsonObject, File, File)}, decoding source
+     * textures through a cache shared across the conversion run.
+     */
+    public static StitchResult stitchSingleModel(String modelName, String boneName,
+                                                 JsonObject javaModel,
+                                                 File mergedPackRoot, File bedrockPackDir,
+                                                 DecodedTextureCache decodedTextures) {
         Map<String, BoneTextures> boneTextures = new LinkedHashMap<>();
         LinkedHashMap<String, String> textures = new LinkedHashMap<>();
         if (javaModel != null && javaModel.has("textures") && javaModel.get("textures").isJsonObject()) {
@@ -86,7 +98,7 @@ public class TextureStitcher {
         // wrong dimensions on disk vs the per-model geo's texture_width/_height.
         String atlasPathStem = "textures/entity/" + modelName + "/" + boneName + "/atlas";
         return stitchFromBoneTextures(modelName, boneTextures, atlasPathStem,
-                mergedPackRoot, bedrockPackDir);
+                mergedPackRoot, bedrockPackDir, decodedTextures);
     }
 
     /**
@@ -97,7 +109,8 @@ public class TextureStitcher {
     private static StitchResult stitchFromBoneTextures(String modelName,
                                                        Map<String, BoneTextures> boneTextures,
                                                        String atlasPathStem,
-                                                       File mergedPackRoot, File bedrockPackDir) {
+                                                       File mergedPackRoot, File bedrockPackDir,
+                                                       DecodedTextureCache decodedTextures) {
         Map<String, String> textureMap = unionTextures(boneTextures);
         if (textureMap.isEmpty()) {
             BedrockLog.warn("[BedrockConverter] No textures found for model " + modelName
@@ -139,7 +152,7 @@ public class TextureStitcher {
             }
 
             try {
-                BufferedImage img = ImageIO.read(textureFile);
+                BufferedImage img = decodedTextures.read(textureFile);
                 if (img == null) {
                     BedrockLog.warn("[BedrockConverter] Failed to read image: " + textureFile.getPath());
                     continue;

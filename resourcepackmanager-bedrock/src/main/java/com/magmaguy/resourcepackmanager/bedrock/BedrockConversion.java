@@ -571,6 +571,7 @@ public class BedrockConversion {
             // every (model × base item) attachable emission.
             Map<String, SharedModelAssets> modelAssetsCache = new LinkedHashMap<>();
             ExactTextureFileCache exactAtlasCache = new ExactTextureFileCache();
+            DecodedTextureCache decodedTextures = new DecodedTextureCache();
             Map<File, File> copiedEquipmentTextures = new HashMap<>();
             List<String> vanillaRetextures = new ArrayList<>();
             Map<String, List<String>> pluginBaseItems = ctx.declaredBaseItems();
@@ -700,7 +701,7 @@ public class BedrockConversion {
                         if (!emitGenericThreeD(leaf, resolved, modelHash, iconKey,
                                 def,
                                 baseItems, registry, modelAssetsCache,
-                                mergedJavaPack, bedrockDir, iconTextureMap, exactAtlasCache,
+                                mergedJavaPack, bedrockDir, iconTextureMap, exactAtlasCache, decodedTextures,
                                 base -> componentPlan(componentIndex, def, threeDLeaf, allLeaves, base, componentNotes),
                                 componentMappings,
                                 ctx::isCancellationRequested)) {
@@ -765,6 +766,7 @@ public class BedrockConversion {
                                              File bedrockDir,
                                              Map<String, String> iconTextureMap,
                                              ExactTextureFileCache exactAtlasCache,
+                                             DecodedTextureCache decodedTextures,
                                              java.util.function.Function<String, ComponentPlan> planForBase,
                                              int[] componentMappings,
                                              BooleanSupplier cancellationRequested) {
@@ -786,7 +788,7 @@ public class BedrockConversion {
             // leaf.modelRef() so the hash never becomes opaque during debugging.
             TextureStitcher.StitchResult stitch = TextureStitcher.stitchSingleModel(
                     modelHash, modelHash, resolved.mergedJson(),
-                    mergedJavaPack, bedrockDir);
+                    mergedJavaPack, bedrockDir, decodedTextures);
             if (isCancelled(cancellationRequested)) return false;
             if (stitch == null) {
                 BedrockLog.warn("[BedrockConverter] Failed to stitch textures for generic 3D model "
@@ -840,7 +842,8 @@ public class BedrockConversion {
 
             String iconRel = "textures/items/" + iconKey;
             File iconFile = new File(bedrockDir, iconRel + ".png");
-            boolean rendered = IconRenderer.renderIcon(resolved.mergedJson(), mergedJavaPack, iconFile);
+            boolean rendered = IconRenderer.renderIcon(resolved.mergedJson(), mergedJavaPack, iconFile,
+                    decodedTextures);
             if (isCancelled(cancellationRequested)) return false;
             if (!rendered) {
                 BedrockLog.warn("[BedrockConverter] Icon rendering failed for " + leaf.modelRef()

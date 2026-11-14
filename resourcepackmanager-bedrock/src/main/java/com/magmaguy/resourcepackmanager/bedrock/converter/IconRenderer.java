@@ -86,6 +86,15 @@ public final class IconRenderer {
      * @param outputPng       destination PNG file
      */
     public static boolean renderIcon(JsonObject resolvedModel, File mergedJavaPack, File outputPng) {
+        return renderIcon(resolvedModel, mergedJavaPack, outputPng, new DecodedTextureCache());
+    }
+
+    /**
+     * As {@link #renderIcon(JsonObject, File, File)}, decoding source textures through a cache
+     * shared across the conversion run.
+     */
+    public static boolean renderIcon(JsonObject resolvedModel, File mergedJavaPack, File outputPng,
+                                     DecodedTextureCache decodedTextures) {
         try {
             if (resolvedModel == null) return false;
             if (!resolvedModel.has("elements") || !resolvedModel.get("elements").isJsonArray()) {
@@ -206,7 +215,7 @@ public final class IconRenderer {
                     String texKey = face.has("texture") ? face.get("texture").getAsString() : "#0";
                     String texRef = resolveTextureRef(texKey, textureRefs);
                     if (texRef == null) continue;
-                    BufferedImage source = loadTexture(texRef, mergedJavaPack, textureCache);
+                    BufferedImage source = loadTexture(texRef, mergedJavaPack, textureCache, decodedTextures);
                     if (source == null) continue;
 
                     // Resolve UV (explicit or default), scaled to source-texture pixel space.
@@ -598,7 +607,8 @@ public final class IconRenderer {
      * frame.
      */
     private static BufferedImage loadTexture(String texRef, File mergedJavaPack,
-                                             Map<String, BufferedImage> cache) {
+                                             Map<String, BufferedImage> cache,
+                                             DecodedTextureCache decodedTextures) {
         BufferedImage cached = cache.get(texRef);
         if (cached != null || cache.containsKey(texRef)) return cached;
         int colon = texRef.indexOf(':');
@@ -610,7 +620,7 @@ public final class IconRenderer {
             return null;
         }
         try {
-            BufferedImage img = ImageIO.read(f);
+            BufferedImage img = decodedTextures.read(f);
             // Vertical flipbook: keep only the top square frame so UV math
             // (which scales 0..16 -> source pixels) addresses frame 0.
             if (img != null && img.getHeight() > img.getWidth()) {
