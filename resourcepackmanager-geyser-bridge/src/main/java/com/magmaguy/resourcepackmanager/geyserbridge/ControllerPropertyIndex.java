@@ -43,13 +43,6 @@ final class ControllerPropertyIndex {
         return properties;
     }
 
-    /** Properties queried anywhere in a file, for a controller file found by its legacy name. */
-    static Set<String> propertiesIn(String json) {
-        Set<String> properties = new LinkedHashSet<>();
-        collect(JsonParser.parseString(json), properties);
-        return properties;
-    }
-
     static Set<String> referencedControllers(JsonObject description) {
         Set<String> controllers = new LinkedHashSet<>();
         if (description.has("animations") && description.get("animations").isJsonObject()) {

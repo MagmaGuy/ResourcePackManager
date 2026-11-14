@@ -115,7 +115,6 @@ public class AutoHost {
     /** Atomically published file/digest pair consumed by the HTTP worker threads. */
     private static volatile PackHttpServer.FileRouteDescriptor javaPackRouteDescriptor = null;
     private static volatile PackHttpServer.FileRouteDescriptor bedrockPackRouteDescriptor = null;
-    private static volatile PackHttpServer.FileRouteDescriptor bedrockMappingsRouteDescriptor = null;
     @Getter
     private static volatile String selfHostedUrl = null;
     /**
@@ -692,7 +691,7 @@ public class AutoHost {
      * Hybrid self-host-first sanity check:
      *
      * <ol>
-     *   <li><b>Heuristic check on resolved host.</b> If {@link #resolveExternalHost()}
+     *   <li><b>Heuristic check on resolved host.</b> If {@link #resolveExternalHost(LifecycleRun)}
      *       lands on an RFC1918, loopback, link-local, or unspecified address
      *       ({@link #isNonRoutableHost(String)}), self-host can't possibly work for
      *       internet clients — skip immediately and let the caller fall through to
@@ -1189,7 +1188,6 @@ public class AutoHost {
         lastSelfHostCheck = null;
         javaPackRouteDescriptor = null;
         bedrockPackRouteDescriptor = null;
-        bedrockMappingsRouteDescriptor = null;
         done = false;
         rspUUID = null;
     }
@@ -1255,7 +1253,6 @@ public class AutoHost {
      */
     public static void withdrawBedrockOutputs() {
         bedrockPackRouteDescriptor = null;
-        bedrockMappingsRouteDescriptor = null;
         bedrockPublicationAuthorized = false;
         long publicationGeneration = BEDROCK_PUBLICATION_GENERATION.incrementAndGet();
         LifecycleRun run = lifecycleRun;
@@ -1334,7 +1331,6 @@ public class AutoHost {
                         run.relayReceipts().clear();
                         bedrockPublicationAuthorized = false;
                         bedrockPackRouteDescriptor = null;
-                        bedrockMappingsRouteDescriptor = null;
                         MagmaguyRspClient.RelayDeleteResult deletion = relayClient.deleteBedrockRelay(
                                 networkKey, id, null);
                         retry = !deletion.confirmed() && deletion.retryable();
@@ -1417,16 +1413,11 @@ public class AutoHost {
         }
         if (publication == null) {
             bedrockPackRouteDescriptor = null;
-            bedrockMappingsRouteDescriptor = null;
             bedrockPublicationAuthorized = false;
             return;
         }
         bedrockPackRouteDescriptor = new PackHttpServer.FileRouteDescriptor(
                 publication.pack(), publication.packSha1());
-        bedrockMappingsRouteDescriptor = publication.hasMappings()
-                ? new PackHttpServer.FileRouteDescriptor(
-                publication.mappings(), publication.mappingsSha1())
-                : null;
         bedrockPublicationAuthorized = true;
     }
 
@@ -1764,7 +1755,7 @@ public class AutoHost {
      * Register the two Bedrock-conversion output routes on the running server.
      * Files are resolved to absolute paths under the plugin data folder's
      * {@code output/} subdirectory — the same paths {@code BedrockConversion}
-     * writes to. {@link PackHttpServer#registerFileRoute(String, File, String)}
+     * writes to. {@link PackHttpServer#registerFileRoute(String, java.util.function.Supplier, String)}
      * reads per-request so a fresh BedrockConversion run is visible immediately
      * to the next proxy poll without restarting anything.
      */
@@ -1881,10 +1872,6 @@ public class AutoHost {
      * (LAN/loopback) causes the reachability probe to be skipped and the
      * plugin falls through to remote hosting. See {@link #isNonRoutableHost(String)}.
      */
-    private static String resolveExternalHost() {
-        return resolveExternalHost(true, null);
-    }
-
     private static String resolveExternalHost(LifecycleRun run) {
         return resolveExternalHost(true, run);
     }

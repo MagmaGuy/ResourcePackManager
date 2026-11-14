@@ -52,7 +52,6 @@ public class ThirdPartyResourcePack {
     private File file = null;
     private boolean zips;
     private boolean cluster;
-    private String reloadCommand;
     @Getter
     private boolean isEnabled;
     private String SHA1;
@@ -144,7 +143,6 @@ public class ThirdPartyResourcePack {
             return;
         }
 
-        this.reloadCommand = reloadCommand;
         this.zips = zips;
         this.cluster = cluster;
 

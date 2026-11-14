@@ -8,8 +8,6 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import java.io.File;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
-import org.bukkit.event.HandlerList;
-import org.bukkit.event.Listener;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
 import java.nio.charset.StandardCharsets;
@@ -26,7 +24,7 @@ import java.nio.charset.StandardCharsets;
  * <p>Grants are only honoured while this backend holds no key. See
  * {@link NetworkMode#acceptProvisionedKey(String)}.</p>
  */
-public final class NetworkKeyProvisioning implements Listener, PluginMessageListener {
+public final class NetworkKeyProvisioning implements PluginMessageListener {
 
     /** Kept separate from the Geyser entity bridge so the two cannot interfere. */
     public static final String CHANNEL = "rspm:network";
@@ -46,7 +44,6 @@ public final class NetworkKeyProvisioning implements Listener, PluginMessageList
 
         instance = new NetworkKeyProvisioning();
         Bukkit.getMessenger().registerIncomingPluginChannel(ResourcePackManager.plugin, CHANNEL, instance);
-        Bukkit.getPluginManager().registerEvents(instance, ResourcePackManager.plugin);
         // Stated explicitly: when a key never arrives, the first thing to establish is
         // whether this backend was even listening. Without this line that is unknowable.
         Logger.info("Network key provisioning armed on channel " + CHANNEL
@@ -56,7 +53,6 @@ public final class NetworkKeyProvisioning implements Listener, PluginMessageList
 
     public static void unregister() {
         if (instance == null || ResourcePackManager.plugin == null) return;
-        HandlerList.unregisterAll(instance);
         Bukkit.getMessenger().unregisterIncomingPluginChannel(ResourcePackManager.plugin, CHANNEL, instance);
         instance = null;
     }

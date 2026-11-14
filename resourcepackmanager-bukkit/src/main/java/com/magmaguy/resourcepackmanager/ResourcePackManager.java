@@ -206,8 +206,8 @@ public class ResourcePackManager extends JavaPlugin {
         initializationContext.step("Geyser Bridge");
         GeyserBridgeInstaller.register();
 
-        // Behind a proxy this asks for the network key on the first player join. It is
-        // a no-op on standalone servers and on backends that already hold a key.
+        // Behind a proxy this listens for the network key the proxy pushes when a
+        // player first connects. It is a no-op on standalone servers.
         com.magmaguy.resourcepackmanager.network.NetworkKeyProvisioning.register();
 
         initializationContext.step("Geyser Pack Provider");
