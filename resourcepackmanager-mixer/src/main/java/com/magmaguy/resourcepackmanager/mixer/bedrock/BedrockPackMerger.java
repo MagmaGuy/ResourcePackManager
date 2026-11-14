@@ -41,7 +41,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
-import java.util.zip.ZipOutputStream;
 
 /**
  * Merges N Bedrock resource pack zips (one per backend in a network) into a single

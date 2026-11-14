@@ -15,7 +15,6 @@ import java.util.Set;
  */
 public record MixInput(
     List<File> orderedPacks,   // zip files OR directories, priority order (first wins collisions)
-    File workingDir,           // scratch space for unzip + assembly
     File outputDir,            // where final zip + per-pack staging dirs land
     File collisionLogDir,      // where collision_log.txt is written (when writeCollisionLog == true)
     String outputName,         // file name without extension, e.g. "ResourcePackManager_RSP"
@@ -31,16 +30,16 @@ public record MixInput(
                 ? Set.of() : Set.copyOf(bedrockSoundExcludedPacks);
     }
 
-    public MixInput(List<File> orderedPacks, File workingDir, File outputDir, File collisionLogDir,
+    public MixInput(List<File> orderedPacks, File outputDir, File collisionLogDir,
                     String outputName, boolean writeCollisionLog, String reusableArchiveSha1,
                     Set<File> bedrockExcludedPacks) {
-        this(orderedPacks, workingDir, outputDir, collisionLogDir, outputName, writeCollisionLog,
+        this(orderedPacks, outputDir, collisionLogDir, outputName, writeCollisionLog,
                 reusableArchiveSha1, bedrockExcludedPacks, false, Set.of());
     }
 
-    public MixInput(List<File> orderedPacks, File workingDir, File outputDir,
+    public MixInput(List<File> orderedPacks, File outputDir,
                     File collisionLogDir, String outputName, boolean writeCollisionLog) {
-        this(orderedPacks, workingDir, outputDir, collisionLogDir, outputName, writeCollisionLog, null, Set.of(),
+        this(orderedPacks, outputDir, collisionLogDir, outputName, writeCollisionLog, null, Set.of(),
                 false, Set.of());
     }
 }

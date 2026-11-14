@@ -91,7 +91,7 @@ public final class ZipUtil {
         try {
             Files.deleteIfExists(temporary);
             MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-            zipInternal(directory, temporary.toString(), true, sha1, cancellationRequested);
+            zipInternal(directory, temporary.toString(), sha1, cancellationRequested);
             checkCancelled(cancellationRequested);
             publishAtomically(temporary, target);
             return new ZipResult(true, sha1.digest());
@@ -114,12 +114,11 @@ public final class ZipUtil {
     }
 
     private static void zipInternal(File file, String destZipFile,
-                                    boolean excludeBedrockConverterBundles,
                                     MessageDigest outputDigest,
                                     BooleanSupplier cancellationRequested) throws IOException {
         checkCancelled(cancellationRequested);
         List<ParallelZipWriter.Entry> entries =
-                collectZipContents(file, excludeBedrockConverterBundles, cancellationRequested);
+                collectZipContents(file, cancellationRequested);
         checkCancelled(cancellationRequested);
         // The archive is deflated on a bounded pool and spliced back together in this exact
         // (already-sorted) order, so the bytes — and therefore the SHA-1 clients cache against —
@@ -139,8 +138,7 @@ public final class ZipUtil {
     }
 
     private static List<ParallelZipWriter.Entry> collectZipContents(
-            File file, boolean excludeBedrockConverterBundles,
-            BooleanSupplier cancellationRequested) {
+            File file, BooleanSupplier cancellationRequested) {
         List<ParallelZipWriter.Entry> entries = new ArrayList<>();
         // Avoid having the wrapper directory show up inside the zip when the caller
         // hands us a directory — we want to zip the *contents*, not the directory itself.
@@ -151,21 +149,19 @@ public final class ZipUtil {
                 for (File child : children) {
                     checkCancelled(cancellationRequested);
                     if (child.isDirectory())
-                        collectDirectory(child, child.getName(), entries, excludeBedrockConverterBundles,
-                                cancellationRequested);
+                        collectDirectory(child, child.getName(), entries, cancellationRequested);
                     else
-                        collectFile(child, entries, excludeBedrockConverterBundles, cancellationRequested);
+                        collectFile(child, entries, cancellationRequested);
                 }
             }
         } else {
-            collectFile(file, entries, excludeBedrockConverterBundles, cancellationRequested);
+            collectFile(file, entries, cancellationRequested);
         }
         return entries;
     }
 
     private static void collectDirectory(File folder, String parentFolder,
                                          List<ParallelZipWriter.Entry> entries,
-                                         boolean excludeBedrockConverterBundles,
                                          BooleanSupplier cancellationRequested) {
         File[] files = folder.listFiles();
         if (files == null) return;
@@ -174,22 +170,21 @@ public final class ZipUtil {
             checkCancelled(cancellationRequested);
             if (file.isDirectory()) {
                 collectDirectory(file, parentFolder + "/" + file.getName(), entries,
-                        excludeBedrockConverterBundles, cancellationRequested);
+                        cancellationRequested);
                 continue;
             }
             String entryName = parentFolder + "/" + file.getName();
-            if (excludeBedrockConverterBundles && isBedrockConverterBundle(entryName)) continue;
+            if (isBedrockConverterBundle(entryName)) continue;
             entries.add(new ParallelZipWriter.Entry(entryName, file.toPath()));
         }
     }
 
     private static void collectFile(File file, List<ParallelZipWriter.Entry> entries,
-                                    boolean excludeBedrockConverterBundles,
                                     BooleanSupplier cancellationRequested) {
         checkCancelled(cancellationRequested);
         // Skip nested zips so a stray .zip in the staging dir doesn't get wrapped into the final pack.
         if (file.getName().endsWith(".zip")) return;
-        if (excludeBedrockConverterBundles && isBedrockConverterBundle(file.getName())) return;
+        if (isBedrockConverterBundle(file.getName())) return;
         entries.add(new ParallelZipWriter.Entry(file.getName(), file.toPath()));
     }
 

@@ -518,7 +518,6 @@ class BlocksAtlasSanitizerTest {
     private static MixOutput runMix(Path tempDir, Path pack) throws Exception {
         return new MixEngine(new SilentLogger(), () -> false).run(new MixInput(
                 List.of(pack.toFile()),
-                tempDir.resolve("working").toFile(),
                 tempDir.resolve("output").toFile(),
                 tempDir.resolve("logs").toFile(),
                 "merged",

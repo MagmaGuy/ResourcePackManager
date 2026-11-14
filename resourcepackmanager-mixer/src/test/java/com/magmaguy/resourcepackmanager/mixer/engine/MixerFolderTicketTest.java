@@ -29,7 +29,7 @@ final class MixerFolderTicketTest {
             public void collision(String message) { }
         };
         MixOutput output = new MixEngine(logger, () -> false).run(new MixInput(
-                List.of(input.toFile()), root.resolve("working").toFile(),
+                List.of(input.toFile()),
                 root.resolve("output").toFile(), root.resolve("logs").toFile(), "mixed", false));
 
         assertTrue(output.mergedZip().isFile(), "the mixer must publish an output archive");

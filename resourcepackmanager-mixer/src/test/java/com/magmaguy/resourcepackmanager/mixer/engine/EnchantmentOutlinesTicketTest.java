@@ -30,7 +30,7 @@ public class EnchantmentOutlinesTicketTest {
         MixOutput output;
         try {
             output = new MixEngine(logger, () -> false).run(new MixInput(List.of(pack.toFile()),
-                root.resolve("working").toFile(), root.resolve("output").toFile(),
+                root.resolve("output").toFile(),
                 root.resolve("logs").toFile(), "mixed", false));
         } finally {
             // The production mixer reclaims staging directories after publication. Let that

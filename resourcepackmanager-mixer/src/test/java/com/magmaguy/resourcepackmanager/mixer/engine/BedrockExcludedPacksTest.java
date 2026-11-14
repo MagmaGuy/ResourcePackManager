@@ -81,7 +81,7 @@ final class BedrockExcludedPacksTest {
 
     private static MixOutput mix(Path root, List<File> packs, Set<File> excluded) throws Exception {
         File output = root.resolve("output").toFile();
-        return new MixEngine(SILENT, () -> false).run(new MixInput(packs, output, output,
+        return new MixEngine(SILENT, () -> false).run(new MixInput(packs, output,
                 root.resolve("logs").toFile(), "mixed", false, null, excluded));
     }
 

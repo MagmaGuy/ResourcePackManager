@@ -59,9 +59,7 @@ public final class MixEngine {
     public MixOutput run(MixInput input) throws IOException {
         checkCancelled();
         // 1. Setup.
-        File workingDir = input.workingDir();
         File outputDir = input.outputDir();
-        if (!workingDir.exists()) workingDir.mkdirs();
         if (!outputDir.exists()) outputDir.mkdirs();
 
         // Run-scoped state. We allocate it inside run() rather than as fields so the

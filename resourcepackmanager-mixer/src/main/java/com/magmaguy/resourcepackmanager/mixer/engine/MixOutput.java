@@ -40,9 +40,4 @@ public record MixOutput(
         if (bedrockSoundInputDir == null) bedrockSoundInputDir = bedrockInputDir;
         bedrockSoundSources = bedrockSoundSources == null ? Map.of() : Map.copyOf(bedrockSoundSources);
     }
-
-    public MixOutput(File mergedZip, File mergedDir, String sha1Hex, byte[] sha1Bytes,
-                     List<String> collisionLog, File bedrockInputDir) {
-        this(mergedZip, mergedDir, sha1Hex, sha1Bytes, collisionLog, bedrockInputDir, bedrockInputDir, Map.of());
-    }
 }

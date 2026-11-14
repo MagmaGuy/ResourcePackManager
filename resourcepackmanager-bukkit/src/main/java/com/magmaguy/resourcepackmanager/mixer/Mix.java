@@ -234,7 +234,6 @@ public class Mix {
 
         MixInput input = new MixInput(
                 orderedFiles,
-                outputFolder,   // workingDir == outputDir matches legacy behaviour
                 outputFolder,
                 dataFolder,     // collisionLogDir
                 resourcePackName,

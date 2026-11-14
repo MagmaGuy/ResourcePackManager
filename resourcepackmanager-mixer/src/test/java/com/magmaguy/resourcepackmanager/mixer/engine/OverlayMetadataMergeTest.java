@@ -349,7 +349,6 @@ class OverlayMetadataMergeTest {
         Path output = tempDir.resolve("output");
         return new MixEngine(logger, () -> false).run(new MixInput(
                 List.of(packs).stream().map(Path::toFile).toList(),
-                tempDir.resolve("working").toFile(),
                 output.toFile(),
                 tempDir.resolve("logs").toFile(),
                 "merged",
