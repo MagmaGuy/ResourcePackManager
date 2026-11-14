@@ -138,11 +138,10 @@ public final class BedrockPackMerger {
                 return null;
             }
 
-            // Zero-inputs path: no content at all — emit nothing and delete any stale
-            // output. Per user policy, we don't fall back to a manifest-only placeholder.
+            // Zero-inputs path: no content at all — emit nothing. Per user policy, we
+            // don't fall back to a manifest-only placeholder.
             if (inputs.isEmpty()) {
                 logger.info("[BedrockPackMerger] No input Bedrock packs supplied; producing no merged pack.");
-                deleteOutputIfExists(outputZip);
                 return null;
             }
 
@@ -165,9 +164,9 @@ public final class BedrockPackMerger {
             }
 
             // 2b. Empty-input detection: if every input is a manifest-only / no-real-
-            // content pack, emit nothing and delete any stale output. Per user policy
-            // we don't fall back to a placeholder; the Bedrock binder will just not
-            // register an RSPM pack for new sessions.
+            // content pack, emit nothing. Per user policy we don't fall back to a
+            // placeholder; the Bedrock binder will just not register an RSPM pack for
+            // new sessions.
             boolean anyHasContent = false;
             for (File packDir : unzippedDirs) {
                 if (packDir == null) continue;
@@ -178,7 +177,6 @@ public final class BedrockPackMerger {
             }
             if (!anyHasContent) {
                 logger.info("[BedrockPackMerger] Every input pack is empty (manifest-only); producing no merged pack.");
-                deleteOutputIfExists(outputZip);
                 return null;
             }
 
@@ -800,23 +798,6 @@ public final class BedrockPackMerger {
     }
 
     /**
-     * Delete the output zip if it exists from a previous successful merge so the
-     * "no content this cycle" state is reflected on disk — the proxy's
-     * {@code GeyserBinder} will not register a stale pack on the next session.
-     */
-    private void deleteOutputIfExists(File outputZip) {
-        if (outputZip == null) return;
-        try {
-            if (Files.deleteIfExists(outputZip.toPath())) {
-                logger.info("[BedrockPackMerger] Deleted previous merged pack: " + outputZip.getAbsolutePath());
-            }
-        } catch (IOException e) {
-            logger.warn("[BedrockPackMerger] Failed to delete previous merged pack "
-                    + outputZip.getAbsolutePath() + ": " + e.getMessage());
-        }
-    }
-
-    /**
      * Atomic temp-then-rename zip write, matching {@code BedrockZip.zip}'s convention.
      * Reader (Geyser, proxy HTTP) must never see a half-written zip — writes go to
      * {@code <output>.tmp}, atomic-move to {@code <output>} on success.
@@ -835,9 +816,7 @@ public final class BedrockPackMerger {
                     .stream()
                     .map(file -> new ParallelZipWriter.Entry(file.relativePath(), file.path()))
                     .toList();
-            // Byte-identical to the previous serial ZipOutputStream write, which the
-            // Files.mismatch() short-circuit below relies on to skip republishing an
-            // unchanged merged pack.
+            // Byte-identical to the previous serial ZipOutputStream write.
             try (OutputStream out = new BufferedOutputStream(new FileOutputStream(tmpFile), 1 << 16)) {
                 ParallelZipWriter.write(entries, out, () -> false);
             }
@@ -851,10 +830,6 @@ public final class BedrockPackMerger {
         }
 
         try {
-            if (outputZip.isFile() && Files.mismatch(tmpFile.toPath(), outputZip.toPath()) == -1L) {
-                Files.deleteIfExists(tmpFile.toPath());
-                return outputZip;
-            }
             Files.move(tmpFile.toPath(), outputZip.toPath(),
                     StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException atomicMoveFailed) {

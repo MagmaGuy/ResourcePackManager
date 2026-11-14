@@ -83,7 +83,6 @@ public final class BedrockMappingsMerger {
         List<File> sources = inputs == null ? Collections.emptyList() : inputs;
         if (sources.isEmpty()) {
             logger.info("[BedrockMappingsMerger] No mapping inputs supplied; producing no merged mappings.");
-            deleteOutputIfExists(output);
             return null;
         }
 
@@ -190,7 +189,6 @@ public final class BedrockMappingsMerger {
         // Per user policy, emit nothing rather than write `{"items": {}}` to disk.
         if (byBase.isEmpty()) {
             logger.info("[BedrockMappingsMerger] All input mappings files are empty (no items keys); producing no merged mappings.");
-            deleteOutputIfExists(output);
             return null;
         }
 
@@ -270,23 +268,6 @@ public final class BedrockMappingsMerger {
     private static String bedrockIdentifierOf(JsonObject def) {
         return def.has("bedrock_identifier") && def.get("bedrock_identifier").isJsonPrimitive()
                 ? def.get("bedrock_identifier").getAsString() : "<no identifier>";
-    }
-
-    /**
-     * Delete the previous-cycle merged mappings file (if any) so a downstream
-     * boot-time pre-deploy on the next proxy restart skips this network instead
-     * of registering an empty mappings file.
-     */
-    private void deleteOutputIfExists(File output) {
-        if (output == null) return;
-        try {
-            if (Files.deleteIfExists(output.toPath())) {
-                logger.info("[BedrockMappingsMerger] Deleted previous merged mappings: " + output.getAbsolutePath());
-            }
-        } catch (IOException e) {
-            logger.warn("[BedrockMappingsMerger] Failed to delete previous merged mappings "
-                    + output.getAbsolutePath() + ": " + e.getMessage());
-        }
     }
 
     private File writeMerged(File output, JsonElement formatVersion, Map<String, List<JsonObject>> byBase) {
