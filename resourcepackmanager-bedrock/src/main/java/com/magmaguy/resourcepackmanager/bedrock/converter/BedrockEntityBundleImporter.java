@@ -62,11 +62,6 @@ public final class BedrockEntityBundleImporter {
      *
      * @return number of files copied
      */
-    public static int importBundles(File mergedJavaPack, File bedrockPackDir)
-            throws IOException {
-        return importBundles(mergedJavaPack, bedrockPackDir, () -> false);
-    }
-
     public static int importBundles(File mergedJavaPack, File bedrockPackDir,
                                     BooleanSupplier cancellationRequested) throws IOException {
         File assetsDir = new File(mergedJavaPack, "assets");

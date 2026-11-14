@@ -52,25 +52,13 @@ public final class BaseItemResolver {
      * The heuristic itself always produces at least one candidate, but the final
      * result can be empty when every candidate is unsafe to register as a Geyser
      * custom-item override.
-     */
-    public static List<String> resolve(ItemsDefinition def, AssetResolver resolver) {
-        return resolve(def, resolver, Map.of());
-    }
-
-    /**
-     * As {@link #resolve(ItemsDefinition, AssetResolver)}, also adding the base items an
-     * installed plugin's config assigns to this item model (keyed by
-     * {@link ItemsDefinition#itemIdentifier()}). Oraxen items carry only
-     * {@code oraxen:<id>} in the pack, so without their {@code material:} a tomato on
-     * apples would map under the paper/stick fallback and Bedrock would show an apple.
-     */
-    public static List<String> resolve(ItemsDefinition def, AssetResolver resolver,
-                                       Map<String, List<String>> pluginDeclaredBaseItems) {
-        return resolve(def, resolver, pluginDeclaredBaseItems, List.of());
-    }
-
-    /**
-     * As {@link #resolve(ItemsDefinition, AssetResolver, Map)}, with the base items the pack
+     *
+     * <p>{@code pluginDeclaredBaseItems} adds the base items an installed plugin's config
+     * assigns to this item model (keyed by {@link ItemsDefinition#itemIdentifier()}). Oraxen
+     * items carry only {@code oraxen:<id>} in the pack, so without their {@code material:} a
+     * tomato on apples would map under the paper/stick fallback and Bedrock would show an apple.
+     *
+     * <p>{@code packCarriers} are the base items the pack
      * itself puts this definition's models on ({@link PackCarrierIndex#carriersFor}). When
      * present they replace the filename heuristic and the generic fallback: the producer has
      * named its carrier, and every guessed base is one more Bedrock custom item. Without this,

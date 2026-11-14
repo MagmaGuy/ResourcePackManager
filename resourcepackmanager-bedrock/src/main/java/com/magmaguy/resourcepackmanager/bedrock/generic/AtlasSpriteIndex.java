@@ -145,8 +145,4 @@ public final class AtlasSpriteIndex {
     public boolean isEmpty() {
         return spriteToResource.isEmpty();
     }
-
-    public int size() {
-        return spriteToResource.size();
-    }
 }

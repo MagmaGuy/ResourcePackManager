@@ -63,40 +63,6 @@ public class FmmAttachableGenerator {
     private static final String ATTACHABLE_FORMAT_VERSION = "1.21.0";
 
     /**
-     * Generates an attachable JSON file and its companion three-pose animation file for one bone.
-     * FMM-style wrapper: builds the FMM-prefixed identifiers/paths, then splits the work into
-     * {@link #prepareAnimations(String, String, JsonObject, File)} (called once per model) and
-     * {@link #writeAttachable(String, String, String, String, FmmAnimationGenerator.AnimationIds, File)}
-     * (called once per attachable file).
-     *
-     * @param javaModel parsed bone JSON; {@code display.head} (if present) is forwarded
-     *                  to the animation generator so Rainbow's head-display transform formula
-     *                  (translation × -0.655/+0.655/+0.655 + (0, 20, 0), scale × 0.655) is applied
-     * @return the bedrock identifier for use in Geyser mappings, or null on failure
-     */
-    public static String generate(String modelName, String boneName,
-                                  String geometryId, String bedrockTexturePath,
-                                  JsonObject javaModel,
-                                  File bedrockPackDir) {
-        // FMM-style identifier/path construction. The wrapper preserves the legacy
-        // "freeminecraftmodels:<model>_<bone>" identifier so existing setItemModel()
-        // calls (on the FMM plugin side) remain valid.
-        String bedrockIdentifier = "freeminecraftmodels:" + modelName + "_" + boneName;
-        String animBaseId = "fmm." + modelName + "." + boneName;
-        String animFileBase = modelName + "__" + boneName;
-        String attachableOutputPath = modelName + "/" + boneName;
-
-        FmmAnimationGenerator.AnimationIds animIds =
-                prepareAnimations(animBaseId, animFileBase, javaModel, bedrockPackDir);
-        if (animIds == null) {
-            BedrockLog.warn("[BedrockConverter] Failed to write animations for " + bedrockIdentifier);
-            return null;
-        }
-        return writeAttachable(bedrockIdentifier, attachableOutputPath, geometryId,
-                bedrockTexturePath, animIds, bedrockPackDir);
-    }
-
-    /**
      * Phase G — Step 1 of 2 for the generic pipeline. Writes the three-pose animation
      * file for one model and returns the resulting animation identifiers. Should be
      * called ONCE per (model) so multiple per-base-item attachables can reference the
@@ -144,22 +110,9 @@ public class FmmAttachableGenerator {
      * @param bedrockTexturePath    Bedrock texture path emitted by TextureStitcher (shared per model)
      * @param animIds               animation identifier triple returned by
      *                              {@link #prepareAnimations} (shared per model)
+     * @param particles             held-item particles to wire in, or {@code null} for none
      * @param bedrockPackDir        output pack root
      * @return the {@code bedrockIdentifier} on success, {@code null} on failure
-     */
-    public static String writeAttachable(String bedrockIdentifier,
-                                         String attachableOutputPath,
-                                         String geometryId,
-                                         String bedrockTexturePath,
-                                         FmmAnimationGenerator.AnimationIds animIds,
-                                         File bedrockPackDir) {
-        return writeAttachable(bedrockIdentifier, attachableOutputPath, geometryId, bedrockTexturePath, animIds,
-                null, bedrockPackDir);
-    }
-
-    /**
-     * As {@link #writeAttachable(String, String, String, String, FmmAnimationGenerator.AnimationIds, File)},
-     * also wiring held-item particles when {@code particles} is not null.
      */
     public static String writeAttachable(String bedrockIdentifier,
                                          String attachableOutputPath,

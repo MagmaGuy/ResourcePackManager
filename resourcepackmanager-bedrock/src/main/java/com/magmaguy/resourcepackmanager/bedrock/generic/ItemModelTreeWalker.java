@@ -22,10 +22,6 @@ import java.util.Set;
  * access from a Bukkit plugin). Each leaf carries the ordered list of predicates
  * accumulated along its branch &mdash; those become the Geyser definition entry's
  * {@code predicate} array at emission time (Phase 7).
- *
- * <p>The {@link AssetResolver} parameter is currently unused but threaded through the
- * public API so later phases can resolve referenced models (e.g. nested item-defs)
- * without an API change.
  */
 public final class ItemModelTreeWalker {
 
@@ -37,7 +33,7 @@ public final class ItemModelTreeWalker {
     private ItemModelTreeWalker() {
     }
 
-    public static List<ResolvedLeaf> walk(ItemsDefinition def, AssetResolver resolver) {
+    public static List<ResolvedLeaf> walk(ItemsDefinition def) {
         JsonObject root = def.root();
         if (root == null || !root.has("model") || !root.get("model").isJsonObject()) {
             // Per-item structural skip — fires once per malformed items definition

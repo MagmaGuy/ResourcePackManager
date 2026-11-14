@@ -30,11 +30,6 @@ public record ItemsDefinition(
         this(namespace, itemsRelPath, file, root, List.of(), null);
     }
 
-    public ItemsDefinition(String namespace, String itemsRelPath, File file, JsonObject root,
-                           List<String> explicitBaseItems) {
-        this(namespace, itemsRelPath, file, root, explicitBaseItems, null);
-    }
-
     public static ItemsDefinition legacyCustomModelData(String namespace,
                                                         String itemsRelPath,
                                                         File file,

@@ -34,10 +34,6 @@ public final class PackCarrierIndex {
         this.carriersByModel = carriersByModel;
     }
 
-    public static PackCarrierIndex empty() {
-        return EMPTY;
-    }
-
     /**
      * @param definitions every scanned items definition
      * @param leaves      the walked leaves of each definition, at the same index

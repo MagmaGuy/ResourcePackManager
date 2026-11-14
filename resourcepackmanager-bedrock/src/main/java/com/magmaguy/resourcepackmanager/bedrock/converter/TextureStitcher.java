@@ -2,7 +2,6 @@ package com.magmaguy.resourcepackmanager.bedrock.converter;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockLog;
 import com.magmaguy.resourcepackmanager.bedrock.model.SpriteInfo;
 import com.magmaguy.resourcepackmanager.bedrock.util.BedrockNaming;
@@ -10,34 +9,22 @@ import com.magmaguy.resourcepackmanager.bedrock.util.BedrockNaming;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 
 /**
- * Stitches multiple textures from an FMM-style multi-bone model (or a single
- * generic Java item model) into a single atlas PNG. Bedrock geometry only
- * supports one texture per geometry, so multi-texture models must be combined.
+ * Stitches the textures of a generic Java item model into a single atlas PNG.
+ * Bedrock geometry only supports one texture per geometry, so multi-texture
+ * models must be combined.
  *
- * <p>Two entry points are provided:
- * <ul>
- *   <li>{@link #stitch(String, List, File, File)} &mdash; the legacy FMM path:
- *       accepts a list of bone JSON files on disk, each representing one bone
- *       of an FMM multi-bone model.</li>
- *   <li>{@link #stitchSingleModel(String, String, JsonObject, File, File)} &mdash;
- *       the generic path: accepts an already-parsed Java item model JSON in
- *       memory, treated as a single &quot;bone&quot;. Used by the generic
- *       Java&rarr;Bedrock pipeline (Phase 6) which has the merged-parent JSON
- *       in hand and does not want to round-trip through disk.</li>
- * </ul>
- *
- * <p>Both paths share the texture-collection / atlas-building code. The FMM
- * path also emits per-bone item icons for callers that consume them; the
- * generic path renders its own compact inventory icon and skips those source
- * texture copies.
+ * <p>The entry point is
+ * {@link #stitchSingleModel(String, String, JsonObject, File, File)}: it accepts
+ * an already-parsed Java item model JSON in memory, treated as a single
+ * &quot;bone&quot;. The generic Java&rarr;Bedrock pipeline has the merged-parent
+ * JSON in hand and does not round-trip it through disk. That pipeline renders
+ * its own compact inventory icon.
  */
 public class TextureStitcher {
 
@@ -50,43 +37,21 @@ public class TextureStitcher {
 
     /**
      * Result of stitching textures for a model.
-     * <p>
-     * {@code bonePrimaryIconPath} maps each boneName to the {@code item_texture.json}
-     * texture path (no extension, relative to pack root) to use for that bone's
-     * inventory icon. If a bone has no determinable primary texture, it is absent
-     * from this map and the caller should fall back to {@link #bedrockTexturePath()}.
      */
     public record StitchResult(
             File atlasFile,
             int atlasWidth,
             int atlasHeight,
             Map<String, SpriteInfo> spriteMap,
-            String bedrockTexturePath,
-            Map<String, String> bonePrimaryIconPath
+            String bedrockTexturePath
     ) {}
-
-    /**
-     * Collects all unique textures referenced by bones in a model, stitches them
-     * into one atlas, writes it to the Bedrock pack, and returns sprite mapping info.
-     */
-    public static StitchResult stitch(String modelName, List<File> boneJsonFiles,
-                                      File mergedPackRoot, File bedrockPackDir) {
-        // 1. Collect unique texture references across all bones (union, first-wins)
-        //    Also collect per-bone texture maps so we can pick a primary texture for icons.
-        Map<String, BoneTextures> boneTextures = collectBoneTextures(boneJsonFiles);
-        // FMM path: one atlas per model directory, shared by all bones. modelName is
-        // already unique per FMM model (e.g. "01_em_wolf") so this never collides.
-        String atlasPathStem = "textures/entity/" + modelName + "/atlas";
-        return stitchFromBoneTextures(modelName, boneTextures, atlasPathStem,
-                mergedPackRoot, bedrockPackDir, true);
-    }
 
     /**
      * Generic-pipeline entry point: stitch a single in-memory Java item model
      * into a Bedrock atlas. The model is treated as a single &quot;bone&quot;
-     * named {@code boneName} so the existing per-bone icon machinery still
-     * applies. Use {@code modelName = <namespace>} and {@code boneName = <path
-     * with slashes replaced by underscores>} to avoid collisions across plugins.
+     * named {@code boneName}. Use {@code modelName = <namespace>} and
+     * {@code boneName = <path with slashes replaced by underscores>} to avoid
+     * collisions across plugins.
      *
      * <p>This was added in Phase 6 of the generic Java&rarr;Bedrock pipeline so
      * the generic 3D path can reuse {@link TextureStitcher}'s atlas building and
@@ -98,9 +63,7 @@ public class TextureStitcher {
      * <p>The output atlas path is {@code textures/entity/<modelName>/<boneName>/atlas.png}
      * &mdash; per-(model x bone) scoping is required because in this pipeline
      * {@code modelName} is the plugin namespace (e.g. {@code "elitemobs"}) shared
-     * by many independent models. FMM's {@link #stitch(String, List, File, File)}
-     * uses {@code textures/entity/<modelName>/atlas.png} because its
-     * {@code modelName} is already unique per FMM model directory.
+     * by many independent models.
      */
     public static StitchResult stitchSingleModel(String modelName, String boneName,
                                                  JsonObject javaModel,
@@ -123,20 +86,18 @@ public class TextureStitcher {
         // wrong dimensions on disk vs the per-model geo's texture_width/_height.
         String atlasPathStem = "textures/entity/" + modelName + "/" + boneName + "/atlas";
         return stitchFromBoneTextures(modelName, boneTextures, atlasPathStem,
-                mergedPackRoot, bedrockPackDir, false);
+                mergedPackRoot, bedrockPackDir);
     }
 
     /**
      * Shared implementation: given a pre-collected
-     * {@code boneName -> textures-slot-map} mapping (one entry per bone for the
-     * FMM path, exactly one entry for the generic single-model path), build the
-     * atlas, optionally write per-bone icons, and return the stitch result.
+     * {@code boneName -> textures-slot-map} mapping (exactly one entry for the
+     * generic single-model path), build the atlas and return the stitch result.
      */
     private static StitchResult stitchFromBoneTextures(String modelName,
                                                        Map<String, BoneTextures> boneTextures,
                                                        String atlasPathStem,
-                                                       File mergedPackRoot, File bedrockPackDir,
-                                                       boolean writeBoneIcons) {
+                                                       File mergedPackRoot, File bedrockPackDir) {
         Map<String, String> textureMap = unionTextures(boneTextures);
         if (textureMap.isEmpty()) {
             BedrockLog.warn("[BedrockConverter] No textures found for model " + modelName
@@ -151,7 +112,6 @@ public class TextureStitcher {
 
         // 3. Load unique textures (dedup by source texture reference -> one atlas region).
         Map<String, BufferedImage> loadedByRef = new LinkedHashMap<>(); // textureRef -> image
-        Map<String, File> sourceFileByRef = new LinkedHashMap<>();      // textureRef -> file on disk
         Set<String> attemptedRefs = new HashSet<>();
         List<String> placementOrderRefs = new ArrayList<>();            // ref order to draw
         List<String> missingCustom = new ArrayList<>();                 // custom-ns refs with no file on disk
@@ -191,7 +151,6 @@ public class TextureStitcher {
                 }
 
                 loadedByRef.put(textureRef, img);
-                sourceFileByRef.put(textureRef, textureFile);
                 placementOrderRefs.add(textureRef);
             } catch (IOException e) {
                 BedrockLog.warn("[BedrockConverter] Error reading texture " + textureFile.getPath() + ": " + e.getMessage());
@@ -214,10 +173,8 @@ public class TextureStitcher {
         }
 
         // 4. Build atlas: row-strip (existing layout; UVs depend on this).
-        //    The output atlas stem is supplied by the entry-point so FMM (one atlas
-        //    per model dir) and the generic path (one atlas per model x bone) can
-        //    each pick a non-colliding scheme. See {@link #stitch} and
-        //    {@link #stitchSingleModel}.
+        //    The output atlas stem is supplied by the entry point (one atlas per
+        //    model x bone). See {@link #stitchSingleModel}.
         String bedrockTexturePath = atlasPathStem;
         File outputFile = new File(bedrockPackDir, bedrockTexturePath + ".png");
         Map<String, SpriteInfo> placedByRef = new LinkedHashMap<>();
@@ -272,41 +229,8 @@ public class TextureStitcher {
             return null;
         }
 
-        Map<String, String> bonePrimaryIconPath = new LinkedHashMap<>();
-        if (writeBoneIcons) {
-            // 7. Produce per-bone icon files. For each bone, find its primary texture
-            //    (first texture key in iteration order = first slot the bone declares).
-            //    Mirrors Rainbow's flat-builtin "icon = the texture itself" pattern
-            //    (ModelTextures.java:188-190, 219-221) without needing a 3D renderer.
-            for (Map.Entry<String, BoneTextures> e : boneTextures.entrySet()) {
-                String boneName = e.getKey();
-                String primaryRef = pickPrimaryTextureRef(e.getValue());
-                if (primaryRef == null) continue;
-                File source = sourceFileByRef.get(primaryRef);
-                if (source == null) continue; // missing texture earlier; fall back to atlas
-
-                // Copy primary source PNG to textures/items/<modelName>__<boneName>.png
-                // Keep path under textures/items/ (matches Rainbow's idiomatic items path).
-                // Java flipbook textures (e.g. EliteMobs' bronzesword.png: 64x768 with a
-                // sibling .mcmeta declaring animation) must be cropped to the top frame
-                // before emission: Bedrock's flipbook_textures.json does NOT support item
-                // icons (only blocks/terrain per docs.microsoft / wiki.bedrock.dev), so a
-                // verbatim 64x768 copy renders as a tall squished icon in the inventory.
-                String iconRel = "textures/items/" + modelName + "__" + boneName;
-                File iconFile = new File(bedrockPackDir, iconRel + ".png");
-                try {
-                    Files.createDirectories(iconFile.getParentFile().toPath());
-                    writeIconCroppedIfFlipbook(source, iconFile);
-                    bonePrimaryIconPath.put(boneName, iconRel);
-                } catch (IOException ioe) {
-                    BedrockLog.warn("[BedrockConverter] Failed to write per-bone icon for "
-                            + modelName + "/" + boneName + ": " + ioe.getMessage());
-                }
-            }
-        }
-
         return new StitchResult(outputFile, atlasWidth, atlasHeight, spriteMap,
-                bedrockTexturePath, bonePrimaryIconPath);
+                bedrockTexturePath);
     }
 
     /**
@@ -353,44 +277,6 @@ public class TextureStitcher {
     private record BoneTextures(LinkedHashMap<String, String> textures) {}
 
     /**
-     * Reads each bone JSON and collects its declared {@code textures} block.
-     * Preserves insertion order so we can later identify the bone's "primary" slot.
-     */
-    private static Map<String, BoneTextures> collectBoneTextures(List<File> boneJsonFiles) {
-        Map<String, BoneTextures> result = new LinkedHashMap<>();
-        for (File file : boneJsonFiles) {
-            String boneName = stripExtension(file.getName());
-            LinkedHashMap<String, String> textures = new LinkedHashMap<>();
-            try (FileReader reader = new FileReader(file, StandardCharsets.UTF_8)) {
-                JsonObject json = JsonParser.parseReader(reader).getAsJsonObject();
-                if (json.has("textures") && json.get("textures").isJsonObject()) {
-                    JsonObject texObj = json.getAsJsonObject("textures");
-                    for (Map.Entry<String, JsonElement> entry : texObj.entrySet()) {
-                        if (entry.getValue().isJsonPrimitive()) {
-                            textures.put(entry.getKey(), entry.getValue().getAsString());
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                BedrockLog.warn("[BedrockConverter] Failed to parse textures from " + file.getPath() + ": " + e.getMessage());
-            }
-            LinkedHashMap<String, String> resolved = new LinkedHashMap<>();
-            for (String slot : textures.keySet()) {
-                String value = textures.get(slot);
-                Set<String> visited = new HashSet<>();
-                while (value != null && value.startsWith("#")) {
-                    String alias = value.substring(1);
-                    if (!visited.add(alias)) { value = null; break; }
-                    value = textures.get(alias);
-                }
-                if (value != null) resolved.put(slot, value);
-            }
-            result.put(boneName, new BoneTextures(resolved));
-        }
-        return result;
-    }
-
-    /**
      * Union across all bone texture maps. First-bone-wins on slot-key conflict,
      * matching the previous behaviour (and Rainbow's slot-map dedup semantics).
      * Mirrors {@code ModelTextures.java:67} by removing the {@code particle} slot.
@@ -405,22 +291,6 @@ public class TextureStitcher {
         out.remove("particle");
         out.remove("#particle");
         return out;
-    }
-
-    /**
-     * Picks the texture reference used for a bone's inventory icon.
-     * Prefers the slot keyed {@code "0"} (FMM convention for "main"), falling back
-     * to the first slot in declaration order. Returns {@code null} for textureless bones.
-     */
-    private static String pickPrimaryTextureRef(BoneTextures bt) {
-        LinkedHashMap<String, String> textures = bt.textures();
-        if (textures.isEmpty()) return null;
-        // Prefer "0" / "#0" / "layer0" if present, otherwise first declared slot.
-        for (String preferredKey : new String[]{"0", "#0", "layer0", "#layer0"}) {
-            String v = textures.get(preferredKey);
-            if (v != null) return v;
-        }
-        return textures.values().iterator().next();
     }
 
     /**
@@ -449,10 +319,5 @@ public class TextureStitcher {
         } else {
             Files.copy(source.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
-    }
-
-    private static String stripExtension(String fileName) {
-        int dot = fileName.lastIndexOf('.');
-        return dot < 0 ? fileName : fileName.substring(0, dot);
     }
 }

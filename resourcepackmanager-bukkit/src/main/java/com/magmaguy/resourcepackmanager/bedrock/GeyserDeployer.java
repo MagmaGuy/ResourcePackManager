@@ -39,17 +39,6 @@ public class GeyserDeployer {
     private static final String OWNERSHIP_FILE_NAME = ".rspm-geyser-mapping-target";
 
     /**
-     * Deploys the Geyser custom mappings file to the detected Geyser installation.
-     * The Bedrock pack zip is intentionally NOT copied — it's served live per
-     * Bedrock session via {@link GeyserPackProvider}.
-     *
-     * @param mappingsFile the Geyser custom mappings JSON file
-     */
-    public static void deployMappings(File mappingsFile) {
-        reconcileMappings(mappingsFile, true);
-    }
-
-    /**
      * Converges the previously owned destination to the currently configured
      * one. Provenance is read before the copy and changed only after the old
      * exact target is gone, so a Geyser path change cannot orphan an RSPM file.

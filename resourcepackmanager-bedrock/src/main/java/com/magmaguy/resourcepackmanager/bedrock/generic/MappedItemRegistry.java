@@ -38,11 +38,6 @@ import java.util.Set;
  *       duplicate thresholds/overrides. Dropped pairs are reported via
  *       {@link #dedupNotes()} for the caller's one-line summary.</li>
  * </ul>
- *
- * <p>The {@link #safeIdentifier(String)} rule matches Rainbow's
- * {@code Rainbow.bedrockSafeIdentifier} (Rainbow.java:18-20): {@code ':'} -&gt; {@code '.'},
- * {@code '/'} -&gt; {@code '_'}. Used for filesystem paths and the {@code item_texture.json}
- * lookup key.
  */
 public final class MappedItemRegistry {
 
@@ -54,16 +49,6 @@ public final class MappedItemRegistry {
     private final List<String> dedupNotes = new ArrayList<>();
 
     private record EmittedEntry(String baseItem, int index, GeyserDefinitionEntry entry) {}
-
-    /**
-     * Rainbow-style identifier sanitisation (mirrors {@code Rainbow.bedrockSafeIdentifier}):
-     * {@code ':'} becomes {@code '.'}, {@code '/'} becomes {@code '_'}. Anything else is
-     * preserved. Used to derive deterministic filenames and {@code item_texture.json} keys
-     * from a Java/Bedrock identifier.
-     */
-    public static String safeIdentifier(String identifier) {
-        return identifier.replace(':', '.').replace('/', '_');
-    }
 
     public boolean registerModelOnce(String javaItemModel) {
         return writtenModels.add(javaItemModel);

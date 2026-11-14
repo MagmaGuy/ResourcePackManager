@@ -68,16 +68,6 @@ public final class BedrockShortName {
     }
 
     /**
-     * Stable short name keyed by the (model, base-item) pair, with no predicate
-     * component. Equivalent to {@link #forBaseMapping(String, String, String)}
-     * with an empty signature. Retained so unconditional callers stay terse and
-     * so historical identifiers (no predicate) are produced byte-for-byte as before.
-     */
-    public static String forBaseMapping(String modelRef, String baseItem) {
-        return forBaseMapping(modelRef, baseItem, null);
-    }
-
-    /**
      * Stable short name keyed by the (model, base-item, predicate-signature) triple.
      *
      * <p>Use this for the attachable file path and the Geyser

@@ -530,7 +530,7 @@ public class BedrockConversion {
     /**
      * Generic pipeline entry point: scans non-FMM items definitions, walks each model tree,
      * and for every leaf either (a) copies the layer0 PNG and registers a flat-icon entry,
-     * or (b) emits Bedrock geometry/attachable/animation files via the FMM helpers and
+     * or (b) emits Bedrock geometry/attachable/animation files via the Fmm* converters and
      * registers a 3D entry. The supplied {@link MappedItemRegistry} accumulates entries
      * across both branches; the caller reads it back to serialise the merged Geyser
      * mappings file in Phase 7.
@@ -574,7 +574,7 @@ public class BedrockConversion {
             List<List<ResolvedLeaf>> walkedLeaves = new ArrayList<>(generic.size());
             for (ItemsDefinition def : generic) {
                 if (ctx.isCancellationRequested()) return;
-                walkedLeaves.add(ItemModelTreeWalker.walk(def, assetResolver));
+                walkedLeaves.add(ItemModelTreeWalker.walk(def));
             }
             PackCarrierIndex packCarriers = PackCarrierIndex.build(generic, walkedLeaves);
             int packCarried = 0;
@@ -787,7 +787,7 @@ public class BedrockConversion {
                 if (!canonical.packReference().equals(stitch.bedrockTexturePath())) {
                     stitch = new TextureStitcher.StitchResult(
                             canonical.file().toFile(), stitch.atlasWidth(), stitch.atlasHeight(),
-                            stitch.spriteMap(), canonical.packReference(), stitch.bonePrimaryIconPath());
+                            stitch.spriteMap(), canonical.packReference());
                 }
             } catch (IOException exception) {
                 // Keep the model-specific atlas on any cache failure. This is an

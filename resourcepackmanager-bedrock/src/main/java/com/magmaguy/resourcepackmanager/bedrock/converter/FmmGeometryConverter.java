@@ -25,22 +25,6 @@ public class FmmGeometryConverter {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
     /**
-     * Converts a bone model and writes the .geo.json file. FMM-style wrapper:
-     * builds the FMM-prefixed geometry identifier and FMM-style output path,
-     * then delegates to {@link #convertWithIdentifier(String, String, JsonObject, Map, int, int, File)}.
-     *
-     * @return geometry ID (e.g., "geometry.freeminecraftmodels.01_em_wolf.bodyback"), or null on failure
-     */
-    public static String convert(String modelName, String boneName, JsonObject javaModel,
-                                 Map<String, SpriteInfo> spriteMap, int atlasWidth, int atlasHeight,
-                                 File bedrockPackDir) {
-        return convertWithIdentifier(
-                "geometry.freeminecraftmodels." + modelName + "." + boneName,
-                modelName + "/" + boneName,
-                javaModel, spriteMap, atlasWidth, atlasHeight, bedrockPackDir);
-    }
-
-    /**
      * Generic-pipeline conversion: caller supplies the full geometry identifier
      * and output-path stem, so this method has no hardcoded "freeminecraftmodels"
      * naming. Added in Phase 6 of the generic Java&rarr;Bedrock pipeline.
