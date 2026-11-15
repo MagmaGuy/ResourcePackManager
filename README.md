@@ -43,7 +43,7 @@ ResourcePackManager automatically grabs the resource packs from automerge-compat
 * **`/rspm status` shows the pack, hosting, Bedrock and network state in one command.** [Troubleshooting](https://wiki.nightbreak.io/ResourcePackManager/troubleshooting)
 * **[24/7 Discord support](https://discord.gg/9f5QSka).**
 * **No setup or maintenance required!**
-* **Want an even better experience?** Works best with [Free Minecraft Models](https://nightbreak.io/plugin/freeminecraftmodels) and [EternalTD](https://nightbreak.io/plugin/eternaltd) — both free!
+* **Want an even better experience?** Works best with [Free Minecraft Models](https://nightbreak.io/plugin/freeminecraftmodels/) and [EternalTD](https://nightbreak.io/plugin/eternaltd/) — both free!
 
 # 🟠 How to Setup
 
@@ -73,12 +73,12 @@ ResourcePackManager merges where possible but cannot fix fundamental conflicts (
 <details>
 <summary><strong>Automerge-compatible plugins</strong></summary>
 
-* [FreeMinecraftModels](https://nightbreak.io/plugin/freeminecraftmodels) (recommended models plugin!)
-* [EliteMobs](https://nightbreak.io/plugin/elitemobs) (recommended bosses plugin!)
-* [EternalTD](https://nightbreak.io/plugin/eternaltd) (recommended minigame plugin!)
-* [BetterStructures](https://nightbreak.io/plugin/betterstructures)
-* [CannonRTP](https://nightbreak.io/plugin/cannonrtp)
-* [ResurrectionChest](https://nightbreak.io/plugin/resurrectionchest)
+* [FreeMinecraftModels](https://nightbreak.io/plugin/freeminecraftmodels/) (recommended models plugin!)
+* [EliteMobs](https://nightbreak.io/plugin/elitemobs/) (recommended bosses plugin!)
+* [EternalTD](https://nightbreak.io/plugin/eternaltd/) (recommended minigame plugin!)
+* [BetterStructures](https://nightbreak.io/plugin/betterstructures/)
+* [CannonRTP](https://nightbreak.io/plugin/cannonrtp/)
+* [ResurrectionChest](https://nightbreak.io/plugin/resurrectionchest/)
 * BetterHUD
 * CraftEngine (set `send-on-join: false` in CraftEngine's config; `/ce reload all` writes the pack RSPM merges)
 * ItemsAdder (requires unencrypting & disabling hosting; `/rspm itemsadder configure` does this for you)
@@ -174,34 +174,34 @@ We reserve the right to unilaterally terminate this service at any time and for 
 # 🟠 View More by Magmaguy!
 
 <p align="center">
-  <a href="https://nightbreak.io/plugin/elitemobs">
+  <a href="https://nightbreak.io/plugin/elitemobs/">
     <img src="https://i.postimg.cc/zXQRn1jD/Elite-Mobs.png" width="300"/>
   </a>
-  <a href="https://nightbreak.io/plugin/betterstructures">
+  <a href="https://nightbreak.io/plugin/betterstructures/">
     <img src="https://i.postimg.cc/3rVK1rPq/Better-Structures.png" width="300"/>
   </a>
 </p>
 <p align="center">
-  <a href="https://nightbreak.io/plugin/extractioncraft">
+  <a href="https://nightbreak.io/plugin/extractioncraft/">
     <img src="https://i.postimg.cc/gjV6VMYz/extractioncraft.png" width="300"/>
   </a>
-  <a href="https://nightbreak.io/plugin/eternaltd">
+  <a href="https://nightbreak.io/plugin/eternaltd/">
     <img src="https://i.postimg.cc/Kjf8cCGM/ETD.png" width="300"/>
   </a>
 </p>
 <p align="center">
-  <a href="https://nightbreak.io/plugin/resourcepackmanager">
+  <a href="https://nightbreak.io/plugin/resourcepackmanager/">
     <img src="https://i.postimg.cc/Y0GdtBfX/Resource-Pack-Manager.png" width="300"/>
   </a>
-  <a href="https://nightbreak.io/plugin/freeminecraftmodels">
+  <a href="https://nightbreak.io/plugin/freeminecraftmodels/">
     <img src="https://i.postimg.cc/0Qxv6ZHd/FMM.png" width="300"/>
   </a>
 </p>
 <p align="center">
-  <a href="https://nightbreak.io/plugin/betterfood">
+  <a href="https://nightbreak.io/plugin/betterfood/">
     <img src="https://i.postimg.cc/JzcDSB80/Better-Food.png" width="300"/>
   </a>
-  <a href="https://nightbreak.io/plugin/resurrectionchest">
+  <a href="https://nightbreak.io/plugin/resurrectionchest/">
     <img src="https://i.imgur.com/qpgXCge.png" width="300"/>
   </a>
 </p>
