@@ -153,9 +153,12 @@ public final class GenericGeyserMappingBuilder {
             options.addProperty("display_handheld", true);
         }
         if (ARMOR_BASE_ITEMS.contains(baseItem)) {
+            // No minecraft:trimmable_armors: with that tag on custom armor items, the Android
+            // Bedrock client (1.26.62) crashed while the world loaded; Windows did not. A server
+            // with 1742 tagged Matcha armor items crashed it, and the same list without the tag
+            // joined (support ticket "Converting issue", 2026-11-15).
             JsonArray tags = new JsonArray();
             tags.add("minecraft:is_armor");
-            tags.add("minecraft:trimmable_armors");
             options.add("tags", tags);
         }
         // protection_value and dyeable come from the custom item itself (ComponentPlanner)

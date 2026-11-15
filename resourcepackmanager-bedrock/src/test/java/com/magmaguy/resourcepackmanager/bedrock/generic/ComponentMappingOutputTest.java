@@ -41,7 +41,7 @@ final class ComponentMappingOutputTest {
 
         assertEquals(List.of("type", "bedrock_identifier", "bedrock_options", "components", "model"),
                 List.copyOf(definition.keySet()));
-        assertEquals("{\"icon\":\"rspm_crown\",\"tags\":[\"minecraft:is_armor\",\"minecraft:trimmable_armors\"],"
+        assertEquals("{\"icon\":\"rspm_crown\",\"tags\":[\"minecraft:is_armor\"],"
                         + "\"protection_value\":2,\"dyeable\":{\"default_color\":\"#A06540\"}}",
                 definition.get("bedrock_options").toString());
         assertEquals(components, definition.get("components"));
