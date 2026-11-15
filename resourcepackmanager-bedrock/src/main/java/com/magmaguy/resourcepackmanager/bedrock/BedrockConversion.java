@@ -40,8 +40,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -256,17 +259,9 @@ public class BedrockConversion {
                     ctx::isCancellationRequested);
             if (ctx.isCancellationRequested()) return false;
 
-            // 5. Generate manifest. Use a digest of the staged pack content before
-            // manifest.json is written, so identical resource-pack contents produce the
-            // same Bedrock pack version and startup remixes do not churn Geyser's live
-            // pack file. Real content changes still bump Bedrock's (uuid, version)
-            // cache key.
-            String cacheBustToken = contentDigest(bedrockDir, ctx::isCancellationRequested);
-            if (ctx.isCancellationRequested()) return false;
-            String pluginVersion = ctx.pluginVersion();
-            BedrockManifest.write(bedrockDir, pluginVersion, cacheBustToken);
-
-            // 6. Generate merged Geyser mappings.
+            // 5. Generate merged Geyser mappings. They come before the manifest because the
+            // pack embeds their hash (rspm_artifact_set.json), so the pack version must
+            // cover them too.
             File mappingsFile = new File(outputDir, GEYSER_MAPPINGS_NAME);
             if (registry.totalMappings() > 0) {
                 GenericGeyserMappingBuilder.merge(registry, pendingMappings);
@@ -274,6 +269,21 @@ public class BedrockConversion {
                 Files.deleteIfExists(pendingMappings.toPath());
             }
             if (ctx.isCancellationRequested()) return false;
+
+            // 6. Generate manifest. Use a digest of the staged pack content before
+            // manifest.json is written, so identical resource-pack contents produce the
+            // same Bedrock pack version and startup remixes do not churn Geyser's live
+            // pack file. Real content changes still bump Bedrock's (uuid, version)
+            // cache key. The mappings hash is folded in because rspm_artifact_set.json,
+            // written below, carries it: a mappings-only change otherwise shipped new
+            // bytes under a cached (uuid, version), and the Android client crashed on
+            // that download (support ticket "Converting issue", 2026-11-15).
+            String cacheBustToken = withMappingsIdentity(
+                    contentDigest(bedrockDir, ctx::isCancellationRequested),
+                    registry.totalMappings() > 0 ? pendingMappings : null);
+            if (ctx.isCancellationRequested()) return false;
+            String pluginVersion = ctx.pluginVersion();
+            BedrockManifest.write(bedrockDir, pluginVersion, cacheBustToken);
 
             // The ZIP is the commit artifact for both direct HTTP and relay
             // delivery.  Its embedded manifest binds the optional mappings
@@ -1069,6 +1079,23 @@ public class BedrockConversion {
             BedrockLog.warn("Failed to derive Bedrock pack content digest; falling back to timestamp cache bust: "
                     + e.getMessage());
             return String.valueOf(System.currentTimeMillis());
+        }
+    }
+
+    /**
+     * Extends the staged-content digest with the Geyser mappings' SHA-1 and size, the two
+     * values {@link #writeArtifactSetManifest} embeds in the pack. Without mappings the
+     * digest is returned unchanged.
+     */
+    static String withMappingsIdentity(String contentDigest, File mappingsFile) throws IOException {
+        if (mappingsFile == null || !mappingsFile.isFile() || contentDigest.isEmpty()) return contentDigest;
+        String seed = contentDigest + "\nmappings:" + Sha1.hex(mappingsFile).toLowerCase(Locale.ROOT)
+                + "\n" + mappingsFile.length();
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(seed.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
         }
     }
 
