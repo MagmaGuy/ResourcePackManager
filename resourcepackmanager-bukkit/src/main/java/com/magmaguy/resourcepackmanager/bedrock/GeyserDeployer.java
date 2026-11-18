@@ -211,6 +211,49 @@ public class GeyserDeployer {
         return removed;
     }
 
+    private static final String LOCALE_OWNERSHIP_FILE_NAME = ".rspm-geyser-locale-overrides.json";
+
+    /**
+     * Gives the local Geyser the translations of the merged Java pack, as entries in its
+     * {@code locales/overrides/<locale>.json} files, so an item named with a translation key
+     * shows its name on Bedrock instead of the key. With conversion or auto-deploy off, or no
+     * Geyser here, it takes back the entries RSPM added earlier. Entries an admin wrote are never
+     * changed ({@link GeyserLocaleOverrides}). Geyser reads these files when it starts and when
+     * the first player of a language joins, so new text shows after a restart, like new mappings.
+     *
+     * @param mergedJavaPack the merged Java pack zip, or {@code null} when there is none
+     */
+    public static void reconcileLocaleOverrides(File mergedJavaPack) {
+        try {
+            File geyserDir = DefaultConfig.isBedrockConversionEnabled() && DefaultConfig.isBedrockAutoDeployToGeyser()
+                    && mergedJavaPack != null && mergedJavaPack.isFile()
+                    ? detectGeyserDir()
+                    : null;
+            Path ownership = new File(ResourcePackManager.plugin.getDataFolder(), LOCALE_OWNERSHIP_FILE_NAME).toPath();
+            if (geyserDir == null) {
+                GeyserLocaleOverrides.reconcile(null, ownership, java.util.Map.of());
+                return;
+            }
+            Path locales = geyserDir.toPath().resolve("locales");
+            GeyserLocaleOverrides.Result result = GeyserLocaleOverrides.reconcile(
+                    locales.resolve("overrides"),
+                    ownership,
+                    GeyserLocaleOverrides.exportable(
+                            GeyserLocaleOverrides.readPack(mergedJavaPack),
+                            GeyserLocaleOverrides.keysOf(locales.resolve("en_us.json"))));
+            if (result.changed()) {
+                Logger.info("Geyser's locale overrides now hold " + result.added()
+                        + " translation(s) from the resource pack, so Bedrock players read item names and"
+                        + " other pack text instead of translation keys. Restart the server to apply them."
+                        + (result.leftToAdmin() > 0 ? " " + result.leftToAdmin()
+                        + " key(s) already in those files were left as they are." : ""));
+            }
+        } catch (IOException | RuntimeException failure) {
+            Logger.warn("Could not update Geyser's locale overrides with the resource pack's translations: "
+                    + failure.getMessage());
+        }
+    }
+
     private static File validateOwnedTarget(String rawPath) {
         if (rawPath == null || rawPath.isBlank()) return null;
         try {

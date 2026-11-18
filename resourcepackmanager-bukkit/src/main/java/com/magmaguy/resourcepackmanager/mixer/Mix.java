@@ -9,6 +9,7 @@ import com.magmaguy.resourcepackmanager.bedrock.BedrockConversion;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockOutputPublication;
 import com.magmaguy.resourcepackmanager.bedrock.BedrockSoundInput;
 import com.magmaguy.resourcepackmanager.bedrock.BukkitBedrockConverterContext;
+import com.magmaguy.resourcepackmanager.bedrock.GeyserDeployer;
 import com.magmaguy.resourcepackmanager.config.DefaultConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfig;
 import com.magmaguy.resourcepackmanager.config.compatibleplugins.CompatiblePluginConfigFields;
@@ -295,6 +296,11 @@ public class Mix {
         // Reroute the merged zip (Bukkit-only because DefaultConfig is Bukkit-bound).
         applyResourcePackRerouting(out.mergedZip());
 
+        // Geyser translates Java text itself and knows only Mojang's keys, so it gets the
+        // pack's translations too. Independent of the conversion below: names are text, not
+        // part of the Bedrock pack.
+        GeyserDeployer.reconcileLocaleOverrides(out.mergedZip());
+
         // Always enter the converter, including when conversion is disabled: its
         // disabled/no-target paths authoritatively remove prior local and deployed
         // Bedrock output. Cancellation is checked before withdrawal so an interrupted
@@ -546,6 +552,9 @@ public class Mix {
         // Converge the retained exact target before republishing the old set.
         if (sameBedrockIdentity || !bedrockEnabled)
             BedrockConversion.deployPreviousMappingsIfNeeded(conversionContext);
+        // Likewise Geyser's translations of the pack text: the pack is unchanged, but the
+        // deployment setting, the Geyser folder or an admin's own entries may not be.
+        GeyserDeployer.reconcileLocaleOverrides(mergedZip);
         AutoHost.initialize(cancelled);
         if (cancelled.getAsBoolean()) return false;
         applyResourcePackRerouting(mergedZip);
