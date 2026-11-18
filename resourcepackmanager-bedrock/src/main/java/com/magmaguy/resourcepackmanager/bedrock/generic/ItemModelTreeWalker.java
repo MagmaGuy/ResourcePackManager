@@ -185,7 +185,16 @@ public final class ItemModelTreeWalker {
                 // a pack with dozens of items using vanilla-only conditions can produce
                 // hundreds of these lines. Demoted to debug.
                 BedrockLog.debug("[BedrockConverter] Unsupported conditional property '" + rawProperty
-                        + "' in " + def.itemIdentifier() + "; skipping both branches");
+                        + "' in " + def.itemIdentifier() + "; mapping only on_false");
+                // Keep the else-branch without a predicate, as an unsupported select or
+                // range_dispatch keeps its fallback. Skipping both branches left the item with
+                // no model at all: a copper tool that picks its oxidation look with
+                // condition/minecraft:component/minecraft:damage stayed vanilla on Bedrock
+                // (support ticket "Converting issue", 2026-11-18). Bedrock shows the
+                // else-look in every state.
+                if (node.has("on_false") && node.get("on_false").isJsonObject()) {
+                    walk(node.getAsJsonObject("on_false"), new ArrayList<>(stack), def, out);
+                }
                 return;
             }
         }

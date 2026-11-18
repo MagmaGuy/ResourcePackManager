@@ -76,7 +76,7 @@ import java.util.zip.ZipFile;
  * the {@link BedrockConverterContext}.</p>
  */
 public class BedrockConversion {
-    public static final String OUTPUT_REVISION = "armor-without-trim-tag-v1";
+    public static final String OUTPUT_REVISION = "unsupported-condition-else-branch-v1";
 
     public static final String BEDROCK_PACK_NAME = "ResourcePackManager_Bedrock";
     public static final String GEYSER_MAPPINGS_NAME = "rspm_geyser_mappings.json";
