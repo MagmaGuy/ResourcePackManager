@@ -45,14 +45,13 @@ final class OraxenItemBasesTest {
     }
 
     @Test
-    void cropsMapUnderTheirMaterialAndKeepEveryGuessedBase() throws IOException {
+    void cropsMapOnlyUnderTheirMaterial() throws IOException {
         Map<String, Set<String>> bases = convert(OraxenItemBases.read(writeOraxenConfigs()));
 
-        for (String crop : List.of("oraxen:tomato", "oraxen:eggplant")) {
-            assertTrue(bases.get(crop).contains("minecraft:apple"), crop + " bases: " + bases.get(crop));
-            assertTrue(bases.get(crop).containsAll(GUESSED_BASES), crop + " bases: " + bases.get(crop));
-        }
-        assertEquals(new TreeSet<>(GUESSED_BASES), bases.get("oraxen:seed_bag"));
+        for (String crop : List.of("oraxen:tomato", "oraxen:eggplant"))
+            assertEquals(Set.of("minecraft:apple"), bases.get(crop), crop + " bases");
+        // Oraxen builds an item without a material on paper, so paper is its declared base.
+        assertEquals(Set.of("minecraft:paper"), bases.get("oraxen:seed_bag"));
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.resourcepackmanager.ResourcePackManager;
 import com.magmaguy.resourcepackmanager.bedrock.converter.SoundDefinitionConverter;
+import com.magmaguy.resourcepackmanager.bedrock.generic.DatapackItemBases;
 import com.magmaguy.resourcepackmanager.bedrock.generic.ItemComponentSnapshot;
 import com.magmaguy.resourcepackmanager.bedrock.items.CanonicalJson;
 import com.magmaguy.resourcepackmanager.bedrock.items.ItemComponentSnapshots;
@@ -157,6 +158,14 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
                 });
             }
             mergeDeclaredBaseItems(read, fromStacks);
+            // Data packs make items without a plugin: the recipe, loot table or trade that
+            // hands the stack out names its base item next to its item_model.
+            try {
+                mergeDeclaredBaseItems(read, DatapackItemBases.read(
+                        ServerDatapacks.enabled(), this::isCancellationRequested).basesByModel());
+            } catch (RuntimeException | LinkageError unreadable) {
+                Logger.warn("Could not read the server's data packs for Bedrock conversion: " + unreadable);
+            }
             declaredBaseItems = Map.copyOf(read);
         }
         return declaredBaseItems;
@@ -182,9 +191,9 @@ public final class BukkitBedrockConverterContext implements BedrockConverterCont
 
     /**
      * Short digest of {@link #declaredBaseItems()} and {@link #declaredItemComponents()} for
-     * the mix identity, so changing an Oraxen or CraftEngine item's material, or any custom
-     * item's components, reconverts even when the pack bytes stay the same. Empty when nothing
-     * is declared, which keeps the identity of servers without them.
+     * the mix identity, so changing an Oraxen or CraftEngine item's material, a data pack's
+     * item stacks, or any custom item's components, reconverts even when the pack bytes stay
+     * the same. Empty when nothing is declared, which keeps the identity of servers without them.
      */
     public String declaredBaseItemsDigest() {
         Map<String, List<String>> declared = declaredBaseItems();

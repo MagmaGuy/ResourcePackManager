@@ -69,16 +69,14 @@ final class CraftEngineItemBasesTest {
     }
 
     @Test
-    void itemsMapUnderTheirDeclaredBaseAndKeepEveryGuessedBase() throws Exception {
+    void itemsMapOnlyUnderTheirDeclaredBases() throws Exception {
         item("default:topaz", "minecraft:nether_brick", "minecraft:nether_brick", false);
         item("default:palm_leaf", "minecraft:nether_brick", "minecraft:paper", false);
 
         Map<String, Set<String>> bases = convert(CraftEngineItemBases.read(getClass().getClassLoader()));
 
-        assertTrue(bases.get("default:topaz").contains("minecraft:nether_brick"), "bases: " + bases.get("default:topaz"));
-        assertTrue(bases.get("default:topaz").containsAll(BedrockMappingFixture.GUESSED_BASES), "bases: " + bases.get("default:topaz"));
-        assertTrue(bases.get("default:palm_leaf").containsAll(List.of("minecraft:paper", "minecraft:nether_brick")),
-                "bases: " + bases.get("default:palm_leaf"));
+        assertEquals(Set.of("minecraft:nether_brick"), bases.get("default:topaz"));
+        assertEquals(Set.of("minecraft:paper", "minecraft:nether_brick"), bases.get("default:palm_leaf"));
     }
 
     @Test

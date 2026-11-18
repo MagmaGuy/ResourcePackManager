@@ -47,16 +47,39 @@ public final class BaseItemResolver {
      */
     private static final String FMM_BONE_CARRIER = "minecraft:leather_horse_armor";
 
+    /** FreeMinecraftModels' {@code /fmm craftify} hands every display model out on paper. */
+    private static final String FMM_CRAFTIFY_CARRIER = "minecraft:paper";
+
+    /**
+     * How a model's declared base items (an {@code rspm_item_bases} file, an item plugin's
+     * material, a data pack's item stacks) combine with the bases guessed from its file name.
+     * {@code true}: a model with at least one declared base maps only under its declared bases.
+     * {@code false}: the declared bases are added to the guessed ones, as up to 2.4.12.
+     *
+     * <p>Every guessed base is one more Bedrock custom item, and Geyser only uses it when a
+     * stack on that base item carries the model. One server's pack made 5137 Bedrock items
+     * with the guesses added and 808 without them (support ticket "Converting issue",
+     * 2026-11-18). A model nothing declares keeps its guesses either way.
+     */
+    public static final boolean DECLARED_BASES_REPLACE_GUESSES = true;
+
+    /** The one place the {@link #DECLARED_BASES_REPLACE_GUESSES} rule is applied. */
+    private static boolean replacesGuesses(List<String> declared) {
+        return DECLARED_BASES_REPLACE_GUESSES && !declared.isEmpty();
+    }
+
     /**
      * Resolves the candidate base-item list for a given items definition.
      * The heuristic itself always produces at least one candidate, but the final
      * result can be empty when every candidate is unsafe to register as a Geyser
      * custom-item override.
      *
-     * <p>{@code pluginDeclaredBaseItems} adds the base items an installed plugin's config
-     * assigns to this item model (keyed by {@link ItemsDefinition#itemIdentifier()}). Oraxen
-     * items carry only {@code oraxen:<id>} in the pack, so without their {@code material:} a
-     * tomato on apples would map under the paper/stick fallback and Bedrock would show an apple.
+     * <p>{@code pluginDeclaredBaseItems} are the base items an installed plugin's config or a
+     * data pack assigns to this item model (keyed by {@link ItemsDefinition#itemIdentifier()}).
+     * Oraxen items carry only {@code oraxen:<id>} in the pack, so without their
+     * {@code material:} a tomato on apples would map under the paper/stick fallback and Bedrock
+     * would show an apple. See {@link #DECLARED_BASES_REPLACE_GUESSES} for how they combine
+     * with the guesses.
      *
      * <p>{@code packCarriers} are the base items the pack
      * itself puts this definition's models on ({@link PackCarrierIndex#carriersFor}). When
@@ -76,36 +99,33 @@ public final class BaseItemResolver {
             // the filename heuristic here would misroute carrot_on_a_stick to minecraft:stick.
             candidates = List.of(def.itemIdentifier());
         } else {
-            candidates = packCarriers == null || packCarriers.isEmpty()
-                    ? resolveHeuristic(def, resolver)
-                    : packCarriers;
-
-            // FreeMinecraftModels always wears items on a leather_horse_armor carrier when
-            // rendering bones via packet armor stands. Ensure the FMM model is registered
-            // under that base item too, in addition to whatever the filename heuristic
-            // picked (which covers the /craftify or held-item case). Without this the
-            // bone armor stand renders as plain leather-horse-armor on Bedrock and the
-            // user-visible FMM furniture / props / weapons are invisible.
-            if ("freeminecraftmodels".equals(def.namespace())
-                    && !candidates.contains(FMM_BONE_CARRIER)) {
-                // Build a fresh list so we don't mutate the (often-shared)
-                // heuristic-returned list.
-                List<String> merged = new ArrayList<>(candidates.size() + 1);
-                merged.addAll(candidates);
-                merged.add(FMM_BONE_CARRIER);
-                candidates = merged;
-            }
-
-            // The producer knows the real carrier (a wand YAML says BLAZE_ROD); the
-            // filename heuristic would only guess minecraft:stick from "wand".
+            // The producer knows the real carrier (a wand YAML says BLAZE_ROD, a data pack
+            // recipe says flint_and_steel); the filename heuristic would only guess.
             List<String> declared = new ArrayList<>(declaredBaseItems(def));
             for (String base : pluginDeclaredBaseItems.getOrDefault(def.itemIdentifier(), List.of()))
                 if (base.matches("minecraft:[a-z0-9_]+") && !declared.contains(base)) declared.add(base);
-            if (!declared.isEmpty()) {
-                List<String> merged = new ArrayList<>(candidates);
-                for (String base : declared) if (!merged.contains(base)) merged.add(base);
-                candidates = merged;
+
+            boolean packCarried = packCarriers != null && !packCarriers.isEmpty();
+            boolean freeMinecraftModels = "freeminecraftmodels".equals(def.namespace());
+            // Fresh list: the heuristic's and the carrier index's lists are shared.
+            List<String> merged = new ArrayList<>();
+            if (packCarried) {
+                merged.addAll(packCarriers);
+            } else if (!replacesGuesses(declared)) {
+                merged.addAll(resolveHeuristic(def, resolver));
+            } else if (freeMinecraftModels) {
+                merged.add(FMM_CRAFTIFY_CARRIER);
             }
+
+            // FreeMinecraftModels always wears items on a leather_horse_armor carrier when
+            // rendering bones via packet armor stands. Ensure the FMM model is registered
+            // under that base item too, in addition to whatever else carries it. Without
+            // this the bone armor stand renders as plain leather-horse-armor on Bedrock and
+            // the user-visible FMM furniture / props / weapons are invisible.
+            if (freeMinecraftModels && !merged.contains(FMM_BONE_CARRIER)) merged.add(FMM_BONE_CARRIER);
+
+            for (String base : declared) if (!merged.contains(base)) merged.add(base);
+            candidates = merged;
         }
 
         List<String> supported = candidates.stream()
@@ -128,8 +148,8 @@ public final class BaseItemResolver {
      * Base items a producer declares for one of its item models, read from
      * {@code assets/<ns>/rspm_item_bases/<items path>.json} holding
      * {@code {"base_items": ["minecraft:blaze_rod"]}}. FreeMinecraftModels writes one for each
-     * custom item with the material its YAML names. These are added to the heuristic's choice,
-     * so other carriers of the same model keep working.
+     * custom item with the material its YAML names. {@link #DECLARED_BASES_REPLACE_GUESSES}
+     * says how they combine with the heuristic's choice.
      */
     static List<String> declaredBaseItems(ItemsDefinition def) {
         File itemsDir = def.file() == null ? null : def.file().getParentFile();

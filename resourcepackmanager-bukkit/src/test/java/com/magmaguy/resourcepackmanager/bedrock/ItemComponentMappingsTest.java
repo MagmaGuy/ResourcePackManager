@@ -69,10 +69,8 @@ final class ItemComponentMappingsTest {
                 CanonicalJson.write(tomato.get(0).get("components")));
         assertEquals(definitions(plain, BASE, "default:tomato").get(0).get("bedrock_identifier"),
                 tomato.get(0).get("bedrock_identifier"), "a definition without extra predicates keeps its Bedrock id");
-        for (JsonElement guessed : mappings.getAsJsonObject("items").getAsJsonArray("minecraft:paper")) {
-            assertFalse(guessed.getAsJsonObject().has("components"),
-                    "no item on paper uses the model, so that mapping keeps paper's behaviour: " + guessed);
-        }
+        assertEquals(java.util.Set.of(BASE), mappings.getAsJsonObject("items").keySet(),
+                "no item on paper uses the models, so their declared base is the only one mapped");
 
         JsonObject crown = definitions(mappings, BASE, "default:crown").get(0);
         assertEquals("{\"slot\":\"head\"}", crown.getAsJsonObject("components").get("minecraft:equippable").toString());

@@ -76,7 +76,7 @@ import java.util.zip.ZipFile;
  * the {@link BedrockConverterContext}.</p>
  */
 public class BedrockConversion {
-    public static final String OUTPUT_REVISION = "unsupported-condition-else-branch-v1";
+    public static final String OUTPUT_REVISION = "declared-bases-replace-guesses-v1";
 
     public static final String BEDROCK_PACK_NAME = "ResourcePackManager_Bedrock";
     public static final String GEYSER_MAPPINGS_NAME = "rspm_geyser_mappings.json";
@@ -744,8 +744,10 @@ public class BedrockConversion {
             }
             if (pluginBased > 0) {
                 BedrockLog.info("[BedrockConverter] " + pluginBased
-                        + " custom item model(s) also map under the base item their plugin's config gives them"
-                        + " (such as Oraxen's material).");
+                        + " custom item model(s) map under the base item a data pack or their plugin's config"
+                        + " gives them (such as a recipe result or Oraxen's material)"
+                        + (BaseItemResolver.DECLARED_BASES_REPLACE_GUESSES
+                        ? ", and no longer under base items guessed from their file name." : "."));
             }
             if (packCarried > 0) {
                 BedrockLog.info("[BedrockConverter] " + packCarried

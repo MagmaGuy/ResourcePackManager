@@ -561,8 +561,9 @@ public class Mix {
     private static String bedrockIdentity(BukkitBedrockConverterContext context) {
         String identity = BedrockConversion.OUTPUT_REVISION + "|" + context.isBedrockConversionEnabled()
                 + "|" + context.isBedrockTargetPresent();
-        // Plugin-declared base items (Oraxen materials) change the mappings without
-        // changing a pack byte, so they belong to the identity. Appended only when
+        // Declared base items (Oraxen materials, the item stacks of the server's data
+        // packs) change the mappings without changing a pack byte, so they belong to the
+        // identity: editing a data pack recipe reconverts. Appended only when
         // present, so servers without them keep their existing identity.
         String declared = context.declaredBaseItemsDigest();
         if (!declared.isEmpty()) identity += "|" + declared;

@@ -42,7 +42,11 @@ final class BedrockMappingFixture {
      */
     static Map<String, Set<String>> convert(Path temp, String namespace, List<String> items,
                                             Map<String, List<String>> declared) throws IOException {
-        JsonObject mappings = mappings(temp, namespace, items, declared, List.of());
+        return bases(mappings(temp, namespace, items, declared, List.of()));
+    }
+
+    /** Geyser mapping bases per Java item model. */
+    static Map<String, Set<String>> bases(JsonObject mappings) {
         Map<String, Set<String>> bases = new TreeMap<>();
         for (Map.Entry<String, JsonElement> base : mappings.getAsJsonObject("items").entrySet())
             for (JsonElement definition : base.getValue().getAsJsonArray())
@@ -58,12 +62,23 @@ final class BedrockMappingFixture {
      */
     static JsonObject mappings(Path temp, String namespace, List<String> items, Map<String, List<String>> declared,
                                List<ItemComponentSnapshot> components) throws IOException {
+        return mappings(temp, namespace, items, declared, components, Map.of());
+    }
+
+    /**
+     * As {@link #mappings(Path, String, List, Map, List)}, with the items definition JSON of the
+     * items named in {@code definitions} instead of a plain {@code minecraft:model} one. Every
+     * item still gets its {@code namespace:item/<item>} model and texture.
+     */
+    static JsonObject mappings(Path temp, String namespace, List<String> items, Map<String, List<String>> declared,
+                               List<ItemComponentSnapshot> components, Map<String, String> definitions)
+            throws IOException {
         Path pack = Files.createTempDirectory(temp, "pack-");
         write(pack.resolve("pack.mcmeta"), "{\"pack\":{\"pack_format\":84,\"description\":\"" + namespace + "\"}}");
         for (String item : items) {
             Path assets = pack.resolve("assets/" + namespace);
-            write(assets.resolve("items/" + item + ".json"),
-                    "{\"model\":{\"type\":\"minecraft:model\",\"model\":\"" + namespace + ":item/" + item + "\"}}");
+            write(assets.resolve("items/" + item + ".json"), definitions.getOrDefault(item,
+                    "{\"model\":{\"type\":\"minecraft:model\",\"model\":\"" + namespace + ":item/" + item + "\"}}"));
             write(assets.resolve("models/item/" + item + ".json"),
                     "{\"parent\":\"minecraft:item/generated\",\"textures\":{\"layer0\":\"" + namespace + ":item/" + item + "\"}}");
             Path texture = assets.resolve("textures/item/" + item + ".png");
